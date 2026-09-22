@@ -155,7 +155,7 @@ function renderLearning(b) {
         : '→ baseline';
     setText('thresholdTrend', `${fmt(learned)} ${trend}`);
     const bt = m.bestTarget;
-    setText('bestTarget', bt ? `${bt.target}x (hist. EV ${fmt(bt.ev, 3)})` : 'not enough data');
+    setText('bestTarget', bt ? `${bt.target}x (in-sample hist. EV ${fmt(bt.ev, 3)} — curiosity metric, not a bet input)` : 'not enough data');
   }
 
   // Strongest pattern families

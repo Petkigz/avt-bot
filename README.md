@@ -372,10 +372,15 @@ of which preset you pick.
 
 ## How the model learns
 
-The bot keeps **memory across restarts** and refines its entry decisions:
+The bot keeps **memory across restarts** and refines its entry decisions.
+Since bookmakers run **separate Aviator streams** (verified by parallel
+monitoring), each site owns a full engine — its own memory, model, patterns
+and brain — so one game's rounds can never pollute another's:
 
-1. **History** — every round's crash value is appended to `data/history.json`
-   (capped at 5,000 rounds). On startup the full history is re-loaded.
+1. **History** — every round's crash value is appended to the site's own
+   `data/history-<site>.json` (capped at 5,000 rounds), re-loaded on startup.
+   The legacy `data/history.json` is kept only as a bootstrap archive for the
+   first engine.
 2. **Probability estimates (three views)** — the engine keeps the flat
    all-history estimate, a **recency-weighted** estimate (`MODEL_RECENCY_HALF_LIFE`,
    recent rounds count exponentially more), and a **recent-window** estimate
@@ -409,6 +414,30 @@ negative, exactly as the math dictates.
 > the next crash**, and none can guarantee profit. The model improves *entry
 > discipline* and protects the bankroll from bad stretches; the house edge remains.
 > Bet only what you can afford to lose.
+
+## Prediction research layer (measurement first)
+
+Instead of assuming the model is predictive, the bot *measures* whether it is:
+
+- **Prediction log** — every prediction the engine forms is written to
+  `data/predictions-<site>.jsonl` (append-only JSONL) together with how it
+  settled (`predictions` kind + `settle` kind lines). Nothing is ever
+  overwritten, so calibration and error analysis always have raw material.
+- **Calibration** (`game/calibration.js`) — tracks Brier score, log loss and
+  Expected Calibration Error over settled predictions, plus the calibration
+  curve as bins. A summary is printed per site at shutdown.
+- **Walk-forward validation** (`npm run walkforward`) — strict out-of-sample
+  testing: estimators (baseline / recent-window / recency-weighted /
+  Wilson-shrunk) are trained only on rounds before each test fold and judged
+  on rounds they never saw. A variant counts as "signal" only if its bet
+  hit-rate beats the fold base rate with p < 0.05. On thin recorded history
+  it self-tests against a synthetic feed with a known answer (no signal).
+  The verdict line is explicit: `NO PREDICTIVE SIGNAL DETECTED` means the
+  gates run discipline-only — that is a *feature*, not a failure.
+
+The same layer is deliberately market-agnostic (values in, verdicts out), so
+it can later be pointed at any numeric stream to test whether that stream
+contains a measurable edge before a trading layer ever touches it.
 
 ## Live dashboard
 

@@ -13,6 +13,8 @@ const Database = require('./database/database');
 const HistoryStore = require('./game/historyStore');
 const Predictor = require('./game/predictor');
 const PatternDetector = require('./game/patternDetector');
+const CalibrationTracker = require('./game/calibration');
+const PredictionLogger = require('./game/predictionLogger');
 const Bankroll = require('./game/bankroll');
 const Brain = require('./game/brain');
 const CsvLog = require('./util/csvLog');
@@ -1003,7 +1005,18 @@ async function main() {
         }
 
         const siteBrain = new Brain({ config, strategy, predictor: sitePredictor, patterns: sitePatterns, bankroll });
-        const engine = { siteId: key, store, predictor: sitePredictor, patterns: sitePatterns, brain: siteBrain };
+        const engine = {
+            siteId: key,
+            store,
+            predictor: sitePredictor,
+            patterns: sitePatterns,
+            brain: siteBrain,
+            // Measurement layer: every prediction is recorded and settled so
+            // calibration and walk-forward validation have real data.
+            predictionLog: new PredictionLogger(path.join(config.DATA_DIR, `predictions-${safe}.jsonl`)),
+            calibration: new CalibrationTracker(),
+            pendingPrediction: null
+        };
         engines.set(key, engine);
 
         if (!primaryEngine) {
@@ -1015,6 +1028,44 @@ async function main() {
             `${sitePatterns ? sitePatterns.patterns.size : 0} patterns | tier: ${siteBrain.tier}`
         );
         return engine;
+    };
+
+    // Measurement hook: settle the prediction that was in force for the round
+    // that just ended, then snapshot the engine's prediction for the NEXT
+    // round into the permanent log. Runs in every mode (paper included) —
+    // observing costs nothing and every settled prediction is evidence.
+    const settleAndPredict = (engine, crash) => {
+        if (!engine) return;
+        const target = strategyConfig.targetMultiplier;
+        try {
+            const pending = engine.pendingPrediction;
+            if (pending && Number.isFinite(pending.prob)) {
+                const won = crash >= pending.target;
+                engine.calibration.record(pending.prob, won ? 1 : 0);
+                engine.predictionLog.logOutcome({
+                    site: engine.siteId, target: pending.target,
+                    prob: pending.prob, crash, won
+                });
+            }
+            let prob = null;
+            let threshold = null;
+            let allowed = false;
+            let regime = '';
+            if (engine.predictor) {
+                prob = engine.predictor.blendedProbability(target);
+                threshold = engine.predictor.entryProbability;
+                const gate = engine.predictor.shouldAllowBet();
+                allowed = !!gate.allowed;
+                regime = typeof engine.predictor.regime === 'function' ? engine.predictor.regime() : '';
+            }
+            engine.pendingPrediction = { target, prob, threshold, allowed, tier: engine.brain.tier, regime };
+            engine.predictionLog.logPrediction({
+                site: engine.siteId, target, prob, threshold, allowed,
+                tier: engine.brain.tier, regime
+            });
+        } catch (error) {
+            logger.debug(`prediction log skipped: ${error.message}`);
+        }
     };
 
     // Round-by-round + trade CSV logs (site/account tagged per row)
@@ -1075,6 +1126,7 @@ async function main() {
             database.saveRound(d.crash);
             // The monitor already appended the round to this site's own store;
             // never feed other sites' streams into it.
+            settleAndPredict(engineFor(monitor.site), d.crash);
             if (d.brain) d.brain.site = monitor.site;
             if (dashboard) {
                 dashboard.io.emit('newData', {
@@ -1186,6 +1238,7 @@ async function main() {
         for (const engine of engines.values()) {
             if (engine.predictor) engine.predictor.save();
             if (engine.patterns) engine.patterns.save();
+            logger.info(`Calibration [${engine.siteId}]: ${engine.calibration.summary()} (see predictions-${safeSiteId(engine.siteId)}.jsonl)`);
         }
         if (!primaryEngine) {
             if (predictor) predictor.save();
