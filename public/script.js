@@ -471,6 +471,19 @@ function renderSessions(list) {
     return;
   }
   note.textContent = `${list.length} session(s) open (cap set by MAX_SESSIONS).`;
+  // Explainable silence: session open but nothing observed yet
+  const hint = el('sessionsHint');
+  const quiet = list.filter((s) => !s.monitoring && s.phase !== 'loginRequired');
+  if (quiet.length > 0) {
+    hint.classList.remove('hidden');
+    hint.textContent =
+      'Observation is automatic — no extra steps needed. If Monitoring stays "—" for a while: ' +
+      'make sure the Aviator game itself is visible in the bot\'s browser window (if the site ' +
+      'shows a preview or PLAY button, press PLAY once). Numbers update after each completed ' +
+      'round (~10–20 seconds each).';
+  } else {
+    hint.classList.add('hidden');
+  }
   for (const s of list) {
     const tr = document.createElement('tr');
     const phaseCls = s.phase === 'monitoring' ? 'live' : (s.phase === 'loginRequired' ? 'paper' : '');
@@ -657,7 +670,7 @@ function applyControlState(cs) {
   const resumeBtn = el('resumeBtn');
   const pauseChip = el('pauseChip');
   if (cs.strategy) {
-    pauseChip.classList.add('paused');
+    pauseChip.classList.toggle('paused', cs.paused);
     pauseChip.classList.toggle('hidden', !cs.paused);
     pauseBtn.classList.toggle('hidden', cs.paused);
     resumeBtn.classList.toggle('hidden', !cs.paused);
@@ -707,7 +720,7 @@ el('strategyApplyBtn').addEventListener('click', async () => {
 
 // Observe-only <-> live betting toggle (hard confirmation for LIVE)
 let currentMode = 'paper';
-el('modeToggleBtn').addEventListener('click', () => {
+function requestModeToggle() {
   if (currentMode === 'paper') {
     const sure = confirm(
       'Switch to LIVE betting?\n\n' +
@@ -719,19 +732,24 @@ el('modeToggleBtn').addEventListener('click', () => {
   } else {
     socket.emit('setMode', { mode: 'paper' });
   }
-});
+}
+el('modeToggleBtn').addEventListener('click', requestModeToggle);
+el('modeToggleBtnStatus').addEventListener('click', requestModeToggle);
 
 function applyModeToggle(cs) {
   currentMode = cs.mode || 'paper';
-  const btn = el('modeToggleBtn');
-  if (!cs.strategy) { btn.classList.add('hidden'); return; }
-  btn.classList.remove('hidden');
-  if (currentMode === 'paper') {
-    btn.textContent = '🔴 Switch to LIVE betting';
-    btn.className = 'danger';
-  } else {
-    btn.textContent = '🟢 Switch back to observe-only';
-    btn.className = 'primary';
+  const btns = [el('modeToggleBtn'), el('modeToggleBtnStatus')];
+  for (const btn of btns) {
+    // Available as soon as a session is running — strategy is irrelevant here.
+    btn.classList.toggle('hidden', !!cs.awaitingLaunch);
+    if (currentMode === 'paper') {
+      btn.textContent = '🔴 Switch to LIVE betting';
+      btn.className = btn.id === 'modeToggleBtnStatus' ? 'danger' : 'danger';
+    } else {
+      btn.textContent = '🟢 Switch back to observe-only';
+      btn.className = 'primary';
+    }
+    if (cs.awaitingLaunch) btn.classList.add('hidden');
   }
 }
 

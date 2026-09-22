@@ -917,7 +917,14 @@ async function main() {
             }
         });
 
-        monitor.startMonitoring();
+        try {
+            monitor.startMonitoring();
+        } catch (error) {
+            logger.error(`Game monitor failed to start on ${session.site.name}: ${error.message}`);
+            session.monitor = null;
+            return;
+        }
+        session.widgetWarned = false;
         setSessionPhase(session, 'monitoring');
         logger.info(`Game monitor started on ${candidate.url()} [${session.site.name} / "${session.account.label}"]`);
     };
@@ -933,6 +940,23 @@ async function main() {
                 const pages = await session.browser.pages();
                 for (const p of pages) {
                     if (!session.monitor) await attachMonitor(p, session);
+                }
+                // Explainable silence: page looks ready but the widget never
+                // matched (preview overlay? PLAY button? blocked frame?).
+                const waitingPhase = session.phase !== 'loginRequired' &&
+                    session.phase !== 'navigating' && session.phase !== 'starting';
+                if (!session.monitor && waitingPhase && !session.widgetWarned) {
+                    if (!session.widgetWaitSince) session.widgetWaitSince = Date.now();
+                    if (Date.now() - session.widgetWaitSince > 60000) {
+                        session.widgetWarned = true;
+                        logger.warn(
+                            `${session.site.name}: game widget not found yet. If the page shows a ` +
+                            'preview or PLAY button, press PLAY once — monitoring starts automatically. ' +
+                            'Values in the dashboard update after each completed round (~10-20s each).'
+                        );
+                    }
+                } else if (session.monitor) {
+                    session.widgetWaitSince = 0;
                 }
             }
         } catch (error) {

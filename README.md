@@ -279,7 +279,13 @@ page automatically.
 **Strategies from the dashboard:** all four presets are listed in Mission
 Control and can be applied at any time with **✓ Apply strategy** — before
 launch it remembers your choice, during a running session it hot-swaps the
-strategy live (progression resets). The dashboard's **👁 live view** is a delayed,
+strategy live (progression resets).
+
+**Observe → live:** observation starts automatically the moment the game
+widget is detected — no extra clicks needed; numbers update after each
+completed round (~10–20s). The **Switch to LIVE betting** button appears in
+BOTH Mission Control and the Bot status panel as soon as a session is
+running (switching back is one click, no confirmation). The dashboard's **👁 live view** is a delayed,
 view-only screenshot; the bot always acts on the real page at DOM speed, so
 mirror lag never affects monitoring or bets.
 

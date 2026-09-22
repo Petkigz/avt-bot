@@ -25,9 +25,16 @@ const path = require('path');
  */
 
 const SELECTOR_SETS = {
-    // Standard Spribe Aviator widget (used by virtually all bookmakers)
+    // Standard Spribe Aviator widget (used by virtually all bookmakers).
+    // Comma-separated fallbacks: the history-strip bubbles are the round
+    // source — some casino embeds wrap them in differently-classed
+    // containers, so we accept any variant that still targets the strip.
     spribe: {
-        BUBBLE_MULTIPLIER: '.payouts-wrapper .bubble-multiplier',
+        BUBBLE_MULTIPLIER: '.payouts-wrapper .bubble-multiplier, ' +
+            '.bets_history .bubble-multiplier, ' +
+            '[class*="payouts"] .bubble-multiplier, ' +
+            '[class*="history"] .bubble-multiplier, ' +
+            '.bubble-multiplier',
         BALANCE: '.balance .amount',
         BET_BUTTON: 'div.buttons-block > button.btn.btn-success.bet.ng-star-inserted',
         CASHOUT_BUTTON: 'button.cashout.ng-star-inserted',
