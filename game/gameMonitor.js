@@ -541,18 +541,26 @@ class GameMonitor extends EventEmitter {
                     const box = el.getBoundingClientRect();
                     return box.width > 0 && box.height > 0;
                 };
+                // "1.23x" -> 1.23 ; "1,105.31x" -> 1105.31 (thousands comma);
+                // "2,5x" -> 2.5 (decimal comma, only when no dot is present)
+                const toMult = (text) => {
+                    let t = (text || '').trim().replace(/x/gi, '');
+                    if (t.includes(',') && t.includes('.')) t = t.replace(/,/g, '');
+                    else t = t.replace(',', '.');
+                    return parseFloat(t);
+                };
                 let bubbles;
                 if (path) {
                     const container = document.querySelector(path);
                     bubbles = container
                         ? Array.from(container.children)
-                            .map((el) => parseFloat((el.textContent || '').trim().replace(/x/gi, '').replace(',', '.')))
+                            .map((el) => toMult(el.textContent))
                             .filter((v) => Number.isFinite(v) && v > 0)
                             .slice(0, 12)
                         : [];
                 } else {
                     bubbles = Array.from(document.querySelectorAll(s.BUBBLE_MULTIPLIER))
-                        .map((el) => parseFloat((el.textContent || '').trim().replace(/x/gi, '').replace(',', '.')))
+                        .map((el) => toMult(el.textContent))
                         .filter((v) => Number.isFinite(v) && v > 0)
                         .slice(0, 30);
                 }

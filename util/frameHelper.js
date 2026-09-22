@@ -7,7 +7,9 @@ const sleep = require('./sleep');
  * Works across Spribe client generations ("classic" and "aviator-next").
  */
 const STRIP_DISCOVERY_SCRIPT = () => {
-    const isMult = (t) => /^\s*x?\d+(?:[.,]\d{1,2})?\s*x?\s*$/.test(t || '');
+    // Multiplier chip: digits with optional dot/comma groups ("1.23x",
+    // "x2.50", "15x", "1,105.31x" — big crashes carry a thousands comma).
+    const isMult = (t) => /^\s*x?\d[\d.,]*x?\s*$/i.test(t || '');
     const best = { el: null, count: 0 };
     const all = document.querySelectorAll('*');
     for (const el of all) {
