@@ -197,7 +197,7 @@ All settings live in `.env` (see [.env.example](.env.example)). Highlights:
 | `DASHBOARD_ENABLED` | `true` | Serve the live dashboard |
 | `DASHBOARD_PORT` | `4100` | Dashboard port (auto-moves up if busy; final port written to `data/dashboard-port`) |
 | `DASHBOARD_HOST` | `127.0.0.1` | Bind interface (`127.0.0.1` = local only, no auth built in) |
-| `UI_START` | `false` | Start sessions from Mission Control instead of terminal prompts |
+| `UI_START` | `true` | Start sessions from Mission Control instead of terminal prompts (`false` = classic terminal menus; `start-bot.bat` always forces dashboard mode) |
 | `DATABASE_ENABLED` | `false` | Enable MySQL persistence |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
 | `PAPER_MODE` | `true` | Observe + log without betting (SAFE default) |
@@ -240,10 +240,11 @@ site feeds the same memory, model and pattern miner.
 of your saved login profiles or create a new one. Without a terminal, the bot
 restores the last-active site/account automatically.
 
-**…or do everything from the dashboard (Mission Control):** set
-`UI_START=true` in `.env` and the bot starts the dashboard first, then waits —
-you pick site, account and strategy in **Mission Control** and press
-**🚀 Launch session**. While running, Mission Control also gives you:
+**…or do everything from the dashboard (Mission Control):** this is now the
+default (`UI_START=true`, and the launcher forces it) — the bot starts the
+dashboard first, then waits; you pick site, account and strategy in
+**Mission Control** and press **🚀 Launch session**. While running, Mission
+Control also gives you:
 
 - **Observe ⇄ LIVE toggle** — the bot starts in observe-only (paper) mode; a
   confirmed one-click switch turns real betting on or off live.

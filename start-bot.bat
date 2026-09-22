@@ -32,13 +32,13 @@ echo ======================================================
 echo            AVIATOR BOT  -  LAUNCHER
 echo ======================================================
 echo.
-echo   [1] START THE BOT          (dashboard: localhost:3000)
+echo   [1] START THE BOT          (dashboard opens automatically)
 echo   [2] Health check           (npm run doctor)
 echo   [3] Demo dashboard         (synthetic data, no login)
 echo   [4] Update from GitHub     (git pull + npm install)
 echo   [5] Exit
 echo.
-echo   Tip: edit .env with Notepad for SITE / UI_START options.
+echo   Tip: edit .env with Notepad for extra options.
 echo ======================================================
 set /p choice=Choose an option (1-5): 
 
@@ -53,6 +53,8 @@ goto menu
 echo.
 echo Starting the bot... the dashboard opens in your browser shortly.
 echo Close the other window (or Ctrl+C in it) to stop the bot.
+rem The launcher is the dashboard-first experience: wait for LAUNCH in Mission Control.
+set "UI_START=true"
 start "" /b cmd /v:on /c "timeout /t 6 /nobreak >nul & set DP=4100 & if exist data\dashboard-port set /p DP=<data\dashboard-port & start http://localhost:!DP!"
 call npm start
 echo.

@@ -467,7 +467,7 @@ async function waitForLogin(session) {
 /**
  * Polls the page (all frames) for the game widget, up to timeoutMs.
  */
-async function waitForGameWidget(page, site, timeoutMs = 12000) {
+async function waitForGameWidget(page, site, timeoutMs = 25000) {
     const selectors = selectorsFor(site);
     const t0 = Date.now();
     while (Date.now() - t0 < timeoutMs) {
@@ -477,6 +477,29 @@ async function waitForGameWidget(page, site, timeoutMs = 12000) {
         await sleep(1500);
     }
     return false;
+}
+
+/**
+ * Logs what the page actually contains when the game widget is not found —
+ * frame URLs and titles — so a stale deep link or a missing click-through
+ * (PLAY / real-money prompt) can be spotted from the logs alone.
+ */
+async function logPageDiagnostics(page, site) {
+    try {
+        if (page.isClosed()) return;
+        const url = page.url();
+        const frames = page.frames().map((f) => f.url()).filter(Boolean);
+        logger.warn(`${site.name} diagnosis — page URL: ${url}`);
+        logger.warn(`${site.name} diagnosis — ${frames.length} frame(s): ${frames.slice(0, 6).join(' | ')}`);
+        const spribe = frames.find((u) => /spribe|aviator/i.test(u));
+        if (spribe) {
+            logger.warn(`${site.name}: the Spribe/Aviator frame IS loaded (${spribe}) but the round-history strip was not detected — the layout may need a selector update, please report this log.`);
+        } else {
+            logger.warn(`${site.name}: no Spribe/Aviator frame loaded yet — the page may need a click (PLAY / real-money prompt) or a manual open of Aviator from the menu.`);
+        }
+    } catch (error) {
+        logger.debug(`Diagnostics failed: ${error.message}`);
+    }
 }
 
 async function navigateSessionToGame(session) {
@@ -508,14 +531,16 @@ async function navigateSessionToGame(session) {
         await gotoSafe(page, site.gameUrl, `${site.name} Aviator`);
         // Verify the deep link actually produced the game widget — some sites
         // change paths or need a different entry after login.
-        if (await waitForGameWidget(page, site, 12000)) {
+        if (await waitForGameWidget(page, site, 25000)) {
             setSessionPhase(session, 'active');
             emitSiteStatus('active', { accountLabel: session.account.label });
         } else {
             logger.warn(
                 `${site.name}: the Aviator deep link did not show the game widget ` +
-                `(${site.gameUrl}). Open Aviator from the site menu — the watcher will find it.`
+                `(${site.gameUrl}). If the page shows a PLAY or real-money prompt, click it once; ` +
+                'otherwise open Aviator from the site menu — the watcher will find it.'
             );
+            await logPageDiagnostics(page, site);
             setSessionPhase(session, 'findGame');
             emitSiteStatus('findGame', { accountLabel: session.account.label });
         }
@@ -734,10 +759,11 @@ async function main() {
                             }
                             logger.info(`Re-navigating "${s.account.label}" to ${s.site.name} Aviator page (dashboard request)`);
                             await gotoSafe(s.page, s.site.gameUrl, `${s.site.name} Aviator`);
-                            if (await waitForGameWidget(s.page, s.site, 12000)) {
+                            if (await waitForGameWidget(s.page, s.site, 25000)) {
                                 emitSiteStatus('active', { accountLabel: s.account.label });
                             } else {
-                                logger.warn(`${s.site.name}: deep link did not show the game — open Aviator from the menu; the watcher will find it`);
+                                logger.warn(`${s.site.name}: deep link did not show the game — if a PLAY/real-money prompt is visible, click it once; otherwise open Aviator from the menu; the watcher will find it`);
+                                await logPageDiagnostics(s.page, s.site);
                                 emitSiteStatus('findGame', { accountLabel: s.account.label });
                             }
                         });

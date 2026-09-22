@@ -134,7 +134,10 @@ const config = {
 
     // Start from the dashboard instead of the terminal prompts (site,
     // account and strategy are chosen in Mission Control, then LAUNCH).
-    UI_START: bool(process.env.UI_START, false),
+    // Dashboard-first is the default flow: the bot waits for Mission
+    // Control's LAUNCH button instead of asking questions in the terminal.
+    // Set UI_START=false for the classic terminal menus.
+    UI_START: bool(process.env.UI_START, true),
 
     // Optional preset override — MICRO, CONSERVATIVE, MODERATE or AGGRESSIVE.
     // When set, the bot uses it without prompting (useful for headless runs).
