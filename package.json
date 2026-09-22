@@ -33,5 +33,10 @@
   },
   "devDependencies": {
     "socket.io-client": "^4.8.3"
+  },
+  "overrides": {
+    "tar-fs": "^2.1.5",
+    "ws": "^8.21.3",
+    "js-yaml": "^4.3.2"
   }
 }

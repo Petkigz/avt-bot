@@ -129,6 +129,18 @@ This release is a full overhaul focused on **correctness and money-safety**:
 
 ## Installation
 
+### Windows: one-click launcher
+
+Double-click **`start-bot.bat`** — it checks Node, installs dependencies on
+first run, creates `.env` if missing, and gives you a menu:
+
+1. **Start the bot** (opens the dashboard at `http://localhost:3000` automatically)
+2. **Health check** (`npm run doctor`)
+3. **Demo dashboard** (synthetic data, no login needed)
+4. **Update from GitHub**
+
+### Manual
+
 ```bash
 git clone https://github.com/Petkigz/avt-bot.git
 cd avt-bot
@@ -478,6 +490,12 @@ stop-loss, take-profit or 5-loss streak triggers.
 - **Live betting is a deliberate act:** observe-only (paper) is the default;
   switching to LIVE from the dashboard requires an explicit confirmation, and
   loss limits stay enforced either way.
+- **Supply-chain transparency:** `ws`, `tar-fs` and `js-yaml` advisories are
+  patched via npm `overrides` (see `package.json`). The only remaining audit
+  warnings come from `extract-zip` inside puppeteer 19's *installer* — they
+  apply only while Chrome is being downloaded/extracted (a signed archive
+  from Google's CDN), never at runtime, and have no upstream fix until
+  puppeteer 25 (a major upgrade deliberately deferred).
 
 ## FAQ
 
