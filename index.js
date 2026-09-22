@@ -45,6 +45,44 @@ function emitSiteStatus(phase, extra = {}) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Live view mirror: streams screenshots of a session's page to the dashboard
+// and forwards clicks back (local-only convenience, no iframe possible since
+// bookmakers block framing).
+// ---------------------------------------------------------------------------
+function stopMirror(session) {
+    if (session.mirrorTimer) {
+        clearInterval(session.mirrorTimer);
+        session.mirrorTimer = null;
+    }
+}
+
+function startMirror(session) {
+    stopMirror(session);
+    session.mirrorTimer = setInterval(async () => {
+        try {
+            if (!session.page || session.page.isClosed()) return stopMirror(session);
+            const dims = await session.page.evaluate(() => ({
+                w: window.innerWidth, h: window.innerHeight
+            }));
+            const img = await session.page.screenshot({
+                type: 'jpeg', quality: 45, encoding: 'base64'
+            });
+            if (dashboard) {
+                dashboard.io.emit('mirrorFrame', {
+                    accountId: session.account.id, img, w: dims.w, h: dims.h
+                });
+            }
+        } catch (error) {
+            logger.debug(`Mirror frame failed: ${error.message}`);
+        }
+    }, 1300);
+}
+
+function stopAllMirrors() {
+    for (const session of sessions.values()) stopMirror(session);
+}
+
 function sessionsSnapshot() {
     return [...sessions.values()].map((s) => {
         const monitoring = !!s.monitor;
@@ -479,11 +517,12 @@ async function main() {
     // ---- Dashboard FIRST: UI_START mode and live controls depend on it ----
     let brain = null;          // assigned after strategy selection (handlers are null-safe)
     let strategyConfig = null;
+    let paperMode = config.MODE.PAPER; // live-switchable from the dashboard
     let controlState = () => ({
         awaitingLaunch: awaitingUiLaunch,
         paused: brain ? brain.paused : false,
         strategy: strategyConfig ? strategyConfig.name : null,
-        mode: config.MODE.PAPER ? 'paper' : 'live'
+        mode: paperMode ? 'paper' : 'live'
     });
     const emitControlState = () => { if (dashboard) dashboard.io.emit('controlState', controlState()); };
 
@@ -528,7 +567,55 @@ async function main() {
                 socket.on('resumeBetting', () => {
                     if (brain) { brain.paused = false; logger.info('Betting RESUMED from the dashboard'); emitControlState(); }
                 });
+                // Observe-only <-> live betting toggle (dashboard switch)
+                socket.on('setMode', ({ mode } = {}) => {
+                    const toPaper = mode !== 'live';
+                    if (toPaper === paperMode) return;
+                    paperMode = toPaper;
+                    for (const s of sessions.values()) {
+                        if (s.monitor) s.monitor.betManager.paperMode = toPaper;
+                    }
+                    if (brain) brain.mode = toPaper ? 'paper' : 'live';
+                    if (toPaper) {
+                        logger.warn('Mode switched to OBSERVE-ONLY from the dashboard — no real bets');
+                    } else {
+                        logger.error('Mode switched to LIVE from the dashboard — REAL BETS are now possible (limits still enforced)');
+                    }
+                    emitControlState();
+                });
+                // Live view mirror (screenshot stream + click-through)
+                socket.on('mirrorStart', ({ accountId } = {}) => {
+                    const s = sessions.get(accountId);
+                    if (s) { logger.info(`Live view started for "${s.account.label}"`); startMirror(s); }
+                });
+                socket.on('mirrorStop', ({ accountId } = {}) => {
+                    const s = sessions.get(accountId);
+                    if (s) stopMirror(s);
+                });
+                socket.on('mirrorClick', async ({ accountId, x, y } = {}) => {
+                    const s = sessions.get(accountId);
+                    if (!s || s.page.isClosed()) return;
+                    try {
+                        await s.page.mouse.click(Number(x) || 0, Number(y) || 0);
+                    } catch (error) {
+                        logger.debug(`Mirror click failed: ${error.message}`);
+                    }
+                });
+                // Re-navigate a session to its Aviator page on demand
+                socket.on('renavigate', ({ accountId } = {}) => {
+                    const s = accountId ? sessions.get(accountId) : sessions.values().next().value;
+                    if (!s) return;
+                    if (!s.site.gameUrl) {
+                        logger.warn(`${s.site.name}: no deep link — open Aviator from the menu; the watcher will find it`);
+                        return;
+                    }
+                    logger.info(`Re-navigating "${s.account.label}" to ${s.site.name} Aviator page (dashboard request)`);
+                    gotoSafe(s.page, s.site.gameUrl, `${s.site.name} Aviator`).then((ok) => {
+                        if (ok) emitSiteStatus('active', { accountLabel: s.account.label });
+                    });
+                });
             });
+            dashboard.io.on('disconnect', stopAllMirrors);
         } catch (error) {
             logger.error(`Dashboard failed to start: ${error.message}`);
         }
@@ -646,6 +733,21 @@ async function main() {
             account: session.account.label
         });
         session.monitor = monitor;
+        monitor.betManager.paperMode = paperMode; // honor the dashboard mode switch
+
+        // One-shot: seed long-term memory from the visible history strip
+        // (the payout bubbles the game page already shows).
+        monitor.on('seedHistory', (values) => {
+            if (!Array.isArray(values) || values.length === 0) return;
+            if (historyStore.size() >= 50) return; // memory already has its own rounds
+            values.forEach((v) => historyStore.append(v));
+            if (predictor) predictor.setHistory(historyStore.values);
+            if (patterns) patterns.rebuildStream(historyStore.values);
+            logger.info(
+                `Memory seeded with ${values.length} rounds from the on-screen history strip ` +
+                `(total ${historyStore.size()})`
+            );
+        });
 
         monitor.on('roundEnded', (d) => {
             database.saveRound(d.crash);

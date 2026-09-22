@@ -37,3 +37,11 @@ test('paper mode and MICRO defaults are the safe factory settings', () => {
     assert.ok(config.RISK.MIN_ROUNDS_OBSERVE >= 50);
     assert.ok(config.RISK.MAX_STAKE_FRACTION <= 0.05);
 });
+
+test('dashboard binds to localhost by default (personal, no-auth UI)', () => {
+    if (!process.env.DASHBOARD_HOST) {
+        assert.strictEqual(config.DASHBOARD.HOST, '127.0.0.1');
+    } else {
+        assert.ok(typeof config.DASHBOARD.HOST === 'string' && config.DASHBOARD.HOST.length > 0);
+    }
+});

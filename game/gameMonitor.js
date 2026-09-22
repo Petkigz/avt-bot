@@ -61,6 +61,7 @@ class GameMonitor extends EventEmitter {
         this.timer = null;
         this.nextPrediction = null;
         this.lastBalance = null;    // last balance read from the game page
+        this.seedEmitted = false;   // history-strip seed sent once per attach
         this.roundBetMeta = null; // {stake, confidence, pattern, tier} of this round's bet
 
         // Every settled trade feeds the Brain (model, patterns, bankroll,
@@ -124,6 +125,13 @@ class GameMonitor extends EventEmitter {
         const state = await this.readState(frame);
         if (!state) return;
         if (!this.attachedUrl) this.attachedUrl = this.page.url();
+
+        // One-shot: hand the visible history strip (newest-first) to the
+        // orchestrator so long-term memory seeds from what's already on screen.
+        if (!this.seedEmitted && state.bubbles && state.bubbles.length > 0) {
+            this.seedEmitted = true;
+            this.emit('seedHistory', [...state.bubbles].reverse());
+        }
 
         const latest = state.bubbles.length > 0 ? state.bubbles[0] : null;
         if (latest === null) {

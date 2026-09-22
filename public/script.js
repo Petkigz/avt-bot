@@ -485,6 +485,13 @@ function renderSessions(list) {
       `<td>${esc(s.roundsSeen)}</td>` +
       `<td>${rate}</td>` +
       `<td>${balance}</td>`;
+    const tdView = document.createElement('td');
+    const viewBtn = document.createElement('button');
+    viewBtn.textContent = '👁';
+    viewBtn.title = 'Open the live view of this session in the dashboard';
+    viewBtn.addEventListener('click', () => startMirrorView(s.accountId, s.accountLabel));
+    tdView.appendChild(viewBtn);
+    tr.appendChild(tdView);
     body.appendChild(tr);
   }
 }
@@ -658,7 +665,8 @@ function applyControlState(cs) {
   }
   const modeBadge = el('modeBadge');
   if (cs.mode === 'live') { modeBadge.textContent = 'LIVE MODE'; modeBadge.className = 'live'; }
-  else { modeBadge.textContent = 'PAPER MODE'; modeBadge.className = 'paper'; }
+  else { modeBadge.textContent = 'OBSERVE MODE (paper)'; modeBadge.className = 'paper'; }
+  applyModeToggle(cs);
 }
 
 socket.on('controlState', applyControlState);
@@ -676,6 +684,84 @@ el('launchBtn').addEventListener('click', () => {
 
 el('pauseBtn').addEventListener('click', () => socket.emit('pauseBetting'));
 el('resumeBtn').addEventListener('click', () => socket.emit('resumeBetting'));
+el('renavigateBtn').addEventListener('click', () => {
+  socket.emit('renavigate', {});
+  el('controlStatus').textContent = 'Navigating to the Aviator page…';
+});
+
+// Observe-only <-> live betting toggle (hard confirmation for LIVE)
+let currentMode = 'paper';
+el('modeToggleBtn').addEventListener('click', () => {
+  if (currentMode === 'paper') {
+    const sure = confirm(
+      'Switch to LIVE betting?\n\n' +
+      'The bot will place REAL bets with REAL funds (loss limits still enforced).\n' +
+      'Make sure you trust what you saw in observe mode first.'
+    );
+    if (!sure) return;
+    socket.emit('setMode', { mode: 'live' });
+  } else {
+    socket.emit('setMode', { mode: 'paper' });
+  }
+});
+
+function applyModeToggle(cs) {
+  currentMode = cs.mode || 'paper';
+  const btn = el('modeToggleBtn');
+  if (!cs.strategy) { btn.classList.add('hidden'); return; }
+  btn.classList.remove('hidden');
+  if (currentMode === 'paper') {
+    btn.textContent = '🔴 Switch to LIVE betting';
+    btn.className = 'danger';
+  } else {
+    btn.textContent = '🟢 Switch back to observe-only';
+    btn.className = 'primary';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Live game view: mirrored screenshots of the session + click-through
+// ---------------------------------------------------------------------------
+let mirrorAccount = null;
+
+function startMirrorView(accountId, label) {
+  mirrorAccount = accountId;
+  socket.emit('mirrorStart', { accountId });
+  el('mirrorPanel').classList.remove('hidden');
+  el('mirrorImg').style.display = 'block';
+  el('mirrorNote').textContent = `Streaming "${label}"… (updates ~1/s; clicks are forwarded while the box is ticked)`;
+  el('mirrorPanel').scrollIntoView({ behavior: 'smooth' });
+}
+
+function stopMirrorView() {
+  if (mirrorAccount) socket.emit('mirrorStop', { accountId: mirrorAccount });
+  mirrorAccount = null;
+  el('mirrorPanel').classList.add('hidden');
+  el('mirrorImg').style.display = 'none';
+  el('mirrorImg').src = '';
+}
+
+el('mirrorStopBtn').addEventListener('click', stopMirrorView);
+
+socket.on('mirrorFrame', (f) => {
+  if (!f || f.accountId !== mirrorAccount) return;
+  const img = el('mirrorImg');
+  img.dataset.w = f.w;
+  img.dataset.h = f.h;
+  img.src = 'data:image/jpeg;base64,' + f.img;
+});
+
+el('mirrorImg').addEventListener('click', (ev) => {
+  if (!mirrorAccount || !el('mirrorClickChk').checked) return;
+  const img = ev.currentTarget;
+  const rect = img.getBoundingClientRect();
+  const w = parseFloat(img.dataset.w || '0');
+  const h = parseFloat(img.dataset.h || '0');
+  if (!w || !h || !rect.width || !rect.height) return;
+  const x = ((ev.clientX - rect.left) / rect.width) * w;
+  const y = ((ev.clientY - rect.top) / rect.height) * h;
+  socket.emit('mirrorClick', { accountId: mirrorAccount, x, y });
+});
 
 loadStrategies();
 

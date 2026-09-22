@@ -108,9 +108,11 @@
                 <div class="siteRow">
                     <button id="launchBtn" class="primary hidden">🚀 Launch session</button>
                     <button id="switchBtn" class="primary">⇄ Switch site / account</button>
+                    <button id="renavigateBtn" title="Navigate the session to the Aviator page">🎯 Go to Aviator page</button>
                     <button id="loginConfirmBtn" class="warn hidden">I'm logged in — continue ➜</button>
                     <button id="pauseBtn" class="hidden">⏸ Pause betting</button>
                     <button id="resumeBtn" class="danger hidden">▶ Resume betting</button>
+                    <button id="modeToggleBtn" class="hidden">🔴 Switch to LIVE betting</button>
                     <span class="small" id="controlStatus"></span>
                 </div>
                 <p class="small" id="siteStatus">Current: —</p>
@@ -124,11 +126,21 @@
             </div>
         </div>
 
+        <div class="panel hidden" id="mirrorPanel">
+            <h2>Live game view <span class="small">— mirrored from the bot's browser, in your dashboard</span></h2>
+            <div class="siteRow">
+                <label class="small"><input type="checkbox" id="mirrorClickChk" checked> forward my clicks to the site</label>
+                <button id="mirrorStopBtn">✕ Close live view</button>
+                <span class="small" id="mirrorNote"></span>
+            </div>
+            <img id="mirrorImg" alt="live view" style="width:100%; border-radius:10px; border:1px solid var(--border); cursor:crosshair; display:none;">
+        </div>
+
         <div id="sessionRow">
             <div class="panel" id="sessionsPanel">
                 <h2>Live bot sessions</h2>
                 <table id="sessionsTable" border="1">
-                    <thead><tr><th>Site</th><th>Account</th><th>Phase</th><th>Monitoring</th><th>Rounds</th><th>Rate/hr</th><th>Balance</th></tr></thead>
+                    <thead><tr><th>Site</th><th>Account</th><th>Phase</th><th>Monitoring</th><th>Rounds</th><th>Rate/hr</th><th>Balance</th><th></th></tr></thead>
                     <tbody id="sessionsTableBody"></tbody>
                 </table>
                 <p class="small" id="sessionsNote"></p>

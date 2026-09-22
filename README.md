@@ -231,9 +231,16 @@ restores the last-active site/account automatically.
 **…or do everything from the dashboard (Mission Control):** set
 `UI_START=true` in `.env` and the bot starts the dashboard first, then waits —
 you pick site, account and strategy in **Mission Control** and press
-**🚀 Launch session**. While running, Mission Control also lets you switch
-site/account live and **⏸ pause / ▶ resume betting** with one click (the
-pause is a hard decision-gate in the Brain, not just a UI flag).
+**🚀 Launch session**. While running, Mission Control also gives you:
+
+- **Observe ⇄ LIVE toggle** — the bot starts in observe-only (paper) mode; a
+  confirmed one-click switch turns real betting on or off live.
+- **⏸ Pause / ▶ Resume betting** — instant kill-switch in the decision engine.
+- **⇄ Switch site / account** and **🎯 Go to Aviator page** (re-navigates a
+  session that is stuck on the home page).
+- **👁 Live game view** — mirrors the session's actual page into the dashboard
+  as a streaming screenshot with **click-through** (bookmakers block iframes,
+  so this is the immersive option), so you can stay in one window.
 
 **Login verification:** the bot never touches your credentials — you log in
 yourself on the real site page, and a wrong PIN is rejected by the site
@@ -451,23 +458,37 @@ stop-loss, take-profit or 5-loss streak triggers.
 
 ## Security
 
-- **No credentials are ever stored.** `data/accounts.json` holds metadata only
-  (id/site/label/last-login); account updates are whitelist-filtered so stray
-  fields (passwords, PINs) are dropped even if passed in by mistake. Logins
-  live inside per-account browser profiles (`data/profiles/<id>`), which are
-  gitignored — treat that folder like a wallet: anyone with it can open your
-  logged-in sessions.
-- **The dashboard has no built-in authentication.** It binds to
-  `DASHBOARD_HOST` (default `0.0.0.0`). On an untrusted network set
-  `DASHBOARD_HOST=127.0.0.1` so only your machine can reach it.
+- **Personal by default:** the dashboard binds to `127.0.0.1` — reachable only
+  from your own machine. It has no built-in auth, so don't expose it
+  (`DASHBOARD_HOST=0.0.0.0`) unless you fully trust your network.
+- **No credentials are ever stored.** You log in once per account inside its
+  own persistent browser profile (`data/profiles/<id>`); the logged-in state
+  survives restarts like a normal browser, so you normally never log in again.
+  `data/accounts.json` holds metadata only (id/site/label/last-login) and
+  updates are whitelist-filtered. Treat `data/profiles/` like a wallet.
+- **Login is verified:** the bot checks the page for logged-in indicators,
+  auto-detects successful login, and gives you 3 attempts if the page still
+  looks logged out — it never proceeds silently on a failed login.
 - **Hardened inputs:** `/api/accounts/new` validates the site id against the
   registry, caps label length and the total profile count (50); `/api/logs`
-  only ever reads the two known CSV files; dashboard tables HTML-escape all
-  server-supplied values.
+  and `/api/export` only ever touch the known data files; dashboard tables
+  HTML-escape all server-supplied values.
 - **Nothing sensitive in logs:** the bot logs rounds, decisions and phases —
-  never credentials or balances beyond what the game page shows.
-- **Manual login only:** the bot never types your phone number or PIN; you log
-  in yourself inside the per-account browser profile.
+  never credentials.
+- **Live betting is a deliberate act:** observe-only (paper) is the default;
+  switching to LIVE from the dashboard requires an explicit confirmation, and
+  loss limits stay enforced either way.
+
+## FAQ
+
+**How does the bot know it's on the Aviator page?** A watcher scans every tab
+of the bot's browser every 3s for the game widget's selectors; when found, the
+monitor attaches and starts analysing. It also seeds long-term memory from the
+history strip the game page already displays.
+
+**How does it know the bet/cash-out buttons?** Fixed CSS selectors for the
+standard Spribe widget (identical on every bookmaker) in `util/sites.js` —
+adjust `SELECTOR_SETS.spribe` if a site skins it differently.
 
 ## 🤝 Contributing
 
