@@ -7,10 +7,32 @@ const socket = io();
 socket.on('connect', () => {
   document.getElementById('connText').textContent = 'connected';
   document.getElementById('connChip').classList.add('ok');
+  const b = document.getElementById('fatalBanner');
+  if (b) b.classList.add('hidden');
 });
 socket.on('disconnect', () => {
   document.getElementById('connText').textContent = 'disconnected';
   document.getElementById('connChip').classList.remove('ok');
+  showFatal('Connection to the bot lost — is the black bot window still running? Restart it, then reload this page (Ctrl+R).');
+});
+
+
+// Safe listener: a missing (e.g. stale-cached) element must NEVER kill the
+// whole dashboard script — that silently empties every panel.
+function onEvent(id, ev, fn) {
+  const node = el(id);
+  if (node) node.addEventListener(ev, fn);
+  else console.warn(`UI element #${id} not found — page may be stale; press Ctrl+F5`);
+}
+
+function showFatal(msg) {
+  const b = document.getElementById('fatalBanner');
+  if (!b) return;
+  b.textContent = msg;
+  b.classList.remove('hidden');
+}
+window.addEventListener('error', (e) => {
+  showFatal(`Dashboard error: ${e.message} — press Ctrl+F5 to force-reload the latest UI.`);
 });
 
 function setText(id, text, cls) {
@@ -361,16 +383,16 @@ function refreshAccountSelect() {
   }
 }
 
-el('siteSelect').addEventListener('change', refreshAccountSelect);
+onEvent('siteSelect', 'change', refreshAccountSelect);
 
-el('switchBtn').addEventListener('click', () => {
+onEvent('switchBtn', 'click', () => {
   const siteId = el('siteSelect').value;
   const accountId = el('accountSelect').value || null;
   el('siteStatus').textContent = 'Switching…';
   socket.emit('switchSite', { siteId, accountId });
 });
 
-el('newAccountBtn').addEventListener('click', async () => {
+onEvent('newAccountBtn', 'click', async () => {
   const siteId = el('siteSelect').value;
   const label = prompt('Label for the new account on ' + siteId + ':', siteId + ' account 2');
   if (!label) return;
@@ -386,7 +408,7 @@ el('newAccountBtn').addEventListener('click', async () => {
   } catch (e) { alert('Could not create account: ' + e.message); }
 });
 
-el('loginConfirmBtn').addEventListener('click', () => {
+onEvent('loginConfirmBtn', 'click', () => {
   socket.emit('confirmLogin');
   el('loginConfirmBtn').classList.add('hidden');
   el('siteStatus').textContent = 'Continuing to the game…';
@@ -455,9 +477,9 @@ async function loadLogs() {
   } catch (e) { /* ignore */ }
 }
 
-el('logRoundsBtn').addEventListener('click', () => { logType = 'rounds'; loadLogs(); });
-el('logTradesBtn').addEventListener('click', () => { logType = 'trades'; loadLogs(); });
-el('logRefreshBtn').addEventListener('click', loadLogs);
+onEvent('logRoundsBtn', 'click', () => { logType = 'rounds'; loadLogs(); });
+onEvent('logTradesBtn', 'click', () => { logType = 'trades'; loadLogs(); });
+onEvent('logRefreshBtn', 'click', loadLogs);
 
 // ---------------------------------------------------------------------------
 // Live bot sessions (connected to real session state via socket + REST)
@@ -687,7 +709,7 @@ function applyControlState(cs) {
 
 socket.on('controlState', applyControlState);
 
-el('launchBtn').addEventListener('click', () => {
+onEvent('launchBtn', 'click', () => {
   socket.emit('startSession', {
     siteId: el('siteSelect').value,
     accountId: el('accountSelect').value || null,
@@ -698,14 +720,14 @@ el('launchBtn').addEventListener('click', () => {
   setTimeout(() => { el('launchBtn').disabled = false; }, 3000);
 });
 
-el('pauseBtn').addEventListener('click', () => socket.emit('pauseBetting'));
-el('resumeBtn').addEventListener('click', () => socket.emit('resumeBetting'));
-el('renavigateBtn').addEventListener('click', () => {
+onEvent('pauseBtn', 'click', () => socket.emit('pauseBetting'));
+onEvent('resumeBtn', 'click', () => socket.emit('resumeBetting'));
+onEvent('renavigateBtn', 'click', () => {
   socket.emit('renavigate', { accountId: el('accountSelect').value || null });
   el('controlStatus').textContent = 'Navigating to the Aviator page…';
 });
 
-el('debugGameBtn').addEventListener('click', async () => {
+onEvent('debugGameBtn', 'click', async () => {
   const btn = el('debugGameBtn');
   btn.disabled = true;
   btn.textContent = '🩺 Diagnosing…';
@@ -725,7 +747,7 @@ el('debugGameBtn').addEventListener('click', async () => {
   }
 });
 
-el('strategyApplyBtn').addEventListener('click', async () => {
+onEvent('strategyApplyBtn', 'click', async () => {
   const name = el('strategySelect').value;
   const status = el('controlStatus');
   try {
@@ -753,8 +775,8 @@ function requestModeToggle() {
     socket.emit('setMode', { mode: 'paper' });
   }
 }
-el('modeToggleBtn').addEventListener('click', requestModeToggle);
-el('modeToggleBtnStatus').addEventListener('click', requestModeToggle);
+onEvent('modeToggleBtn', 'click', requestModeToggle);
+onEvent('modeToggleBtnStatus', 'click', requestModeToggle);
 
 function applyModeToggle(cs) {
   currentMode = cs.mode || 'paper';
@@ -795,7 +817,7 @@ function stopMirrorView() {
   el('mirrorImg').src = '';
 }
 
-el('mirrorStopBtn').addEventListener('click', stopMirrorView);
+onEvent('mirrorStopBtn', 'click', stopMirrorView);
 
 socket.on('mirrorFrame', (f) => {
   if (!f || f.accountId !== mirrorAccount) return;
@@ -805,7 +827,7 @@ socket.on('mirrorFrame', (f) => {
   img.src = 'data:image/jpeg;base64,' + f.img;
 });
 
-el('mirrorImg').addEventListener('click', (ev) => {
+onEvent('mirrorImg', 'click', (ev) => {
   if (!mirrorAccount || !el('mirrorClickChk').checked) return;
   const img = ev.currentTarget;
   const rect = img.getBoundingClientRect();
@@ -854,7 +876,7 @@ async function loadSitesPanel() {
   } catch (e) { /* server not ready */ }
 }
 
-el('addSiteBtn').addEventListener('click', async () => {
+onEvent('addSiteBtn', 'click', async () => {
   const status = el('addSiteStatus');
   const payload = {
     name: el('nsName').value.trim(),

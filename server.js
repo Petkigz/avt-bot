@@ -33,7 +33,13 @@ async function startDashboard(port, logger, deps = {}) {
     const dataDir = deps.dataDir || config.DATA_DIR;
         const app = express();
         app.use(express.json());
-        app.use(express.static(path.join(__dirname, 'public')));
+        // Local-only dashboard: disable caching so the browser always loads
+        // the current UI after a git pull (stale cached pages = ghost bugs).
+        app.use(express.static(path.join(__dirname, 'public'), {
+            etag: false,
+            maxAge: 0,
+            setHeaders: (res) => res.setHeader('Cache-Control', 'no-store')
+        }));
 
         app.get('/health', (req, res) => res.json({ ok: true, uptime: process.uptime() }));
 
