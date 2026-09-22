@@ -1,0 +1,206 @@
+# Aviator Betting Bot
+
+> ⚠️ **Educational / research use only.** See the [disclaimer](#-legal-disclaimer).
+
+An automation tool for the Aviator crash game built with **Node.js + Puppeteer**. It
+watches the game, applies a configurable betting strategy with real risk management,
+and streams live stats to a browser dashboard.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D%2018-brightgreen.svg)](https://nodejs.org/)
+[![contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+## Table of Contents
+
+- [What's new in v2](#whats-new-in-v2)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Strategies](#strategies)
+- [Live dashboard](#live-dashboard)
+- [Database](#database)
+- [How it works](#how-it-works)
+- [Testing](#testing)
+- [FAQ](#faq)
+- [Contributing](#-contributing)
+- [Disclaimer](#-legal-disclaimer)
+- [License](#license)
+
+## What's new in v2
+
+This release is a full overhaul focused on **correctness and money-safety**:
+
+- **Martingale now works** — win/loss results are fed back into the strategy, so bet
+  sizing actually progresses after losses and resets after wins.
+- **Risk limits are enforced** — stop-loss, take-profit and a 5-consecutive-loss
+  circuit breaker are checked every cycle and halt betting when hit.
+- **Your strategy choice is respected** — the selected (or custom) strategy is the one
+  used for betting and cashouts. Custom strategies now include the average-multiplier
+  threshold they need to actually place bets.
+- **Correct crash attribution** — bets are settled against the crash value of the round
+  they were actually in, not the previous round's value.
+- **No more double bets** — the monitoring cycle is re-entrancy-safe.
+- **Confirmed actions** — bet placement and cashout are verified against the page before
+  being booked; unconfirmed outcomes are booked conservatively (never as phantom wins).
+- **Angular-safe bet input** — the stake is written through the native value setter so
+  the game UI actually registers it.
+- **Self-healing** — repeated failures trigger a page reload and re-baseline.
+- **Live dashboard** — a real Express + Socket.IO server (the previous client had no
+  backend) at `http://localhost:3000`.
+- **Optional persistence** — MySQL via `mysql2` with auto-schema and reconnect.
+- **Configurable via `.env`** — no more hard-coded secrets.
+- **Tested** — strategy, stats and balance-parsing logic covered by `node --test`.
+
+## Features
+
+### Core
+- Automated betting with Conservative / Moderate / Aggressive / Custom strategies
+- Real-time game monitoring across the page and all iframes
+- Martingale progression with configurable multiplier and hard `maxBet` cap
+- Stop-loss, take-profit and consecutive-loss circuit breaker
+- Balance check before every bet
+- Robust crash/round-end detection with round history
+
+### Advanced
+- Live web dashboard with crash chart and prediction accuracy
+- Optional MySQL persistence of rounds and trades
+- Structured logging (console + rotating files in `logs/`)
+- Graceful shutdown on `SIGINT` / `SIGTERM` and after a configurable run duration
+
+## Requirements
+
+- **Node.js >= 18**
+- npm
+- A Chromium-compatible browser (bundled via Puppeteer)
+- MySQL (optional, only for persistence)
+
+## Installation
+
+```bash
+git clone https://github.com/Petkigz/avt-bot.git
+cd avt-bot
+npm install
+```
+
+Copy the example environment file and adjust as needed:
+
+```bash
+cp .env.example .env
+```
+
+Run the bot (defaults to the Spribe demo page, no login required):
+
+```bash
+npm start
+```
+
+You'll be prompted to pick a strategy. The live dashboard then starts at
+`http://localhost:3000`.
+
+## Configuration
+
+All settings live in `.env` (see [.env.example](.env.example)). Highlights:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `BASE_URL` | Spribe demo | Landing page to start from |
+| `HEADLESS` | `false` | Run browser without a window |
+| `POLLING_INTERVAL` | `4000` | How often the game is polled (ms) |
+| `HISTORY_SIZE` | `3` | Rounds used for the moving average |
+| `DASHBOARD_ENABLED` | `true` | Serve the live dashboard |
+| `DASHBOARD_PORT` | `3000` | Dashboard port |
+| `DATABASE_ENABLED` | `false` | Enable MySQL persistence |
+| `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
+
+> **Note:** Live bookmaker integration (e.g. Betika) is **not** included. Automating a
+> real bookmaker may violate its terms of service — use the demo target by default.
+
+## Strategies
+
+Choose interactively at startup:
+
+1. **Conservative** — low risk, small target multiplier
+2. **Moderate** — balanced
+3. **Aggressive** — higher stakes, higher target
+4. **Custom** — set every parameter yourself
+
+Strategy fields:
+
+- `initialBet`, `minBet`, `maxBet` — stake bounds
+- `targetMultiplier` — cash out when the live multiplier reaches this
+- `martingaleMultiplier` — multiply the stake by this after each loss (capped at `maxBet`)
+- `stopLoss` / `takeProfit` — halt betting when net result crosses these
+- `averageMultiplierThreshold` — only bet when recent average crash is at/below this
+
+## Live dashboard
+
+When `DASHBOARD_ENABLED=true`, open `http://localhost:3000` to see the crash history
+chart, the current prediction and a running accuracy table. The server pushes each
+completed round over Socket.IO.
+
+## Database
+
+Set `DATABASE_ENABLED=true` plus the `DB_*` variables. The bot auto-creates the
+`rounds` and `trades` tables on first connect and reconnects automatically if the
+connection drops.
+
+## How it works
+
+1. **Launch & navigate** — Puppeteer opens the target page and clicks through to the game.
+2. **Locate the game** — every page/frame is scanned for the payouts strip; the first
+   page containing it gets a dedicated `GameMonitor`.
+3. **Detect rounds** — the payouts strip only changes when a round crashes; the newest
+   bubble is that round's crash value.
+4. **Decide** — if no bet is live, betting is allowed, and the recent average crash is
+   at/below the threshold, a bet of the strategy-computed size is placed.
+5. **Cash out** — while a round is in flight, if the live multiplier reaches the target,
+   the bot cashes out and books the (confirmed) win.
+6. **Manage risk** — every cycle checks stop-loss/take-profit/streak limits and halts
+   betting if any is hit.
+7. **Report** — stats stream to the dashboard and, optionally, the database.
+
+## Testing
+
+```bash
+npm test
+```
+
+Runs the unit tests for the strategy engine, stats tracker and balance parsing.
+
+## FAQ
+
+**Q: Does this guarantee profit?**
+A: No. Crash games are negative-expectation; this is an automation/research tool. Use
+strict risk limits.
+
+**Q: Where are the logs?**
+A: `logs/combined.log` (all) and `logs/error.log` (errors only).
+
+**Q: It stopped betting — why?**
+A: Check the log for `RISK LIMIT REACHED`. Betting halts (monitoring continues) once a
+stop-loss, take-profit or 5-loss streak triggers.
+
+## 🤝 Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Please read the money-safety rules before
+touching the betting/cashout code.
+
+## ⚠️ Legal Disclaimer
+
+This software is provided for **educational and research purposes only**.
+
+- **Financial Risk:** Gambling involves substantial risk. Never bet money you cannot
+  afford to lose.
+- **Terms of Service:** Automating a betting platform may breach its terms. Use at your
+  own risk.
+- **No Liability:** The authors are not responsible for financial loss, legal issues or
+  damages arising from use of this software.
+- **Age Restriction:** You must be of legal gambling age in your jurisdiction.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+---
+Originally by [Raccoon254](https://github.com/Raccoon254) · v2 overhaul by the avt-bot contributors

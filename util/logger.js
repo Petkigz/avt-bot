@@ -1,8 +1,10 @@
 const winston = require('winston');
 const { format } = winston;
 
+// Level is configurable via LOG_LEVEL env var (default "info").
+// winston >= 3.x auto-creates the logs/ directory.
 const logger = winston.createLogger({
-    level: 'info',
+    level: process.env.LOG_LEVEL || 'info',
     format: format.combine(
         format.timestamp({
             format: 'YYYY-MM-DD HH:mm:ss'

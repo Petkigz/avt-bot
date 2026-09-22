@@ -1,21 +1,28 @@
+require('dotenv').config();
+
 const puppeteer = require('puppeteer');
+const readline = require('readline');
 const config = require('./util/config');
 const logger = require('./util/logger');
+const sleep = require('./util/sleep');
+const FrameHelper = require('./util/frameHelper');
 const GameMonitor = require('./game/gameMonitor');
 const BettingStrategy = require('./game/strategies');
-const database = require('./database/database');
-const readline = require('readline');
+const Database = require('./database/database');
+const { startDashboard } = require('./server');
 
-// Create readline interface for user input
-const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-});
-
-// Function to get user input
+// ---------------------------------------------------------------------------
+// Interactive strategy selection
+// ---------------------------------------------------------------------------
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const askQuestion = (query) => new Promise((resolve) => rl.question(query, resolve));
 
 async function selectStrategy() {
+    if (!process.stdin.isTTY) {
+        logger.warn('No interactive terminal detected — defaulting to MODERATE strategy');
+        return { ...config.BETTING_STRATEGIES.MODERATE };
+    }
+
     console.log('\nAvailable Strategies:');
     console.log('1. Conservative (Lower risk, smaller profits)');
     console.log('2. Moderate (Balanced risk and reward)');
@@ -23,47 +30,53 @@ async function selectStrategy() {
     console.log('4. Custom (Define your own parameters)\n');
 
     const choice = await askQuestion('Select strategy (1-4): ');
-
     switch (choice) {
-        case '1':
-            return config.BETTING_STRATEGIES.CONSERVATIVE;
-        case '2':
-            return config.BETTING_STRATEGIES.MODERATE;
-        case '3':
-            return config.BETTING_STRATEGIES.AGGRESSIVE;
-        case '4':
-            return await customStrategySetup();
+        case '1': return { ...config.BETTING_STRATEGIES.CONSERVATIVE };
+        case '2': return { ...config.BETTING_STRATEGIES.MODERATE };
+        case '3': return { ...config.BETTING_STRATEGIES.AGGRESSIVE };
+        case '4': return customStrategySetup();
         default:
             logger.warn('Invalid choice, using Moderate strategy');
-            return config.BETTING_STRATEGIES.MODERATE;
+            return { ...config.BETTING_STRATEGIES.MODERATE };
     }
 }
 
-async function customStrategySetup() {
+async function customStrategySetup(attempt = 1) {
+    if (attempt > 3) {
+        logger.error('Too many invalid attempts — falling back to MODERATE strategy');
+        return { ...config.BETTING_STRATEGIES.MODERATE };
+    }
+    console.log(`\nCustom strategy setup (attempt ${attempt}/3)`);
+    const askNum = async (label) => parseFloat(await askQuestion(label));
+
     const strategy = {
-        initialBet: parseFloat(await askQuestion('Initial bet amount: ')),
-        maxBet: parseFloat(await askQuestion('Maximum bet amount: ')),
-        minBet: parseFloat(await askQuestion('Minimum bet amount: ')),
-        targetMultiplier: parseFloat(await askQuestion('Target multiplier (e.g., 1.5): ')),
-        stopLoss: parseFloat(await askQuestion('Stop loss amount: ')),
-        takeProfit: parseFloat(await askQuestion('Take profit amount: ')),
-        martingaleMultiplier: parseFloat(await askQuestion('Martingale multiplier (e.g., 2): '))
+        name: 'CUSTOM',
+        initialBet: await askNum('Initial bet amount: '),
+        maxBet: await askNum('Maximum bet amount: '),
+        minBet: await askNum('Minimum bet amount: '),
+        targetMultiplier: await askNum('Target multiplier (e.g., 1.5): '),
+        stopLoss: await askNum('Stop loss amount: '),
+        takeProfit: await askNum('Take profit amount: '),
+        martingaleMultiplier: await askNum('Martingale multiplier (e.g., 2): '),
+        averageMultiplierThreshold: await askNum('Average multiplier threshold to trigger bets (e.g., 2): ')
     };
 
-    // Validate inputs
-    if (Object.values(strategy).some(isNaN)) {
-        logger.error('Invalid input detected, using Moderate strategy');
-        return config.BETTING_STRATEGIES.MODERATE;
+    const { ok, errors } = BettingStrategy.validate(strategy);
+    if (!ok) {
+        errors.forEach((e) => logger.warn(e));
+        return customStrategySetup(attempt + 1);
     }
-
     return strategy;
 }
 
+// ---------------------------------------------------------------------------
+// Browser automation
+// ---------------------------------------------------------------------------
 async function initializeBrowser() {
     const browser = await puppeteer.launch({
-        headless: false,
-        defaultViewport: null, // Automatically adjust viewport
-        args: ['--start-maximized'] // Start with maximized window
+        headless: config.BROWSER.HEADLESS,
+        defaultViewport: null,
+        args: ['--start-maximized']
     });
     const page = await browser.newPage();
     page.setDefaultNavigationTimeout(config.NAVIGATION.TIMEOUT);
@@ -71,134 +84,174 @@ async function initializeBrowser() {
 }
 
 async function navigateInitialPages(page) {
-    await page.goto(config.NAVIGATION.BASE_URL);
+    try {
+        await page.goto(config.NAVIGATION.BASE_URL, {
+            waitUntil: 'networkidle2',
+            timeout: config.NAVIGATION.TIMEOUT
+        });
+    } catch (error) {
+        logger.warn(`networkidle2 wait timed out, continuing anyway: ${error.message}`);
+    }
 
-    for (const [name, selector] of Object.entries(config.SELECTORS.INITIAL)) {
+    for (const step of config.NAVIGATION_STEPS) {
         try {
-            await page.waitForSelector(selector, { timeout: config.NAVIGATION.TIMEOUT });
-            await page.click(selector);
-            logger.info(`Clicked ${name}`);
-            // Add small delay between clicks
-            await page.waitForTimeout(1000);
+            await page.waitForSelector(step.selector, {
+                timeout: step.required ? config.NAVIGATION.TIMEOUT : 5000
+            });
+            await page.click(step.selector);
+            logger.info(`Clicked ${step.name}`);
+            await sleep(1000);
         } catch (error) {
-            logger.error(`Failed to click ${name}: ${error.message}`);
-            throw error;
-        }
-    }
-}
-
-async function handleNewTab(target, browser, strategyConfig) {
-    if (target.type() === 'page') {
-        const newPage = await target.page();
-        if (newPage) {
-            try {
-                await newPage.waitForNavigation({ timeout: config.NAVIGATION.TIMEOUT });
-                logger.info(`Navigated to game page: ${await newPage.url()}`);
-
-                // Pass both page and config to GameMonitor constructor
-                const gameMonitor = new GameMonitor(newPage, config);
-
-                // If you have a strategyConfig, update the strategy
-                if (strategyConfig) {
-                    gameMonitor.strategy = new BettingStrategy(strategyConfig);
-                }
-
-                // Setup page error handling
-                newPage.on('error', error => {
-                    logger.error(`Page error: ${error.message}`);
-                });
-
-                newPage.on('pageerror', error => {
-                    logger.error(`Page error: ${error.message}`);
-                });
-
-                gameMonitor.startMonitoring();
-
-                // Log strategy info
-                logger.info('Strategy Configuration:');
-                logger.info(`Initial Bet: ${strategyConfig.initialBet}`);
-                logger.info(`Target Multiplier: ${strategyConfig.targetMultiplier}`);
-                logger.info(`Stop Loss: ${strategyConfig.stopLoss}`);
-                logger.info(`Take Profit: ${strategyConfig.takeProfit}`);
-            } catch (error) {
-                logger.error(`Error in new tab: ${error.message}`);
-                await newPage.close();
+            if (step.required) {
+                logger.error(`Failed to click ${step.name}: ${error.message}`);
+                throw error;
             }
+            logger.warn(`Optional step "${step.name}" skipped (${error.message})`);
         }
     }
 }
 
-async function setupGracefulShutdown(browser) {
-    const signals = ['SIGINT', 'SIGTERM', 'SIGQUIT'];
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+async function main() {
+    logger.info('Starting Aviator Bot...');
 
-    signals.forEach(signal => {
-        process.on(signal, async () => {
-            logger.info(`Received ${signal}, shutting down gracefully...`);
+    const strategyConfig = await selectStrategy();
+    logger.info(
+        `Strategy: ${strategyConfig.name} | initial bet ${strategyConfig.initialBet} | ` +
+        `target ${strategyConfig.targetMultiplier}x | stop-loss ${strategyConfig.stopLoss} | ` +
+        `take-profit ${strategyConfig.takeProfit}`
+    );
 
-            try {
-                await browser.close();
-                // database.disconnect();
-                logger.info('Cleanup completed');
-                rl.close();
-                process.exit(0);
-            } catch (error) {
-                logger.error(`Error during shutdown: ${error.message}`);
-                process.exit(1);
+    // Optional persistence (DATABASE_ENABLED=true in .env)
+    const database = new Database(config);
+    database.connect();
+
+    // Live dashboard (serves /public over socket.io)
+    let dashboard = null;
+    if (config.DASHBOARD.ENABLED) {
+        try {
+            dashboard = await startDashboard(config.DASHBOARD.PORT, logger);
+        } catch (error) {
+            logger.error(`Dashboard failed to start: ${error.message}`);
+        }
+    }
+
+    const { browser, page } = await initializeBrowser();
+    logger.info('Browser initialized');
+
+    // One monitor per game page, deduplicated.
+    const monitors = new Map(); // page -> GameMonitor
+
+    const attachMonitor = async (candidate) => {
+        if (!candidate || monitors.has(candidate)) return;
+        try {
+            if (!(await FrameHelper.hasSelector(candidate, config.SELECTORS.GAME.BUBBLE_MULTIPLIER))) return;
+        } catch (error) {
+            return;
+        }
+
+        // Fresh strategy instance per monitor so the SELECTED config is used.
+        const monitor = new GameMonitor(candidate, config, { ...strategyConfig });
+        monitors.set(candidate, monitor);
+
+        monitor.on('roundEnded', (d) => {
+            database.saveRound(d.crash);
+            if (dashboard) {
+                dashboard.io.emit('newData', {
+                    value: d.crash,
+                    created_at: Date.now(),
+                    predictedValue: d.nextPrediction
+                });
             }
         });
+        monitor.on('trade', (t) => {
+            database.saveTrade(t);
+            if (dashboard) dashboard.io.emit('trade', t);
+        });
+        monitor.on('tradingStopped', () => {
+            logger.warn('Risk limits reached — betting halted, monitoring continues');
+            if (dashboard) dashboard.io.emit('tradingStopped', true);
+        });
+
+        monitor.startMonitoring();
+        logger.info(`Game monitor started on ${candidate.url()}`);
+    };
+
+    // New tabs/pages: check them, but WITHOUT the old waitForNavigation race —
+    // attachMonitor simply no-ops until the game markup actually exists.
+    browser.on('targetcreated', async (target) => {
+        if (target.type() !== 'page') return;
+        try {
+            const newPage = await target.page();
+            if (newPage) {
+                newPage.on('pageerror', (error) => logger.error(`Page error: ${error.message}`));
+                await attachMonitor(newPage);
+            }
+        } catch (error) {
+            logger.debug(`targetcreated handling: ${error.message}`);
+        }
     });
-}
 
-async function main() {
-    try {
-        logger.info('Starting Aviator Bot...');
+    // Watcher loop: also covers SAME-TAB navigation (no targetcreated event)
+    // and retries pages that were not ready yet.
+    const watcher = setInterval(async () => {
+        try {
+            // Prune monitors whose page has been closed.
+            for (const [p, m] of [...monitors.entries()]) {
+                if (p.isClosed()) {
+                    m.stopMonitoring();
+                    monitors.delete(p);
+                    logger.info('Game page closed — monitor removed');
+                }
+            }
+            const pages = await browser.pages();
+            for (const p of pages) {
+                if (!monitors.has(p)) await attachMonitor(p);
+            }
+        } catch (error) {
+            logger.debug(`Watcher loop: ${error.message}`);
+        }
+    }, 3000);
 
-        // Get strategy configuration from user
-        const strategyConfig = await selectStrategy();
-        logger.info('Strategy selected, initializing bot...');
+    await navigateInitialPages(page);
+    await attachMonitor(page); // in case the game loaded in the same tab
 
-        // Initialize database if needed
-        // database.connect();
-
-        const { browser, page } = await initializeBrowser();
-        logger.info('Browser initialized');
-
-        // Setup graceful shutdown
-        await setupGracefulShutdown(browser);
-
-        await navigateInitialPages(page);
-
-        // Setup new tab handling with selected strategy
-        browser.on('targetcreated', (target) => handleNewTab(target, browser, strategyConfig));
-
-        // Set up cleanup
-        setTimeout(async () => {
-            await browser.close();
-            // database.disconnect();
-            logger.info('Bot shutdown completed');
-            rl.close();
-            process.exit(0);
-        }, config.NAVIGATION.RUN_DURATION);
-
-    } catch (error) {
-        logger.error(`Bot initialization error: ${error.message}`);
+    // ---- Graceful shutdown ----
+    let shuttingDown = false;
+    const shutdown = async (reason) => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        logger.info(`Shutting down (${reason})...`);
+        clearInterval(watcher);
+        for (const monitor of monitors.values()) monitor.stopMonitoring();
+        try { await browser.close(); } catch (error) { /* already closed */ }
+        database.disconnect();
+        if (dashboard) { try { dashboard.server.close(); } catch (error) { /* ignore */ } }
         rl.close();
-        process.exit(1);
+        logger.info('Cleanup completed');
+        process.exit(0);
+    };
+
+    for (const signal of ['SIGINT', 'SIGTERM']) {
+        process.on(signal, () => shutdown(signal));
     }
+    setTimeout(() => shutdown('run duration elapsed'), config.NAVIGATION.RUN_DURATION);
+
+    logger.info('Bot initialization completed — watching for the game page');
 }
 
-process.on('unhandledRejection', (reason, promise) => {
-    logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+process.on('unhandledRejection', (reason) => {
+    logger.error(`Unhandled Rejection: ${reason instanceof Error ? reason.stack : reason}`);
 });
 
 process.on('uncaughtException', (error) => {
-    logger.error('Uncaught Exception:', error);
+    logger.error(`Uncaught Exception: ${error.stack || error.message}`);
     process.exit(1);
 });
 
-main().then(() => {
-    logger.info('Bot initialization completed');
-}).catch(error => {
-    logger.error(`Failed to start bot: ${error.message}`);
+main().catch((error) => {
+    logger.error(`Failed to start bot: ${error.stack || error.message}`);
     process.exit(1);
 });

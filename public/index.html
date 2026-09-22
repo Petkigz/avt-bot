@@ -3,18 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live Line Graph</title>
+    <title>Aviator Bot — Live Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
     <script src="/socket.io/socket.io.js"></script>
     <style>
         body {
             background-color: #222;
+            color: #ddd;
             font-family: Arial, sans-serif;
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
         }
 
@@ -29,29 +30,37 @@
             width: 100% !important;
             height: auto !important;
         }
-    </style>`
+
+        table {
+            width: 100%;
+            margin-top: 15px;
+            border-collapse: collapse;
+            color: #ddd;
+        }
+
+        th, td {
+            padding: 6px 10px;
+            text-align: center;
+        }
+    </style>
 </head>
 <body>
-    
     <div id="chartContainer">
-
-
         <canvas id="lineChart"></canvas>
-        <p id="accuracyRate">Accuracy rate: N/A</p>
         <p id="predictedValue">Predicted value: N/A</p>
         <p id="accuracyRate">Accuracy rate: N/A</p>
-<table id="predictionTable" border="1">
-  <thead>
-    <tr>
-      <th>#</th>
-      <th>Predicted Value</th>
-      <th>Actual Value</th>
-      <th>Correct</th>
-    </tr>
-  </thead>
-  <tbody id="predictionTableBody"></tbody>
-</table>
-
+        <p id="botStatus">Status: running</p>
+        <table id="predictionTable" border="1">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Predicted Value</th>
+                    <th>Actual Value</th>
+                    <th>Correct</th>
+                </tr>
+            </thead>
+            <tbody id="predictionTableBody"></tbody>
+        </table>
     </div>
     <script src="script.js"></script>
 </body>
