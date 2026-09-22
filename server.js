@@ -15,14 +15,19 @@ const { listSites } = require('./util/sites');
  *   GET /api/history/bySite  — stored rounds aggregated per site/account
  *   GET /api/sites           — available site profiles (+ active site)
  *   GET /api/accounts        — stored accounts (metadata only, never credentials)
+ *   GET /api/strategies      — strategy presets for the UI launcher
  *   GET /api/sessions        — live bot browser sessions (site/account/phase)
  *   GET /api/logs?type=rounds|trades&limit=N — stored log history (JSON)
+ *   GET /api/export?type=rounds|trades|history — download stored files
  *
  * Socket.IO:
  *   server -> client: newData, status, brain, trade, tradingStopped,
  *                     siteStatus {phase, site, account}, loginRequired,
- *                     sessions [live session snapshots]
- *   client -> server: switchSite {siteId, accountId}, confirmLogin
+ *                     sessions [live session snapshots],
+ *                     controlState {awaitingLaunch, paused, strategy}
+ *   client -> server: switchSite {siteId, accountId}, confirmLogin,
+ *                     startSession {siteId, accountId, strategy},
+ *                     pauseBetting, resumeBetting
  */
 function startDashboard(port, logger, deps = {}) {
     const dataDir = deps.dataDir || config.DATA_DIR;
@@ -89,6 +94,18 @@ function startDashboard(port, logger, deps = {}) {
             res.json(deps.getSessions ? deps.getSessions() : []);
         });
 
+        app.get('/api/strategies', (req, res) => {
+            res.json(Object.values(config.BETTING_STRATEGIES).map((s) => ({
+                name: s.name,
+                initialBet: s.initialBet,
+                minBet: s.minBet,
+                maxBet: s.maxBet,
+                targetMultiplier: s.targetMultiplier,
+                stopLoss: s.stopLoss,
+                takeProfit: s.takeProfit
+            })));
+        });
+
         app.post('/api/accounts/new', (req, res) => {
             if (!deps.accounts) return res.status(503).json({ error: 'accounts unavailable' });
             const { site, label, notes } = req.body || {};
@@ -147,6 +164,7 @@ function startDashboard(port, logger, deps = {}) {
         // Every new dashboard connection immediately gets the live state.
         io.on('connection', (socket) => {
             if (deps.getSessions) socket.emit('sessions', deps.getSessions());
+            if (deps.getControlState) socket.emit('controlState', deps.getControlState());
             if (deps.getActiveSite) {
                 const a = deps.getActiveSite() || {};
                 socket.emit('siteStatus', {

@@ -8,64 +8,120 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
     <script src="/socket.io/socket.io.js"></script>
     <style>
-        body { background-color: #1a1d21; color: #ddd; font-family: Arial, sans-serif; margin: 0; padding: 20px; }
-        h1 { color: rgba(75,192,192,1); font-size: 1.4em; margin: 0 0 4px; }
-        #modeBadge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 0.8em; font-weight: bold; margin-bottom: 14px; }
-        .paper { background: #3a5f8a; color: #cfe6ff; }
-        .live { background: #8a3a3a; color: #ffd7d7; }
-        #container { max-width: 1150px; margin: 0 auto; }
-        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
-        .card { background-color: #2a2f35; border-radius: 10px; padding: 10px 12px; }
-        .card .label { font-size: 0.7em; color: #8a97a3; text-transform: uppercase; letter-spacing: 0.5px; }
-        .card .value { font-size: 1.2em; font-weight: bold; margin-top: 3px; overflow-wrap: anywhere; }
-        .pos { color: #4caf7d; } .neg { color: #ff8080; } .warn { color: #ffc46b; }
-        .barWrap { background: #1a1d21; border-radius: 5px; height: 8px; margin-top: 6px; overflow: hidden; }
-        .bar { height: 100%; background: #ff8080; width: 0%; transition: width .4s; }
-        #chartContainer { background-color: #2a2f35; border-radius: 15px; padding: 20px; }
+        :root {
+            --bg: #0f1216; --panel: #171c22; --panel2: #1d242c; --border: #2a3340;
+            --text: #e6edf3; --muted: #8a97a3; --accent: #4bc0c0; --accent2: #8e7cff;
+            --green: #4caf7d; --red: #ff8080; --amber: #ffc46b;
+        }
+        * { box-sizing: border-box; }
+        body {
+            background: radial-gradient(1200px 600px at 80% -10%, #16222b 0%, var(--bg) 55%);
+            color: var(--text);
+            font-family: 'Segoe UI', system-ui, -apple-system, Roboto, Arial, sans-serif;
+            margin: 0; padding: 0 0 40px;
+        }
+        #topbar {
+            display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+            padding: 14px 22px; margin-bottom: 18px;
+            background: rgba(23,28,34,0.85); border-bottom: 1px solid var(--border);
+            position: sticky; top: 0; z-index: 10; backdrop-filter: blur(6px);
+        }
+        #topbar .logo { font-size: 1.25em; font-weight: 700; letter-spacing: .5px; }
+        #topbar .logo span { color: var(--accent); }
+        .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 12px; border-radius: 999px;
+            font-size: 0.75em; font-weight: 600; border: 1px solid var(--border); background: var(--panel2); }
+        .chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+        .chip.ok .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+        .chip.paused .dot { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+        #container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
+        h1 { color: var(--accent); font-size: 1.4em; margin: 0 0 4px; }
+        #modeBadge { display: inline-block; padding: 3px 12px; border-radius: 999px; font-size: 0.78em; font-weight: 700; margin-bottom: 14px; letter-spacing: .5px; }
+        .paper { background: #274b73; color: #cfe6ff; }
+        .live { background: #7e2f2f; color: #ffd7d7; }
+        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+        .card { background: linear-gradient(180deg, var(--panel2), var(--panel)); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+        .card .label { font-size: 0.68em; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; }
+        .card .value { font-size: 1.25em; font-weight: 700; margin-top: 4px; overflow-wrap: anywhere; }
+        .pos { color: var(--green); } .neg { color: var(--red); } .warn { color: var(--amber); }
+        .barWrap { background: #0d1013; border-radius: 5px; height: 8px; margin-top: 8px; overflow: hidden; }
+        .bar { height: 100%; background: linear-gradient(90deg, var(--amber), var(--red)); width: 0%; transition: width .4s; }
+        #chartContainer { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
         canvas { width: 100% !important; }
-        table { width: 100%; margin-top: 15px; border-collapse: collapse; color: #ddd; font-size: 0.9em; }
-        th, td { padding: 5px 8px; text-align: center; }
-        th { color: #8a97a3; }
-        .small { font-size: 0.75em; color: #8a97a3; }
-        #learningPanel { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-        .panel { background-color: #2a2f35; border-radius: 15px; padding: 14px 16px; margin-bottom: 14px; }
-        .panel h2 { font-size: 0.95em; color: rgba(75,192,192,1); margin: 0 0 8px; }
-        .panel h3 { font-size: 0.8em; color: #8a97a3; margin: 10px 0 4px; }
+        table { width: 100%; margin-top: 12px; border-collapse: collapse; color: var(--text); font-size: 0.88em; }
+        th, td { padding: 6px 8px; text-align: center; border-color: var(--border) !important; }
+        th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 0.72em; letter-spacing: .6px; }
+        tbody tr:hover { background: rgba(75,192,192,0.05); }
+        .small { font-size: 0.75em; color: var(--muted); }
+        #learningPanel { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+        .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; margin-bottom: 14px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.25); }
+        .panel h2 { font-size: 0.95em; color: var(--accent); margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+        .panel h2::before { content: ''; width: 4px; height: 16px; background: var(--accent); border-radius: 2px; display: inline-block; }
+        .panel h3 { font-size: 0.8em; color: var(--muted); margin: 10px 0 4px; }
         .siteRow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-        select, button { background: #1a1d21; color: #ddd; border: 1px solid #444; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
-        button.primary { background: rgba(75,192,192,0.25); border-color: rgba(75,192,192,0.6); }
-        button.warn { background: #7a5c2e; border-color: #ffc46b; }
-        .hidden { display: none; }
-        .dlLink { color: rgba(75,192,192,1); font-size: 0.8em; text-decoration: none; border: 1px solid #3a4048; border-radius: 6px; padding: 4px 8px; }
-        .dlLink:hover { background: #1a1d21; }
-        #sitePanel, #logPanel, #siteHistoryPanel { border: 1px solid #3a4048; }
-        #sessionRow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+        select, button {
+            background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+            border-radius: 8px; padding: 7px 12px; cursor: pointer; font-size: 0.85em;
+            transition: border-color .15s, background .15s, transform .05s;
+        }
+        select:hover, button:hover { border-color: var(--accent); }
+        button:active { transform: translateY(1px); }
+        button.primary { background: linear-gradient(135deg, rgba(75,192,192,0.35), rgba(75,192,192,0.15)); border-color: rgba(75,192,192,0.7); font-weight: 600; }
+        button.danger { background: linear-gradient(135deg, rgba(255,128,128,0.3), rgba(255,128,128,0.1)); border-color: rgba(255,128,128,0.6); font-weight: 600; }
+        button.warn { background: #6e5224; border-color: var(--amber); font-weight: 600; }
+        button:disabled { opacity: .45; cursor: not-allowed; }
+        .hidden { display: none !important; }
+        .dlLink { color: var(--accent); font-size: 0.8em; text-decoration: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
+        .dlLink:hover { border-color: var(--accent); background: var(--panel2); }
+        #sessionRow { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
         #logTable { font-size: 0.75em; }
-        @media (max-width: 800px) { #learningPanel, #sessionRow { grid-template-columns: 1fr; } }
+        #missionGrid { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; margin-bottom: 14px; }
+        .phaseBadge { padding: 2px 10px; border-radius: 999px; font-size: .85em; font-weight: 600; background: var(--panel2); border: 1px solid var(--border); }
+        .phaseBadge.live { background: #1d3a2a; color: var(--green); border-color: #2c5c40; }
+        .phaseBadge.paper { background: #274b73; color: #cfe6ff; border-color: #37648f; }
+        @media (max-width: 800px) { #learningPanel, #sessionRow, #missionGrid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
+    <div id="topbar">
+        <div class="logo">AVIATOR <span>CONTROL CENTER</span></div>
+        <span class="chip" id="connChip"><span class="dot"></span><span id="connText">connecting…</span></span>
+        <span class="chip hidden" id="pauseChip"><span class="dot"></span><span id="pauseChipText">BETTING PAUSED</span></span>
+        <span class="small" id="siteHeader">— BetPawa.ug</span>
+    </div>
     <div id="container">
-        <h1>Aviator Bot <span class="small" id="siteHeader">— BetPawa.ug</span></h1>
-        <span id="modeBadge" class="paper">PAPER MODE</span>
-        <span class="small" id="tierNote"></span>
-        <p class="small" id="strategyProfile"></p>
-
-        <div class="panel" id="sitePanel">
-            <h2>Site &amp; Account (switchable live)</h2>
-            <div class="siteRow">
-                <label class="small">Site
-                    <select id="siteSelect"></select>
-                </label>
-                <label class="small">Account
-                    <select id="accountSelect"></select>
-                </label>
-                <button id="newAccountBtn" title="Add a new account for this site">+ account</button>
-                <button id="switchBtn" class="primary">Switch site</button>
-                <button id="loginConfirmBtn" class="warn hidden">I'm logged in — continue ➜</button>
+        <div id="missionGrid">
+            <div class="panel" id="controlPanel">
+                <h2>Mission control</h2>
+                <div class="siteRow">
+                    <label class="small">Site
+                        <select id="siteSelect"></select>
+                    </label>
+                    <label class="small">Account
+                        <select id="accountSelect"></select>
+                    </label>
+                    <button id="newAccountBtn" title="Add a new account for this site">+ account</button>
+                    <label class="small">Strategy
+                        <select id="strategySelect"></select>
+                    </label>
+                </div>
+                <div class="siteRow">
+                    <button id="launchBtn" class="primary hidden">🚀 Launch session</button>
+                    <button id="switchBtn" class="primary">⇄ Switch site / account</button>
+                    <button id="loginConfirmBtn" class="warn hidden">I'm logged in — continue ➜</button>
+                    <button id="pauseBtn" class="hidden">⏸ Pause betting</button>
+                    <button id="resumeBtn" class="danger hidden">▶ Resume betting</button>
+                    <span class="small" id="controlStatus"></span>
+                </div>
+                <p class="small" id="siteStatus">Current: —</p>
             </div>
-            <p class="small" id="siteStatus">Current: —</p>
-            <p class="small" id="multiSiteNote">Rounds from every site feed the SAME memory (Aviator is one global game feed).</p>
+            <div class="panel" id="statePanel">
+                <h2>Bot status</h2>
+                <span id="modeBadge" class="paper">PAPER MODE</span>
+                <p class="small" id="tierNote"></p>
+                <p class="small" id="strategyProfile"></p>
+                <p class="small">Rounds from every site feed the SAME memory — Aviator is one global game feed. Login is always manual; passwords are never stored.</p>
+            </div>
         </div>
 
         <div id="sessionRow">

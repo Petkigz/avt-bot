@@ -134,6 +134,7 @@ async function main() {
         accounts,
         dataDir: DEMO_DIR,
         getActiveSite: () => ({ id: 'demo.ug', name: 'Demo feed (synthetic)', currency: 'UGX' }),
+        getControlState: () => ({ awaitingLaunch: false, paused: false, strategy: 'MICRO (demo)', mode: 'paper' }),
         getSessions: () => [{
             accountId: 'demo',
             accountLabel: 'demo account',

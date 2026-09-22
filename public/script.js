@@ -3,6 +3,16 @@
 
 const socket = io();
 
+// Connection status chip
+socket.on('connect', () => {
+  document.getElementById('connText').textContent = 'connected';
+  document.getElementById('connChip').classList.add('ok');
+});
+socket.on('disconnect', () => {
+  document.getElementById('connText').textContent = 'disconnected';
+  document.getElementById('connChip').classList.remove('ok');
+});
+
 function setText(id, text, cls) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -387,7 +397,10 @@ socket.on('siteStatus', (s) => {
   const label = s.siteName || s.siteId || '';
   const account = s.accountLabel ? ` / "${s.accountLabel}"` : '';
   if (s.phase === 'loginRequired') {
-    el('siteStatus').textContent = `Log in to ${label}${account} in the browser window, then click continue.`;
+    const fail = s.loginFailed
+      ? '⚠ Login NOT detected on the page (wrong PIN? expired code?). '
+      : '';
+    el('siteStatus').textContent = `${fail}Log in to ${label}${account} in the browser window, then click continue.`;
     el('loginConfirmBtn').classList.remove('hidden');
   } else if (s.phase === 'switching') {
     el('siteStatus').textContent = `Switching to ${label}${account}…`;
@@ -593,6 +606,78 @@ async function loadSiteHistory() {
 
 loadSiteHistory();
 setInterval(loadSiteHistory, 20000);
+
+// ---------------------------------------------------------------------------
+// Mission control: strategy list, launch-from-UI, pause/resume betting
+// ---------------------------------------------------------------------------
+async function loadStrategies() {
+  try {
+    const res = await fetch('/api/strategies');
+    const strategies = await res.json();
+    const sel = el('strategySelect');
+    sel.innerHTML = '';
+    for (const s of strategies) {
+      const opt = document.createElement('option');
+      opt.value = s.name;
+      opt.textContent = `${s.name} — stake ${s.initialBet}, target ${s.targetMultiplier}x`;
+      sel.appendChild(opt);
+    }
+    sel.value = 'MICRO';
+  } catch (e) { /* server not ready */ }
+}
+
+function applyControlState(cs) {
+  if (!cs) return;
+  const launchBtn = el('launchBtn');
+  const switchBtn = el('switchBtn');
+  const strategySelect = el('strategySelect');
+  const status = el('controlStatus');
+  if (cs.awaitingLaunch) {
+    launchBtn.classList.remove('hidden');
+    switchBtn.classList.add('hidden');
+    strategySelect.disabled = false;
+    status.textContent = 'Bot is waiting — pick site, account and strategy, then LAUNCH.';
+  } else {
+    launchBtn.classList.add('hidden');
+    switchBtn.classList.remove('hidden');
+    strategySelect.disabled = true;
+    status.textContent = cs.strategy ? `Running — strategy ${cs.strategy} (${cs.mode || 'paper'})` : 'Running';
+  }
+  const pauseBtn = el('pauseBtn');
+  const resumeBtn = el('resumeBtn');
+  const pauseChip = el('pauseChip');
+  if (cs.strategy) {
+    pauseChip.classList.add('paused');
+    pauseChip.classList.toggle('hidden', !cs.paused);
+    pauseBtn.classList.toggle('hidden', cs.paused);
+    resumeBtn.classList.toggle('hidden', !cs.paused);
+  } else {
+    pauseBtn.classList.add('hidden');
+    resumeBtn.classList.add('hidden');
+    pauseChip.classList.add('hidden');
+  }
+  const modeBadge = el('modeBadge');
+  if (cs.mode === 'live') { modeBadge.textContent = 'LIVE MODE'; modeBadge.className = 'live'; }
+  else { modeBadge.textContent = 'PAPER MODE'; modeBadge.className = 'paper'; }
+}
+
+socket.on('controlState', applyControlState);
+
+el('launchBtn').addEventListener('click', () => {
+  socket.emit('startSession', {
+    siteId: el('siteSelect').value,
+    accountId: el('accountSelect').value || null,
+    strategy: el('strategySelect').value
+  });
+  el('controlStatus').textContent = 'Launching… log in when the browser window opens.';
+  el('launchBtn').disabled = true;
+  setTimeout(() => { el('launchBtn').disabled = false; }, 3000);
+});
+
+el('pauseBtn').addEventListener('click', () => socket.emit('pauseBetting'));
+el('resumeBtn').addEventListener('click', () => socket.emit('resumeBetting'));
+
+loadStrategies();
 
 loadSiteControls();
 loadLogs();

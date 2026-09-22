@@ -184,6 +184,8 @@ All settings live in `.env` (see [.env.example](.env.example)). Highlights:
 | `FLIGHT_END_GRACE_MS` | `10000` | Settle if flight ended but bubble never updates |
 | `DASHBOARD_ENABLED` | `true` | Serve the live dashboard |
 | `DASHBOARD_PORT` | `3000` | Dashboard port |
+| `DASHBOARD_HOST` | `0.0.0.0` | Bind interface (`127.0.0.1` = local only, no auth built in) |
+| `UI_START` | `false` | Start sessions from Mission Control instead of terminal prompts |
 | `DATABASE_ENABLED` | `false` | Enable MySQL persistence |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
 | `PAPER_MODE` | `true` | Observe + log without betting (SAFE default) |
@@ -225,6 +227,20 @@ site feeds the same memory, model and pattern miner.
 `.env`, startup shows an interactive menu — pick the site (1–4), then pick one
 of your saved login profiles or create a new one. Without a terminal, the bot
 restores the last-active site/account automatically.
+
+**…or do everything from the dashboard (Mission Control):** set
+`UI_START=true` in `.env` and the bot starts the dashboard first, then waits —
+you pick site, account and strategy in **Mission Control** and press
+**🚀 Launch session**. While running, Mission Control also lets you switch
+site/account live and **⏸ pause / ▶ resume betting** with one click (the
+pause is a hard decision-gate in the Brain, not just a UI flag).
+
+**Login verification:** the bot never touches your credentials — you log in
+yourself on the real site page, and a wrong PIN is rejected by the site
+itself. On top of that the bot VERIFIES the login: it polls the page for the
+site's logged-in indicators and auto-detects success (no click needed); if you
+confirm but the page still looks logged out, it warns you and gives you 3
+attempts before falling through to watch-only mode.
 
 **Switching sites/accounts live:** use the *Site & Account* card on the
 dashboard — pick a site, pick (or create) an account, click **Switch site**.

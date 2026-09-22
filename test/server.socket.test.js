@@ -18,6 +18,7 @@ test('socket clients receive live session + site snapshots on connect', async ()
         accounts: new AccountsManager(dir),
         dataDir: dir,
         getActiveSite: () => ({ id: 'betpawa.ug', name: 'BetPawa Uganda', currency: 'UGX' }),
+        getControlState: () => ({ awaitingLaunch: true, paused: false, strategy: null, mode: 'paper' }),
         getSessions: () => [{
             accountId: 'a', accountLabel: 'main',
             siteId: 'betpawa.ug', siteName: 'BetPawa Uganda', currency: 'UGX',
@@ -29,16 +30,17 @@ test('socket clients receive live session + site snapshots on connect', async ()
     try {
         // Both snapshots are emitted in the same connect batch — listen for
         // both before either can arrive.
-        const got = { sessions: null, status: null };
+        const got = { sessions: null, status: null, control: null };
         client.on('sessions', (s) => { got.sessions = s; });
         client.on('siteStatus', (s) => { got.status = s; });
+        client.on('controlState', (s) => { got.control = s; });
         await new Promise((resolve, reject) => {
             const t0 = Date.now();
             const timer = setInterval(() => {
-                if (got.sessions && got.status) { clearInterval(timer); resolve(); }
+                if (got.sessions && got.status && got.control) { clearInterval(timer); resolve(); }
                 else if (Date.now() - t0 > 5000) {
                     clearInterval(timer);
-                    reject(new Error('snapshot timeout (sessions/siteStatus)'));
+                    reject(new Error('snapshot timeout (sessions/siteStatus/controlState)'));
                 }
             }, 25);
         });
@@ -51,6 +53,9 @@ test('socket clients receive live session + site snapshots on connect', async ()
         assert.equal(status.phase, 'active');
         assert.equal(status.siteId, 'betpawa.ug');
         assert.equal(status.siteName, 'BetPawa Uganda');
+
+        assert.equal(got.control.awaitingLaunch, true);
+        assert.equal(got.control.paused, false);
 
         // Unknown/inert client events must never crash the server.
         client.emit('switchSite', { siteId: 'betpawa.co.zm' });

@@ -31,6 +31,8 @@ let dashboard = null;
 let loginWaiter = null; // {resolve} while waiting for the user to log in
 let shuttingDown = false;   // global: graceful shutdown in progress
 let switchInProgress = false; // global: site/account switch in progress
+let awaitingUiLaunch = false; // UI_START: waiting for the dashboard LAUNCH button
+let uiLaunchWaiter = null;
 
 function emitSiteStatus(phase, extra = {}) {
     if (!dashboard) return;
@@ -70,6 +72,17 @@ function emitSessions() {
 function setSessionPhase(session, phase) {
     session.phase = phase;
     emitSessions();
+}
+
+/**
+ * UI_START: resolves when the dashboard sends startSession.
+ */
+function waitForUiLaunch() {
+    return new Promise((resolve) => {
+        uiLaunchWaiter = {
+            resolve: (payload) => { uiLaunchWaiter = null; resolve(payload); }
+        };
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -265,25 +278,43 @@ async function launchSession(account, site) {
 }
 
 /**
- * Waits for the user to finish logging in. Two ways to confirm:
- *  - click "I'm logged in — continue" on the dashboard
- *  - press ENTER in the terminal (when running in a TTY)
+ * Checks the page for the site's logged-in indicators (loginSelectors.
+ * loggedInIndicator + balance element). Returns:
+ *   true  — logged-in elements found
+ *   false — page examined, nothing found (still logged out / wrong login)
+ *   null  — cannot verify (no indicators configured, page busy/closed)
+ * The bot NEVER touches credentials — this only reads the page state.
  */
-function waitForLoginConfirmation(session) {
-    const site = session.site;
+async function isLoggedIn(page, site) {
+    const sel = site.loginSelectors || {};
+    const candidates = String(sel.loggedInIndicator || '')
+        .split(',').map((s) => s.trim()).filter(Boolean);
+    if (site.balanceSelector) candidates.push(site.balanceSelector);
+    if (candidates.length === 0) return null;
+    try {
+        if (page.isClosed()) return null;
+        return await page.evaluate((list) => list.some((s) => {
+            try { return !!document.querySelector(s); } catch (e) { return false; }
+        }), candidates);
+    } catch (error) {
+        return null; // navigating or busy — unknown
+    }
+}
+
+/**
+ * One confirmation round: resolves when the user says they're logged in
+ * (dashboard button or terminal ENTER).
+ */
+function waitLoginConfirmation(session) {
     return new Promise((resolve) => {
         loginWaiter = {
             account: session.account,
-            resolve: () => {
-                accounts.touchLogin(session.account.id);
-                logger.info(`Login confirmed for "${session.account.label}" — profile remembered`);
-                loginWaiter = null;
-                resolve();
-            }
+            resolve: () => { loginWaiter = null; resolve(); }
         };
         logger.warn(
-            `>> LOG IN to ${site.name} in the browser window now ` +
-            `(login page: ${site.loginUrl || site.baseUrl}). ` +
+            `>> LOG IN to ${session.site.name} in the browser window now ` +
+            `(login page: ${session.site.loginUrl || session.site.baseUrl}). ` +
+            `Wrong PIN? The site itself rejects it — just retry. ` +
             `Then click "I'm logged in" on the dashboard` +
             (process.stdin.isTTY ? ' (or press ENTER here)' : '') + '.'
         );
@@ -295,14 +326,73 @@ function waitForLoginConfirmation(session) {
     });
 }
 
+/**
+ * Full login flow with VERIFICATION and AUTO-DETECT:
+ *  - while waiting, the page is polled every 3s for logged-in indicators;
+ *    success is detected automatically (no click needed)
+ *  - after a manual confirmation, the page state is checked; if the site
+ *    still looks logged out the user gets up to 3 attempts
+ *  - never blocks forever: falls through to watcher mode with a warning
+ */
+async function waitForLogin(session) {
+    const site = session.site;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        setSessionPhase(session, 'loginRequired');
+        emitSiteStatus('loginRequired', { accountLabel: session.account.label, attempt });
+
+        // Race: user confirmation vs auto-detection vs session cancellation.
+        await new Promise((resolve) => {
+            let done = false;
+            const finish = () => {
+                if (done) return;
+                done = true;
+                clearInterval(poll);
+                if (loginWaiter && loginWaiter.account.id === session.account.id) loginWaiter = null;
+                resolve();
+            };
+            waitLoginConfirmation(session).then(finish);
+            const poll = setInterval(async () => {
+                if (done) return;
+                if (session.cancelled || session.page.isClosed()) return finish();
+                const state = await isLoggedIn(session.page, site);
+                if (state === true) {
+                    logger.info(`Login auto-detected for "${session.account.label}" on ${site.name}`);
+                    if (loginWaiter && loginWaiter.account.id === session.account.id) loginWaiter.resolve();
+                }
+            }, 3000);
+        });
+
+        if (session.cancelled || session.page.isClosed()) return;
+
+        const state = await isLoggedIn(session.page, site);
+        if (state === true) {
+            accounts.touchLogin(session.account.id);
+            logger.info(`Login VERIFIED on ${site.name} — profile remembered`);
+            return;
+        }
+        if (state === null) {
+            accounts.touchLogin(session.account.id);
+            logger.warn(`${site.name}: no login indicator available — continuing on your confirmation`);
+            return;
+        }
+        logger.warn(
+            `Login NOT detected on ${site.name} (attempt ${attempt}/3) — the page still looks ` +
+            'logged out. Check the browser window (wrong PIN? expired code?) and confirm again.'
+        );
+        emitSiteStatus('loginRequired', { accountLabel: session.account.label, loginFailed: true, attempt });
+    }
+    logger.warn(
+        `Proceeding without a confirmed login on ${site.name} — the watcher keeps running; ` +
+        'betting cannot work until the site shows a logged-in state.'
+    );
+}
+
 async function navigateSessionToGame(session) {
     const { page, site } = session;
     await gotoSafe(page, site.baseUrl, `${site.name} home`);
 
     if (site.loginFlow === 'manual') {
-        setSessionPhase(session, 'loginRequired');
-        emitSiteStatus('loginRequired', { accountLabel: session.account.label });
-        await waitForLoginConfirmation(session);
+        await waitForLogin(session);
     }
 
     // Session was cancelled (another switch happened) or closed while we
@@ -386,7 +476,86 @@ async function main() {
         logger.error('LIVE MODE: the bot WILL place real bets. Loss limits are enforced.');
     }
 
-    const strategyConfig = await selectStrategy();
+    // ---- Dashboard FIRST: UI_START mode and live controls depend on it ----
+    let brain = null;          // assigned after strategy selection (handlers are null-safe)
+    let strategyConfig = null;
+    let controlState = () => ({
+        awaitingLaunch: awaitingUiLaunch,
+        paused: brain ? brain.paused : false,
+        strategy: strategyConfig ? strategyConfig.name : null,
+        mode: config.MODE.PAPER ? 'paper' : 'live'
+    });
+    const emitControlState = () => { if (dashboard) dashboard.io.emit('controlState', controlState()); };
+
+    if (config.DASHBOARD.ENABLED) {
+        try {
+            dashboard = await startDashboard(config.DASHBOARD.PORT, logger, {
+                accounts,
+                getActiveSite: () => ({ id: activeSite.id, name: activeSite.name, currency: activeSite.currency }),
+                getSessions: sessionsSnapshot,
+                getControlState: controlState
+            });
+            // server.js already sends the sessions/siteStatus snapshot on
+            // connect; index.js only wires the command events.
+            dashboard.io.on('connection', (socket) => {
+                const doSwitch = (payload) => {
+                    switchSite(payload || {}).catch((error) => {
+                        logger.error(`Site/account switch failed: ${error.message}`);
+                        emitSiteStatus('error', { message: error.message });
+                    });
+                };
+                socket.on('switchSite', doSwitch);
+                socket.on('switchAccount', doSwitch); // same flow: {siteId, accountId}
+                socket.on('confirmLogin', () => {
+                    if (loginWaiter) loginWaiter.resolve();
+                });
+                socket.on('startSession', (payload) => {
+                    if (!uiLaunchWaiter) {
+                        logger.warn('Launch requested, but the bot is not waiting for a launch (already running?)');
+                        return;
+                    }
+                    const p = payload || {};
+                    const site = getSite(p.siteId);
+                    const account = (p.accountId && accounts.get(p.accountId)) || accounts.ensureDefault(site.id);
+                    const preset = config.BETTING_STRATEGIES[String(p.strategy || 'MICRO').toUpperCase()] ||
+                        config.BETTING_STRATEGIES.MICRO;
+                    logger.info(`Launch requested from dashboard: ${site.name} / "${account.label}" / ${preset.name}`);
+                    uiLaunchWaiter.resolve({ site, account, strategyConfig: { ...preset } });
+                });
+                socket.on('pauseBetting', () => {
+                    if (brain) { brain.paused = true; logger.warn('Betting PAUSED from the dashboard'); emitControlState(); }
+                });
+                socket.on('resumeBetting', () => {
+                    if (brain) { brain.paused = false; logger.info('Betting RESUMED from the dashboard'); emitControlState(); }
+                });
+            });
+        } catch (error) {
+            logger.error(`Dashboard failed to start: ${error.message}`);
+        }
+    }
+
+    // ---- Site + account + strategy: CLI dropdown OR dashboard LAUNCH ----
+    let selection;
+    if (config.UI_START) {
+        if (!dashboard) {
+            logger.error('UI_START=true but the dashboard is disabled — set DASHBOARD_ENABLED=true');
+            process.exit(1);
+        }
+        awaitingUiLaunch = true;
+        emitControlState();
+        logger.warn('=====================================================================');
+        logger.warn(`UI_START: open http://localhost:${config.DASHBOARD.PORT} and press LAUNCH in Mission Control`);
+        logger.warn('=====================================================================');
+        const launch = await waitForUiLaunch();
+        awaitingUiLaunch = false;
+        selection = { site: launch.site, account: launch.account };
+        strategyConfig = launch.strategyConfig;
+        emitControlState();
+    } else {
+        strategyConfig = await selectStrategy();
+        selection = await selectSiteAndAccount();
+    }
+
     logger.info(
         `Strategy: ${strategyConfig.name} | initial bet ${strategyConfig.initialBet} | ` +
         `min ${strategyConfig.minBet} | max ${strategyConfig.maxBet} | ` +
@@ -435,7 +604,7 @@ async function main() {
     });
 
     const strategy = new BettingStrategy(strategyConfig);
-    const brain = new Brain({ config, strategy, predictor, patterns, bankroll });
+    brain = new Brain({ config, strategy, predictor, patterns, bankroll });
 
     logger.info(
         `Memory loaded: ${roundsLoaded} rounds (cross-site) | ` +
@@ -454,34 +623,6 @@ async function main() {
 
     const database = new Database(config);
     database.connect();
-
-    // ---- Dashboard + site-switch controls ----
-    if (config.DASHBOARD.ENABLED) {
-        try {
-            dashboard = await startDashboard(config.DASHBOARD.PORT, logger, {
-                accounts,
-                getActiveSite: () => ({ id: activeSite.id, name: activeSite.name, currency: activeSite.currency }),
-                getSessions: sessionsSnapshot
-            });
-            // server.js already sends the sessions/siteStatus snapshot on
-            // connect; index.js only wires the command events.
-            dashboard.io.on('connection', (socket) => {
-                const doSwitch = (payload) => {
-                    switchSite(payload || {}).catch((error) => {
-                        logger.error(`Site/account switch failed: ${error.message}`);
-                        emitSiteStatus('error', { message: error.message });
-                    });
-                };
-                socket.on('switchSite', doSwitch);
-                socket.on('switchAccount', doSwitch); // same flow: {siteId, accountId}
-                socket.on('confirmLogin', () => {
-                    if (loginWaiter) loginWaiter.resolve();
-                });
-            });
-        } catch (error) {
-            logger.error(`Dashboard failed to start: ${error.message}`);
-        }
-    }
 
     // ---- Monitor attachment (any page of any session that hosts the game) ----
     const attachMonitor = async (candidate, session) => {
@@ -569,8 +710,7 @@ async function main() {
         }
     }, 3000);
 
-    // ---- Initial session: CLI site/account selection (or last-active) ----
-    const selection = await selectSiteAndAccount();
+    // ---- Initial session: from CLI selection or dashboard LAUNCH ----
     activeSite = selection.site;
     accounts.setLastActive(activeSite.id, selection.account.id);
     logger.info(`Session: ${activeSite.name} / "${selection.account.label}" (profile ${selection.account.id})`);

@@ -168,3 +168,22 @@ test('MICRO_ONLY safety profile never promotes past micro-bets', () => {
     assert.strictEqual(brain.tier, 'MICRO');
     assert.strictEqual(brain.snapshot().microOnly, true);
 });
+
+test('dashboard pause blocks betting decisions until resumed', () => {
+    const { brain } = makeBrain();
+    warmUp(brain, 200, 1.1); // OBSERVING either way — pause must gate FIRST
+    brain.paused = true;
+    const d1 = brain.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(d1.shouldBet, false);
+    assert.ok(d1.reasons.join(';').includes('paused by user'), d1.reasons.join(';'));
+    brain.paused = false;
+    const d2 = brain.decide({ bettingWindow: true, balance: 50000 });
+    assert.ok(!d2.reasons.join(';').includes('paused by user'));
+});
+
+test('paused state is surfaced in the brain snapshot', () => {
+    const { brain } = makeBrain();
+    assert.strictEqual(brain.paused, false);
+    brain.paused = true;
+    assert.strictEqual(brain.paused, true);
+});

@@ -29,6 +29,7 @@ class Brain {
         this.microOnly = microOnly ?? !!(config.MICRO_ONLY);
 
         this.tier = 'OBSERVING';
+        this.paused = false;         // user toggle from the dashboard (UI kill-switch)
         this.pendingResult = null;   // outcome of the last settled trade
         this.stakeCache = null;      // stake computed from the last result
         this.recentDecisions = [];   // rolling window of settled bet outcomes
@@ -88,6 +89,7 @@ class Brain {
         };
 
         if (halted) { reasons.push('trading halted'); return this.finish(decision); }
+        if (this.paused) { reasons.push('paused by user (dashboard)'); return this.finish(decision); }
         if (!bettingWindow) { reasons.push('no betting window'); return this.finish(decision); }
         if (cooldownRounds > 0) { reasons.push(`cooldown (${cooldownRounds} rounds left)`); return this.finish(decision); }
 

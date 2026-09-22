@@ -132,6 +132,10 @@ const config = {
     // from the dashboard.
     SITE_ID: process.env.SITE || 'betpawa.ug',
 
+    // Start from the dashboard instead of the terminal prompts (site,
+    // account and strategy are chosen in Mission Control, then LAUNCH).
+    UI_START: bool(process.env.UI_START, false),
+
     // Optional preset override — MICRO, CONSERVATIVE, MODERATE or AGGRESSIVE.
     // When set, the bot uses it without prompting (useful for headless runs).
     // Leave empty for the interactive menu (all presets + custom available).

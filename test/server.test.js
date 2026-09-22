@@ -78,6 +78,11 @@ test('server exposes health + history + sites + accounts + logs', async () => {
         assert.equal(sessions[0].phase, 'monitoring');
         assert.equal(sessions[0].roundsSeen, 42);
 
+        const strategies = await fetch(`http://127.0.0.1:${port}/api/strategies`).then((r) => r.json());
+        assert.ok(strategies.length >= 4);
+        assert.ok(strategies.find((s) => s.name === 'MICRO'));
+        assert.equal(typeof strategies[0].targetMultiplier, 'number');
+
         const bySite = await fetch(`http://127.0.0.1:${port}/api/history/bySite`).then((r) => r.json());
         assert.equal(bySite.sites.length, 2);
         const ug = bySite.sites.find((s) => s.site === 'betpawa.ug');
