@@ -61,3 +61,22 @@ test('corrupt file falls back to empty history gracefully', () => {
     assert.strictEqual(store.load(), 0);
     assert.deepStrictEqual(store.values, []);
 });
+
+test('parallel-monitor duplicates within the dedupe window are dropped', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'avt-hs-'));
+    const store = new HistoryStore(path.join(dir, 'h.json'));
+    assert.equal(store.append(1.5), true);
+    assert.equal(store.append(1.5), false); // same round, second monitor
+    assert.equal(store.append(2.25), true);
+    assert.deepEqual(store.values, [1.5, 2.25]);
+});
+
+test('identical crashes a full round apart are still recorded', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'avt-hs-'));
+    const store = new HistoryStore(path.join(dir, 'h.json'));
+    store.dedupeSameValueMs = 30; // shrink the window for the test
+    store.append(1.5);
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(store.append(1.5), true);
+    assert.deepEqual(store.values, [1.5, 1.5]);
+});

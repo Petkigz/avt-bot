@@ -560,7 +560,16 @@ async function loadAccountsPanel() {
         el('siteStatus').textContent = `Switching to "${a.label}"…`;
         socket.emit('switchAccount', { siteId: a.site, accountId: a.id });
       });
+      const openBtn = document.createElement('button');
+      openBtn.textContent = 'Open alongside';
+      openBtn.style.marginLeft = '6px';
+      openBtn.title = 'Open this account in parallel with the current session (cap: MAX_SESSIONS)';
+      openBtn.addEventListener('click', () => {
+        el('siteStatus').textContent = `Opening "${a.label}" alongside…`;
+        socket.emit('openSession', { siteId: a.site, accountId: a.id });
+      });
       td.appendChild(btn);
+      td.appendChild(openBtn);
       tr.appendChild(td);
       body.appendChild(tr);
     }
@@ -569,6 +578,10 @@ async function loadAccountsPanel() {
 
 loadAccountsPanel();
 setInterval(loadAccountsPanel, 15000);
+onEvent('openAllBtn', 'click', () => {
+  el('siteStatus').textContent = 'Opening all saved profiles in parallel…';
+  socket.emit('openAllSessions');
+});
 
 // ---------------------------------------------------------------------------
 // Cross-site history charts (from /api/history/bySite)

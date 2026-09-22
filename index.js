@@ -709,6 +709,45 @@ async function main() {
                 };
                 socket.on('switchSite', doSwitch);
                 socket.on('switchAccount', doSwitch); // same flow: {siteId, accountId}
+                // Open an ADDITIONAL session side by side (multi-account
+                // observation), limited by MAX_SESSIONS.
+                const openExtraSession = async (account, site) => {
+                    if (sessions.has(account.id)) {
+                        logger.info(`Session for "${account.label}" is already open`);
+                        return;
+                    }
+                    if (sessions.size >= config.SESSIONS.MAX) {
+                        logger.warn(
+                            `Cannot open "${account.label}": session cap reached ` +
+                            `(MAX_SESSIONS=${config.SESSIONS.MAX}). Raise MAX_SESSIONS in .env to run more accounts side by side.`
+                        );
+                        emitSiteStatus('error', {
+                            message: `Session cap reached (MAX_SESSIONS=${config.SESSIONS.MAX}) — raise MAX_SESSIONS in .env to open more accounts`
+                        });
+                        return;
+                    }
+                    try {
+                        const session = await launchSession(account, site);
+                        await navigateSessionToGame(session);
+                    } catch (error) {
+                        logger.error(`Failed to open session for "${account.label}": ${error.message}`);
+                    }
+                };
+                socket.on('openSession', (payload) => {
+                    const p = payload || {};
+                    const site = getSite(p.siteId);
+                    const account = (p.accountId && accounts.get(p.accountId)) || null;
+                    if (!account) { logger.warn('Open session: unknown account'); return; }
+                    openExtraSession(account, site).catch(() => {});
+                });
+                socket.on('openAllSessions', () => {
+                    (async () => {
+                        for (const account of accounts.list()) {
+                            if (sessions.size >= config.SESSIONS.MAX) break;
+                            await openExtraSession(account, getSite(account.site));
+                        }
+                    })().catch(() => {});
+                });
                 socket.on('confirmLogin', () => {
                     if (loginWaiter) loginWaiter.resolve();
                 });
@@ -922,7 +961,8 @@ async function main() {
             csvRounds,
             selectors,
             site: session.site.id,
-            account: session.account.label
+            account: session.account.label,
+            currency: session.site.currency
         });
         session.monitor = monitor;
         monitor.betManager.paperMode = paperMode; // honor the dashboard mode switch

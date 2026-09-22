@@ -164,7 +164,9 @@
                 <pre id="debugOut" class="hidden" style="white-space:pre-wrap;word-break:break-all;font-size:11px;max-height:340px;overflow:auto;background:var(--panel-2,#111a);padding:10px;border-radius:8px;"></pre>
             </div>
             <div class="panel" id="accountsPanel">
-                <h2>Saved login profiles</h2>
+                <h2>Saved login profiles
+                    <button id="openAllBtn" style="margin-left:10px;" title="Open a browser session for every saved profile at once (cap: MAX_SESSIONS)">⇱ Open all in parallel</button>
+                </h2>
                 <table id="accountsTable" border="1">
                     <thead><tr><th>Site</th><th>Label</th><th>Last login</th><th></th></tr></thead>
                     <tbody id="accountsTableBody"></tbody>

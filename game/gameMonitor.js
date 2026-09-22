@@ -62,6 +62,8 @@ class GameMonitor extends EventEmitter {
         this.timer = null;
         this.nextPrediction = null;
         this.lastBalance = null;    // last balance read from the game page
+        this.currency = deps.currency || ''; // site currency, for balance scanning
+        this.balanceScanCycle = 0;
         this.seedEmitted = false;   // history-strip seed sent once per attach
         this.stripPath = null;      // content-discovered history strip (new Spribe layouts)
         this.stripAnnounced = false;
@@ -285,6 +287,14 @@ class GameMonitor extends EventEmitter {
         }
 
         // ---- Balance into the bankroll manager ----
+        // Classic selector first; newer layouts show the balance in the SITE
+        // SHELL (navbar) instead of the game frame — scan for it, throttled.
+        if (!state.balanceText) {
+            this.balanceScanCycle++;
+            if (this.balanceScanCycle % 8 === 1) {
+                try { state.balanceText = await this.findBalanceText(); } catch (error) { /* busy */ }
+            }
+        }
         const balance = parseBalance(state.balanceText);
         if (Number.isFinite(balance)) this.lastBalance = balance;
         if (Number.isFinite(balance) && this.brain.bankroll) {
@@ -673,6 +683,34 @@ class GameMonitor extends EventEmitter {
             out.error = error.message;
         }
         return out;
+    }
+
+    /**
+     * Cross-frame balance hunt for layouts where the balance lives in the
+     * site shell (navbar) rather than the game widget: finds elements with
+     * balance-ish class/id/test attributes and extracts a currency amount.
+     */
+    async findBalanceText() {
+        const cur = /^[A-Za-z]{2,8}$/.test(this.currency) ? this.currency.toUpperCase() : '';
+        for (const frame of this.page.frames()) {
+            try {
+                const text = await frame.evaluate((currency) => {
+                    const nodes = document.querySelectorAll(
+                        '[class*="balance" i], [id*="balance" i], [data-test-id*="balance" i]'
+                    );
+                    const rx = currency
+                        ? new RegExp(`(${currency}\\s*[\\d][\\d,]*(?:\\.\\d{1,2})?)`)
+                        : /([\d][\d,]*(?:\.\d{1,2})?)/;
+                    for (const el of nodes) {
+                        const m = ((el.textContent || '').trim()).match(rx);
+                        if (m) return m[1];
+                    }
+                    return null;
+                }, cur);
+                if (text) return text;
+            } catch (error) { /* frame busy or detached */ }
+        }
+        return null;
     }
 
     /**

@@ -12,6 +12,9 @@ class HistoryStore {
         this.file = file;
         this.maxEntries = maxEntries;
         this.values = [];
+        this.dedupeSameValueMs = 4000; // parallel-monitor duplicate guard
+        this.lastAppendedValue = null;
+        this.lastAppendedAt = null;
     }
 
     /**
@@ -36,9 +39,22 @@ class HistoryStore {
 
     /**
      * Appends a crash value and persists immediately (write-through).
+     * Parallel monitors all watch the SAME global Aviator feed, so the same
+     * round arrives from several sessions within milliseconds — identical
+     * values landing inside `dedupeSameValueMs` of each other are dropped.
+     * (Genuine consecutive identical crashes are always a full round apart,
+     * ~10s+ minimum, so a 4s window is safe.)
      */
     append(value) {
-        if (!Number.isFinite(value) || value <= 0) return;
+        if (!Number.isFinite(value) || value <= 0) return false;
+        const now = Date.now();
+        if (this.lastAppendedValue === value &&
+            this.lastAppendedAt !== null &&
+            now - this.lastAppendedAt < this.dedupeSameValueMs) {
+            return false; // same global round, second monitor reporting it
+        }
+        this.lastAppendedValue = value;
+        this.lastAppendedAt = now;
         this.values.push(value);
         if (this.values.length > this.maxEntries) this.values.shift();
         try {
@@ -47,6 +63,7 @@ class HistoryStore {
         } catch (error) {
             logger.warn(`Could not persist history: ${error.message}`);
         }
+        return true;
     }
 
     size() {
