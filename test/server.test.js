@@ -242,3 +242,24 @@ test('GET /api/debug/game returns the monitor diagnostic', async () => {
         assert.equal(res.status, 503);
     });
 });
+
+test('/api/history unions per-site memories and falls back to legacy file', async () => {
+    // Two per-site memories -> union served
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, 'history-betpawa.ug.json'), JSON.stringify([1.5, 2.5]));
+    fs.writeFileSync(path.join(dir, 'history-fortebet.ug.json'), JSON.stringify([3.0, 1.1, 4.2]));
+    await withServer({ dataDir: dir }, async (port) => {
+        const history = await fetch(`http://127.0.0.1:${port}/api/history`).then((r) => r.json());
+        assert.equal(history.stats.count, 5);
+        assert.equal(history.recent.length, 5);
+    });
+
+    // No per-site files -> legacy history.json fallback
+    const legacyDir = tmpDir();
+    fs.writeFileSync(path.join(legacyDir, 'history.json'), JSON.stringify([9.9]));
+    await withServer({ dataDir: legacyDir }, async (port) => {
+        const history = await fetch(`http://127.0.0.1:${port}/api/history`).then((r) => r.json());
+        assert.equal(history.stats.count, 1);
+        assert.deepEqual(history.recent, [9.9]);
+    });
+});

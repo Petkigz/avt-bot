@@ -685,9 +685,13 @@ async function main() {
                 setStrategy: (id) => {
                     const preset = config.BETTING_STRATEGIES[String(id || '').toUpperCase()];
                     if (!preset) throw new Error(`unknown strategy "${id}"`);
-                    if (brain) {
-                        // Hot-swap: Brain reads this.strategy live on every round.
-                        brain.strategy = new BettingStrategy({ ...preset });
+                    // Hot-swap on every per-site brain (they read .strategy live);
+                    // before any engine exists, swap the bootstrap brain.
+                    const targets = engines.size > 0
+                        ? [...engines.values()].map((e) => e.brain)
+                        : (brain ? [brain] : []);
+                    if (targets.length > 0) {
+                        targets.forEach((b) => { b.strategy = new BettingStrategy({ ...preset }); });
                         logger.warn(`Strategy switched to ${preset.name} from the dashboard (progression reset)`);
                     } else {
                         pendingStrategyName = preset.name;
@@ -882,19 +886,25 @@ async function main() {
     }
 
     // ---- Memory: history, model, patterns, bankroll (shared across sites:
-    //      Aviator is ONE global game feed, so rounds from any site are valid) ----
+    // ---- Long-term memory (persists across restarts) ----
+    // NOTE (2026-09-22): parallel BetPawa-vs-Fortebet monitoring proved the
+    // bookmakers run SEPARATE Aviator round streams — the values do not line
+    // up across sites. history.json is kept as a legacy bootstrap archive;
+    // each site now gets its OWN engine (memory + model + patterns + brain)
+    // via engineFor() below, so one game's rounds never pollute another's.
     const historyStore = new HistoryStore(path.join(config.DATA_DIR, 'history.json'));
     const roundsLoaded = historyStore.load();
 
+    const safeSiteId = (siteId) => String(siteId || 'unknown').replace(/[^a-z0-9.-]/gi, '-');
+
     // Per-site persistent memories (data/history-<site>.json): every site's
-    // observed rounds survive restarts and can be compared or (later) used
-    // for site-specific modeling. Same dedupe rules as the global memory.
+    // observed rounds survive restarts and can be compared. The 4s same-value
+    // dedupe protects against two accounts on the SAME site double-reporting.
     const siteHistoryStores = new Map();
     const siteHistoryFor = (siteId) => {
         const key = String(siteId || 'unknown');
         if (!siteHistoryStores.has(key)) {
-            const safe = key.replace(/[^a-z0-9.-]/gi, '-');
-            const store = new HistoryStore(path.join(config.DATA_DIR, `history-${safe}.json`));
+            const store = new HistoryStore(path.join(config.DATA_DIR, `history-${safeSiteId(key)}.json`));
             store.load();
             siteHistoryStores.set(key, store);
         }
@@ -940,10 +950,72 @@ async function main() {
     brain = new Brain({ config, strategy, predictor, patterns, bankroll });
 
     logger.info(
-        `Memory loaded: ${roundsLoaded} rounds (cross-site) | ` +
+        `Memory loaded: ${roundsLoaded} rounds (legacy shared archive) | ` +
         `patterns known: ${patterns ? patterns.patterns.size : 0} | tier: ${brain.tier} ` +
-        `(bets start only after ${config.RISK.MIN_ROUNDS_OBSERVE} rounds of warm-up)`
+        `(each site bootstraps its own engine on launch)`
     );
+
+    // ---- Per-site engines -------------------------------------------------
+    // Separate Aviator instances per bookmaker => each site owns its own
+    // memory, predictor, pattern miner and brain. The FIRST engine created
+    // inherits the legacy shared archive as a starting prior; later engines
+    // start clean and must warm up on their own game's rounds.
+    const engines = new Map();
+    let primaryEngine = null;
+    const engineFor = (siteId) => {
+        const key = String(siteId || 'unknown');
+        if (engines.has(key)) return engines.get(key);
+        const safe = safeSiteId(key);
+        const store = siteHistoryFor(key);
+
+        if (store.size() === 0 && !primaryEngine && historyStore.size() > 0) {
+            historyStore.values.forEach((v) => store.append(v, { force: true }));
+            logger.info(
+                `Engine [${key}]: inherited ${store.size()} rounds from the legacy archive as a starting prior`
+            );
+        }
+
+        let sitePredictor = null;
+        if (config.MODEL.ENABLED) {
+            sitePredictor = Predictor.load(path.join(config.DATA_DIR, `model-${safe}.json`), {
+                targetMultiplier: strategyConfig.targetMultiplier,
+                minSampleSize: config.MODEL.MIN_SAMPLE_SIZE,
+                minEntryProbability: config.MODEL.MIN_ENTRY_PROBABILITY,
+                maxEntryProbability: config.MODEL.MAX_ENTRY_PROBABILITY,
+                coldStreakLimit: config.MODEL.COLD_STREAK_LIMIT,
+                coldRecoveryCount: config.MODEL.COLD_RECOVERY_COUNT,
+                recencyHalfLife: config.MODEL.RECENCY_HALF_LIFE,
+                recentWindow: config.MODEL.RECENT_WINDOW,
+                wilsonCushion: config.MODEL.WILSON_CUSHION
+            });
+            sitePredictor.setHistory(store.values);
+        }
+
+        let sitePatterns = null;
+        if (config.PATTERN.ENABLED) {
+            sitePatterns = PatternDetector.load(path.join(config.DATA_DIR, `patterns-${safe}.json`), {
+                lengths: config.PATTERN.LENGTHS,
+                minSupport: config.PATTERN.MIN_SUPPORT,
+                bins: config.PATTERN.BINS,
+                targetMultiplier: strategyConfig.targetMultiplier
+            });
+            sitePatterns.rebuildStream(store.values);
+        }
+
+        const siteBrain = new Brain({ config, strategy, predictor: sitePredictor, patterns: sitePatterns, bankroll });
+        const engine = { siteId: key, store, predictor: sitePredictor, patterns: sitePatterns, brain: siteBrain };
+        engines.set(key, engine);
+
+        if (!primaryEngine) {
+            primaryEngine = engine;
+            brain = siteBrain; // global brain follows the primary site from now on
+        }
+        logger.info(
+            `Engine [${key}]: ready — ${store.size()} rounds in memory | ` +
+            `${sitePatterns ? sitePatterns.patterns.size : 0} patterns | tier: ${siteBrain.tier}`
+        );
+        return engine;
+    };
 
     // Round-by-round + trade CSV logs (site/account tagged per row)
     const csvRounds = new CsvLog(path.join(config.DATA_DIR, 'rounds.csv'), [
@@ -971,8 +1043,9 @@ async function main() {
             candidate.on('pageerror', (error) => logger.error(`Game page JS error: ${error.message}`));
         } catch (error) { /* page may already be closing */ }
 
-        const monitor = new GameMonitor(candidate, config, brain, {
-            historyStore,
+        const engine = engineFor(session.site.id);
+        const monitor = new GameMonitor(candidate, config, engine.brain, {
+            historyStore: engine.store,
             csvRounds,
             selectors,
             site: session.site.id,
@@ -986,23 +1059,23 @@ async function main() {
         // (the payout bubbles the game page already shows).
         monitor.on('seedHistory', (values) => {
             if (!Array.isArray(values) || values.length === 0) return;
+            const engine = engineFor(monitor.site);
             // Per-site memory always takes the strip (force: seeds arrive as a
             // batch where adjacent identical values are legitimate).
-            const siteStore = siteHistoryFor(monitor.site);
-            values.forEach((v) => siteStore.append(v, { force: true }));
-            if (historyStore.size() >= 50) return; // memory already has its own rounds
-            values.forEach((v) => historyStore.append(v));
-            if (predictor) predictor.setHistory(historyStore.values);
-            if (patterns) patterns.rebuildStream(historyStore.values);
+            values.forEach((v) => engine.store.append(v, { force: true }));
+            if (engine.predictor) engine.predictor.setHistory(engine.store.values);
+            if (engine.patterns) engine.patterns.rebuildStream(engine.store.values);
             logger.info(
                 `Memory seeded with ${values.length} rounds from the on-screen history strip ` +
-                `(total ${historyStore.size()})`
+                `[${monitor.site}: total ${engine.store.size()}]`
             );
         });
 
         monitor.on('roundEnded', (d) => {
             database.saveRound(d.crash);
-            siteHistoryFor(monitor.site).append(d.crash);
+            // The monitor already appended the round to this site's own store;
+            // never feed other sites' streams into it.
+            if (d.brain) d.brain.site = monitor.site;
             if (dashboard) {
                 dashboard.io.emit('newData', {
                     value: d.crash,
@@ -1110,8 +1183,14 @@ async function main() {
             try { await session.browser.close(); } catch (error) { /* already closed */ }
         }
         sessions.clear();
-        if (predictor) predictor.save();
-        if (patterns) patterns.save();
+        for (const engine of engines.values()) {
+            if (engine.predictor) engine.predictor.save();
+            if (engine.patterns) engine.patterns.save();
+        }
+        if (!primaryEngine) {
+            if (predictor) predictor.save();
+            if (patterns) patterns.save();
+        }
         if (bankroll) bankroll.save();
         database.disconnect();
         if (dashboard) { try { dashboard.server.close(); } catch (error) { /* ignore */ } }

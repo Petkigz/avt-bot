@@ -45,14 +45,22 @@ async function startDashboard(port, logger, deps = {}) {
 
         app.get('/api/history', (req, res) => {
             try {
-                const file = path.join(dataDir, 'history.json');
+                // Union of all per-site memories (history-<site>.json); falls
+                // back to the legacy history.json when no per-site file exists.
+                const readValues = (file) => {
+                    if (!fs.existsSync(file)) return [];
+                    try {
+                        const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+                        return Array.isArray(raw) ? raw.filter((v) => Number.isFinite(v) && v > 0) : [];
+                    } catch (error) { return []; }
+                };
                 let values = [];
-                if (fs.existsSync(file)) {
-                    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-                    if (Array.isArray(raw)) {
-                        values = raw.filter((v) => Number.isFinite(v) && v > 0);
+                for (const name of fs.readdirSync(dataDir)) {
+                    if (/^history-.+\.json$/.test(name)) {
+                        values = values.concat(readValues(path.join(dataDir, name)));
                     }
                 }
+                if (values.length === 0) values = readValues(path.join(dataDir, 'history.json'));
                 const n = values.length;
                 const stats = n > 0 ? {
                     count: n,
