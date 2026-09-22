@@ -41,6 +41,7 @@ class GameMonitor extends EventEmitter {
         this.statsTracker = new StatsTracker();
         this.betManager = new BetManager(config, this.strategy, this.statsTracker);
         this.betManager.paperMode = !!(config.MODE && config.MODE.PAPER);
+        this.betManager.selectors = this.selectors; // bet/cashout clicks use the site widget
 
         this.multiplierHistory = [];
         this.historySize = config.GAME.HISTORY_SIZE;
@@ -661,6 +662,13 @@ class GameMonitor extends EventEmitter {
                     return c ? Array.from(c.children).slice(0, 12).map((el) => (el.textContent || '').trim()) : null;
                 }, marker.stripPath);
             }
+            // Live-betting readiness: does the stake input exist in this layout?
+            try {
+                out.betInput = await marker.frame.evaluate((s) => {
+                    const i = document.querySelector(s.BET_INPUT);
+                    return i ? { exists: true, currentValue: i.value } : { exists: false };
+                }, this.selectors);
+            } catch (error) { out.betInput = { error: error.message }; }
         } catch (error) {
             out.error = error.message;
         }

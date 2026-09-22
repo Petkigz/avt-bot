@@ -28,6 +28,7 @@ class BetManager {
         this.currentBet = null;
         this.isWaitingForResult = false;
         this.paperMode = false; // when true: no clicks, virtual fills (paper trading)
+        this.selectors = null; // per-site widget selectors; falls back to config.SELECTORS.GAME
         this.onTrade = null;    // optional callback(trade) for dashboard/DB
     }
 
@@ -47,7 +48,7 @@ class BetManager {
         }
 
         try {
-            const sel = this.config.SELECTORS.GAME;
+            const sel = this.selectors || this.config.SELECTORS.GAME;
             const betAmount = round2(stake ?? this.strategy.getNextBetAmount());
 
             if (!Number.isFinite(betAmount) || betAmount <= 0) {
@@ -146,7 +147,7 @@ class BetManager {
      * or the balance drops by (at least) the stake.
      */
     async waitForBetAcceptance(frame, betAmount, startBalance, timeoutMs = 8000) {
-        const sel = this.config.SELECTORS.GAME;
+        const sel = this.selectors || this.config.SELECTORS.GAME;
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
             try {
@@ -190,7 +191,7 @@ class BetManager {
     }
 
     async executeCashout(frame, liveMultiplier) {
-        const sel = this.config.SELECTORS.GAME;
+        const sel = this.selectors || this.config.SELECTORS.GAME;
         try {
             if (this.paperMode) {
                 this.recordWin(liveMultiplier);
@@ -227,7 +228,7 @@ class BetManager {
      * Confirmation signal: the cashout button disappears or becomes disabled.
      */
     async waitForCashoutConfirmation(frame, timeoutMs = 6000) {
-        const sel = this.config.SELECTORS.GAME;
+        const sel = this.selectors || this.config.SELECTORS.GAME;
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
             try {

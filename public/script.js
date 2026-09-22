@@ -704,6 +704,14 @@ function applyControlState(cs) {
   const modeBadge = el('modeBadge');
   if (cs.mode === 'live') { modeBadge.textContent = 'LIVE MODE'; modeBadge.className = 'live'; }
   else { modeBadge.textContent = 'OBSERVE MODE (paper)'; modeBadge.className = 'paper'; }
+  // Explicit Start/Stop live-betting buttons
+  const startLive = el('startLiveBtn');
+  const stopLive = el('stopLiveBtn');
+  if (startLive && stopLive) {
+    const live = cs.mode === 'live';
+    startLive.classList.toggle('hidden', cs.awaitingLaunch || (live && !cs.paused));
+    stopLive.classList.toggle('hidden', cs.awaitingLaunch || !live || cs.paused);
+  }
   applyModeToggle(cs);
 }
 
@@ -777,6 +785,22 @@ function requestModeToggle() {
 }
 onEvent('modeToggleBtn', 'click', requestModeToggle);
 onEvent('modeToggleBtnStatus', 'click', requestModeToggle);
+
+onEvent('startLiveBtn', 'click', () => {
+  const sure = confirm(
+    'Start LIVE betting?\n\n' +
+    'REAL bets with REAL funds. The warm-up gate, session/daily loss caps and stake caps stay enforced.'
+  );
+  if (!sure) return;
+  socket.emit('resumeBetting');
+  socket.emit('setMode', { mode: 'live' });
+  el('controlStatus').textContent = 'LIVE betting started — loss limits remain enforced.';
+});
+onEvent('stopLiveBtn', 'click', () => {
+  socket.emit('pauseBetting');
+  socket.emit('setMode', { mode: 'paper' });
+  el('controlStatus').textContent = 'Betting stopped — back to observe-only (paper) mode.';
+});
 
 function applyModeToggle(cs) {
   currentMode = cs.mode || 'paper';

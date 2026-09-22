@@ -36,8 +36,9 @@ const SELECTOR_SETS = {
             '[class*="history"] .bubble-multiplier, ' +
             '.bubble-multiplier',
         BALANCE: '.balance .amount',
-        BET_BUTTON: 'div.buttons-block > button.btn.btn-success.bet.ng-star-inserted',
-        CASHOUT_BUTTON: 'button.cashout.ng-star-inserted',
+        BET_BUTTON: 'div.buttons-block > button.btn.btn-success.bet.ng-star-inserted, ' +
+            'div.buttons-block > button.btn.bet, button.btn.bet',
+        CASHOUT_BUTTON: 'button.cashout.ng-star-inserted, button.cashout, button.btn.cashout',
         BET_INPUT: 'input[inputmode="decimal"]',
         CASHOUT_MULTIPLIER: '.amount span:first-child'
     }
@@ -103,6 +104,21 @@ const SITES = {
         minStake: 100,
         selectorSet: 'spribe',
         notes: 'No verified deep link — open Aviator from the Instant Games menu after login.'
+    },
+    'fortebet.ug': {
+        id: 'fortebet.ug',
+        name: 'Fortebet Uganda',
+        currency: 'UGX',
+        baseUrl: 'https://mobile.fortebet.ug',
+        loginUrl: 'https://mobile.fortebet.ug',
+        // User-verified Aviator deep link
+        gameUrl: 'https://mobile.fortebet.ug/aviator/game/real',
+        loginFlow: 'manual', // bot waits for you to log in (once per profile)
+        loginSelectors: BETPAWA_LOGIN, // generic hints; login is manual anyway
+        balanceSelector: '[class*="balance"]', // generic guess; refines once observed
+        minStake: 100,
+        selectorSet: 'spribe',
+        notes: 'Log in once with your phone + PIN — the profile is remembered.'
     },
     custom: {
         id: 'custom',

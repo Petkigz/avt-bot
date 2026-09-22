@@ -151,11 +151,15 @@ const config = {
     // NOTE: BetPawa renders the Spribe Aviator widget, so the selectors below
     // are Spribe's. If BetPawa serves a different build, adjust these.
     SELECTORS: {
+        // Global defaults (per-site sets in util/sites.js override these via
+        // the monitor). Comma-separated fallbacks cover Spribe client
+        // variations (e.g. the aviator-next build without .ng-star-inserted).
         GAME: {
             BUBBLE_MULTIPLIER: '.payouts-wrapper .bubble-multiplier',
             BALANCE: '.balance .amount',
-            BET_BUTTON: 'div.buttons-block > button.btn.btn-success.bet.ng-star-inserted',
-            CASHOUT_BUTTON: 'button.cashout.ng-star-inserted',
+            BET_BUTTON: 'div.buttons-block > button.btn.btn-success.bet.ng-star-inserted, ' +
+                'div.buttons-block > button.btn.bet, button.btn.bet',
+            CASHOUT_BUTTON: 'button.cashout.ng-star-inserted, button.cashout, button.btn.cashout',
             BET_INPUT: 'input[inputmode="decimal"]',
             CASHOUT_MULTIPLIER: '.amount span:first-child'
         }

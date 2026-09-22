@@ -121,6 +121,8 @@
                     <button id="pauseBtn" class="hidden">⏸ Pause betting</button>
                     <button id="resumeBtn" class="danger hidden">▶ Resume betting</button>
                     <button id="modeToggleBtn" class="hidden">🔴 Switch to LIVE betting</button>
+                    <button id="startLiveBtn" class="danger hidden" title="Turn on real betting (limits stay enforced)">▶ Start LIVE betting</button>
+                    <button id="stopLiveBtn" class="primary hidden" title="Immediately stop betting and return to observe-only">⏹ Stop betting</button>
                     <span class="small" id="controlStatus"></span>
                 </div>
                 <p class="small" id="siteStatus">Current: —</p>
@@ -132,6 +134,7 @@
                 <p class="small" id="tierNote"></p>
                 <p class="small" id="strategyProfile"></p>
                 <p class="small">Rounds from every site feed the SAME memory — Aviator is one global game feed. Login is always manual; passwords are never stored.</p>
+                <p class="small" style="color:var(--amber);">Auto-trade: once warm-up is complete, the bot follows the model's signals automatically in LIVE mode. Session/daily loss caps and stake caps ALWAYS stay enforced — there is no unlimited mode by design, because Aviator rounds are random and no model can guarantee wins.</p>
             </div>
         </div>
 
