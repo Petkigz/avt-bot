@@ -15,6 +15,7 @@ const Predictor = require('./game/predictor');
 const PatternDetector = require('./game/patternDetector');
 const CalibrationTracker = require('./game/calibration');
 const PredictionLogger = require('./game/predictionLogger');
+const { extractFeatures } = require('./game/features');
 const Bankroll = require('./game/bankroll');
 const Brain = require('./game/brain');
 const CsvLog = require('./util/csvLog');
@@ -1061,7 +1062,10 @@ async function main() {
             engine.pendingPrediction = { target, prob, threshold, allowed, tier: engine.brain.tier, regime };
             engine.predictionLog.logPrediction({
                 site: engine.siteId, target, prob, threshold, allowed,
-                tier: engine.brain.tier, regime
+                tier: engine.brain.tier, regime,
+                // Feature snapshot of the stream state — raw material for
+                // future error analysis (which, if any, feature carries signal).
+                features: extractFeatures(engine.store.values, target)
             });
         } catch (error) {
             logger.debug(`prediction log skipped: ${error.message}`);

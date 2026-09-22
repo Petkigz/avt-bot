@@ -421,8 +421,11 @@ Instead of assuming the model is predictive, the bot *measures* whether it is:
 
 - **Prediction log** — every prediction the engine forms is written to
   `data/predictions-<site>.jsonl` (append-only JSONL) together with how it
-  settled (`predictions` kind + `settle` kind lines). Nothing is ever
-  overwritten, so calibration and error analysis always have raw material.
+  settled (`predictions` kind + `settle` kind lines). Each prediction line
+  also carries a ~20-value **feature snapshot** of the stream state
+  (`game/features.js`: rolling means, low/high rates, streaks, entropy,
+  drift), so error analysis has raw material the moment enough rounds exist.
+  Nothing is ever overwritten.
 - **Calibration** (`game/calibration.js`) — tracks Brier score, log loss and
   Expected Calibration Error over settled predictions, plus the calibration
   curve as bins. A summary is printed per site at shutdown.
