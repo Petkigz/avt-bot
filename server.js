@@ -92,8 +92,20 @@ function startDashboard(port, logger, deps = {}) {
         app.post('/api/accounts/new', (req, res) => {
             if (!deps.accounts) return res.status(503).json({ error: 'accounts unavailable' });
             const { site, label, notes } = req.body || {};
-            if (!site) return res.status(400).json({ error: 'site is required' });
-            const account = deps.accounts.add({ site, label, notes });
+            // Input validation: site must be a registered profile, label is
+            // capped, and the total number of stored profiles is capped so a
+            // hostile/buggy client cannot spam the registry.
+            const knownIds = listSites().map((s) => s.id);
+            if (typeof site !== 'string' || !knownIds.includes(site)) {
+                return res.status(400).json({ error: 'site must be a registered site id' });
+            }
+            if (typeof label !== 'string' || label.trim().length === 0 || label.length > 60) {
+                return res.status(400).json({ error: 'label must be 1-60 characters' });
+            }
+            if (deps.accounts.list().length >= 50) {
+                return res.status(400).json({ error: 'account limit reached (50)' });
+            }
+            const account = deps.accounts.add({ site, label: label.trim(), notes: typeof notes === 'string' ? notes.slice(0, 200) : '' });
             res.json({ id: account.id, site: account.site, label: account.label });
         });
 
@@ -121,10 +133,26 @@ function startDashboard(port, logger, deps = {}) {
 
         const server = http.createServer(app);
         const io = new Server(server);
+        const host = config.DASHBOARD.HOST;
+
+        // Every new dashboard connection immediately gets the live state.
+        io.on('connection', (socket) => {
+            if (deps.getSessions) socket.emit('sessions', deps.getSessions());
+            if (deps.getActiveSite) {
+                const a = deps.getActiveSite() || {};
+                socket.emit('siteStatus', {
+                    phase: 'active',
+                    siteId: a.id,
+                    siteName: a.name,
+                    currency: a.currency,
+                    accountLabel: null
+                });
+            }
+        });
 
         server.once('error', reject);
-        server.listen(port, () => {
-            logger.info(`Dashboard running at http://localhost:${server.address().port}`);
+        server.listen(port, host, () => {
+            logger.info(`Dashboard running at http://${host === '0.0.0.0' ? 'localhost' : host}:${server.address().port} (bound to ${host})`);
             resolve({ io, server });
         });
     });

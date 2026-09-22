@@ -100,6 +100,28 @@ test('server exposes health + history + sites + accounts + logs', async () => {
         const acct2 = await fetch(`http://127.0.0.1:${port}/api/accounts`).then((r) => r.json());
         assert.equal(acct2.length, 2);
 
+        // Validation: unregistered site, empty label and the 50-account cap
+        const badSite = await fetch(`http://127.0.0.1:${port}/api/accounts/new`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ site: 'evil.example', label: 'x' })
+        });
+        assert.equal(badSite.status, 400);
+        const badLabel = await fetch(`http://127.0.0.1:${port}/api/accounts/new`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ site: 'betpawa.ug', label: '   ' })
+        });
+        assert.equal(badLabel.status, 400);
+        for (let i = 0; i < 48; i++) accounts.add({ site: 'betpawa.ug', label: `filler ${i}` });
+        const capped = await fetch(`http://127.0.0.1:${port}/api/accounts/new`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ site: 'betpawa.ug', label: 'one too many' })
+        });
+        assert.equal(capped.status, 400);
+        assert.equal((await capped.json()).error, 'account limit reached (50)');
+
         const rounds = await fetch(`http://127.0.0.1:${port}/api/logs?type=rounds`).then((r) => r.json());
         assert.equal(rounds.rows.length, 3);
         // newest first

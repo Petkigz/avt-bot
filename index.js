@@ -28,6 +28,8 @@ const sessions = new Map(); // accountId -> { browser, page, account, site }
 let activeSite = getSite(config.SITE_ID);
 let dashboard = null;
 let loginWaiter = null; // {resolve} while waiting for the user to log in
+let shuttingDown = false;   // global: graceful shutdown in progress
+let switchInProgress = false; // global: site/account switch in progress
 
 function emitSiteStatus(phase, extra = {}) {
     if (!dashboard) return;
@@ -242,7 +244,9 @@ async function launchSession(account, site) {
         sessions.delete(account.id);
         emitSessions();
         logger.warn(`Browser session closed for account "${account.label}" (${site.name})`);
-        if (sessions.size === 0) {
+        // Only treat "no sessions left" as fatal when it is unexpected —
+        // during shutdown or a site switch we close browsers on purpose.
+        if (sessions.size === 0 && !shuttingDown && !switchInProgress) {
             logger.error('No browser sessions left — exiting for supervisor restart');
             process.exit(1);
         }
@@ -293,6 +297,13 @@ async function navigateSessionToGame(session) {
         await waitForLoginConfirmation(session);
     }
 
+    // Session was cancelled (another switch happened) or closed while we
+    // were waiting for the login confirmation — stop navigating it.
+    if (session.cancelled || session.page.isClosed()) {
+        logger.warn(`Session for "${session.account.label}" cancelled during login wait`);
+        return;
+    }
+
     if (site.gameUrl) {
         setSessionPhase(session, 'navigating');
         await gotoSafe(page, site.gameUrl, `${site.name} Aviator`);
@@ -309,35 +320,47 @@ async function navigateSessionToGame(session) {
  * Switch the bot to another site/account. Triggered from the dashboard.
  */
 async function switchSite({ siteId, accountId } = {}) {
-    const site = getSite(siteId);
-    const account = (accountId && accounts.get(accountId)) || accounts.ensureDefault(site.id);
-    logger.info(`Site switch requested: ${site.name} / account "${account.label}"`);
-    emitSiteStatus('switching', { accountLabel: account.label });
+    switchInProgress = true;
+    try {
+        const site = getSite(siteId);
+        const account = (accountId && accounts.get(accountId)) || accounts.ensureDefault(site.id);
+        logger.info(`Site switch requested: ${site.name} / account "${account.label}"`);
+        emitSiteStatus('switching', { accountLabel: account.label });
 
-    // Enforce the concurrent-session cap (close the oldest over the cap).
-    while (sessions.size >= config.SESSIONS.MAX) {
-        const oldestId = sessions.keys().next().value;
-        const old = sessions.get(oldestId);
-        logger.info(`Session cap reached — closing "${old.account.label}"`);
-        try { await old.browser.close(); } catch (error) { /* already closed */ }
-        sessions.delete(oldestId);
-    }
+        // A pending login wait belongs to the previous target — cancel it so
+        // the old navigation stops blocking on a session that is being closed.
+        if (loginWaiter) loginWaiter.resolve();
 
-    // Same account already open? Just re-navigate it (account switching =
-    // closing the old profile's browser and opening the new one).
-    let session = sessions.get(account.id);
-    activeSite = site;
-    if (!session) {
-        session = await launchSession(account, site);
-    } else {
-        session.site = site;
+        // Enforce the concurrent-session cap (close the oldest over the cap,
+        // but never the account we are switching TO — that one re-navigates).
+        while (sessions.size >= config.SESSIONS.MAX) {
+            const oldestId = sessions.keys().next().value;
+            if (oldestId === account.id) break;
+            const old = sessions.get(oldestId);
+            old.cancelled = true;
+            logger.info(`Session cap reached — closing "${old.account.label}"`);
+            try { await old.browser.close(); } catch (error) { /* already closed */ }
+            sessions.delete(oldestId);
+        }
+
+        // Same account already open? Just re-navigate it (account switching =
+        // closing the old profile's browser and opening the new one).
+        let session = sessions.get(account.id);
+        activeSite = site;
+        if (!session) {
+            session = await launchSession(account, site);
+        } else {
+            session.site = site;
+            emitSessions();
+        }
+        accounts.setLastActive(site.id, account.id);
+        await navigateSessionToGame(session);
+        emitSiteStatus(site.gameUrl ? 'active' : 'findGame', { accountLabel: account.label });
         emitSessions();
+        logger.info(`Site switch complete: ${site.name} / "${account.label}"`);
+    } finally {
+        switchInProgress = false;
     }
-    accounts.setLastActive(site.id, account.id);
-    await navigateSessionToGame(session);
-    emitSiteStatus(site.gameUrl ? 'active' : 'findGame', { accountLabel: account.label });
-    emitSessions();
-    logger.info(`Site switch complete: ${site.name} / "${account.label}"`);
 }
 
 // ---------------------------------------------------------------------------
@@ -432,8 +455,9 @@ async function main() {
                 getActiveSite: () => ({ id: activeSite.id, name: activeSite.name, currency: activeSite.currency }),
                 getSessions: sessionsSnapshot
             });
+            // server.js already sends the sessions/siteStatus snapshot on
+            // connect; index.js only wires the command events.
             dashboard.io.on('connection', (socket) => {
-                socket.emit('sessions', sessionsSnapshot());
                 const doSwitch = (payload) => {
                     switchSite(payload || {}).catch((error) => {
                         logger.error(`Site/account switch failed: ${error.message}`);
@@ -549,7 +573,6 @@ async function main() {
     const sessionsHeartbeat = setInterval(emitSessions, 10000);
 
     // ---- Graceful shutdown ----
-    let shuttingDown = false;
     const shutdown = async (reason) => {
         if (shuttingDown) return;
         shuttingDown = true;

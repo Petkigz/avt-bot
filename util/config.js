@@ -165,7 +165,10 @@ const config = {
 
     DASHBOARD: {
         ENABLED: bool(process.env.DASHBOARD_ENABLED, true),
-        PORT: num(process.env.DASHBOARD_PORT, 3000)
+        PORT: num(process.env.DASHBOARD_PORT, 3000),
+        // Network interface the dashboard binds to. Use 127.0.0.1 to keep it
+        // strictly local; 0.0.0.0 exposes it on your LAN (no auth built in).
+        HOST: process.env.DASHBOARD_HOST || '0.0.0.0'
     },
 
     LOG_LEVEL: process.env.LOG_LEVEL || 'info',

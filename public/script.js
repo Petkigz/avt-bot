@@ -300,6 +300,14 @@ let accountsCache = [];
 
 function el(id) { return document.getElementById(id); }
 
+// HTML-escape anything interpolated into innerHTML (account labels and CSV
+// fields are user-supplied data — never trust them).
+function esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 async function loadSiteControls() {
   try {
     const [sitesRes, accountsRes] = await Promise.all([fetch('/api/sites'), fetch('/api/accounts')]);
@@ -454,11 +462,11 @@ function renderSessions(list) {
     const tr = document.createElement('tr');
     const phaseCls = s.phase === 'monitoring' ? 'live' : (s.phase === 'loginRequired' ? 'paper' : '');
     tr.innerHTML =
-      `<td>${s.siteName || s.siteId}</td>` +
-      `<td>${s.accountLabel}</td>` +
-      `<td><span class="${phaseCls}">${s.phase}</span></td>` +
+      `<td>${esc(s.siteName || s.siteId)}</td>` +
+      `<td>${esc(s.accountLabel)}</td>` +
+      `<td><span class="${phaseCls}">${esc(s.phase)}</span></td>` +
       `<td>${s.monitoring ? '✅' : '—'}</td>` +
-      `<td>${s.roundsSeen}</td>`;
+      `<td>${esc(s.roundsSeen)}</td>`;
     body.appendChild(tr);
   }
 }
@@ -484,7 +492,7 @@ async function loadAccountsPanel() {
     for (const a of accountsList) {
       const tr = document.createElement('tr');
       const lastLogin = a.lastLoginAt ? a.lastLoginAt.slice(0, 10) : 'never';
-      tr.innerHTML = `<td>${a.site}</td><td>${a.label}</td><td>${lastLogin}</td>`;
+      tr.innerHTML = `<td>${esc(a.site)}</td><td>${esc(a.label)}</td><td>${esc(lastLogin)}</td>`;
       const td = document.createElement('td');
       const btn = document.createElement('button');
       btn.textContent = 'Switch to';
@@ -520,12 +528,12 @@ async function loadSiteHistory() {
     for (const s of sites) {
       const tr = document.createElement('tr');
       tr.innerHTML =
-        `<td>${s.siteName}</td>` +
-        `<td>${s.rounds}</td>` +
+        `<td>${esc(s.siteName)}</td>` +
+        `<td>${esc(s.rounds)}</td>` +
         `<td>${s.avg.toFixed(2)}x</td>` +
         `<td>${s.pctBelow15.toFixed(1)}%</td>` +
-        `<td>${s.accounts.map((a) => `${a.label} (${a.rounds})`).join(', ') || '—'}</td>` +
-        `<td>${s.lastTs ? s.lastTs.slice(0, 16).replace('T', ' ') : '—'}</td>`;
+        `<td>${s.accounts.map((a) => `${esc(a.label)} (${esc(a.rounds)})`).join(', ') || '—'}</td>` +
+        `<td>${esc(s.lastTs ? s.lastTs.slice(0, 16).replace('T', ' ') : '—')}</td>`;
       statsBody.appendChild(tr);
     }
 

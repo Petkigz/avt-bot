@@ -25,6 +25,7 @@ and streams live stats to a browser dashboard.
 - [How it works](#how-it-works)
 - [Testing](#testing)
 - [FAQ](#faq)
+- [Security](#security)
 - [Contributing](#-contributing)
 - [Disclaimer](#-legal-disclaimer)
 - [License](#license)
@@ -408,6 +409,26 @@ A: `logs/combined.log` (all) and `logs/error.log` (errors only).
 **Q: It stopped betting — why?**
 A: Check the log for `RISK LIMIT REACHED`. Betting halts (monitoring continues) once a
 stop-loss, take-profit or 5-loss streak triggers.
+
+## Security
+
+- **No credentials are ever stored.** `data/accounts.json` holds metadata only
+  (id/site/label/last-login); account updates are whitelist-filtered so stray
+  fields (passwords, PINs) are dropped even if passed in by mistake. Logins
+  live inside per-account browser profiles (`data/profiles/<id>`), which are
+  gitignored — treat that folder like a wallet: anyone with it can open your
+  logged-in sessions.
+- **The dashboard has no built-in authentication.** It binds to
+  `DASHBOARD_HOST` (default `0.0.0.0`). On an untrusted network set
+  `DASHBOARD_HOST=127.0.0.1` so only your machine can reach it.
+- **Hardened inputs:** `/api/accounts/new` validates the site id against the
+  registry, caps label length and the total profile count (50); `/api/logs`
+  only ever reads the two known CSV files; dashboard tables HTML-escape all
+  server-supplied values.
+- **Nothing sensitive in logs:** the bot logs rounds, decisions and phases —
+  never credentials or balances beyond what the game page shows.
+- **Manual login only:** the bot never types your phone number or PIN; you log
+  in yourself inside the per-account browser profile.
 
 ## 🤝 Contributing
 
