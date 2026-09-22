@@ -552,9 +552,9 @@ class GameMonitor extends EventEmitter {
                         : [];
                 } else {
                     bubbles = Array.from(document.querySelectorAll(s.BUBBLE_MULTIPLIER))
-                        .slice(0, 12)
-                        .map((el) => parseFloat((el.textContent || '').trim().replace(/x/gi, '')))
-                        .filter((v) => Number.isFinite(v) && v > 0);
+                        .map((el) => parseFloat((el.textContent || '').trim().replace(/x/gi, '').replace(',', '.')))
+                        .filter((v) => Number.isFinite(v) && v > 0)
+                        .slice(0, 30);
                 }
 
                 const betBtn = q(s.BET_BUTTON);
@@ -616,7 +616,17 @@ class GameMonitor extends EventEmitter {
                 return out;
             }
             out.marker = marker.stripPath ? `content scan: ${marker.stripPath}` : 'classic selectors';
-            const state = await this.readState(marker.frame, marker.stripPath);
+            let state = await this.readState(marker.frame, marker.stripPath);
+            // Same verification the monitor does: empty classic match -> content scan
+            if (state && state.bubbles.length === 0 && !marker.stripPath) {
+                const strip = await FrameHelper.findMultiplierStrip(this.page);
+                if (strip) {
+                    marker = { frame: strip.frame, stripPath: strip.path };
+                    out.marker = `classic matched but empty -> content scan: ${strip.path}`;
+                    const alt = await this.readState(marker.frame, marker.stripPath);
+                    if (alt) state = alt;
+                }
+            }
             out.parsedBubbles = state ? state.bubbles : null;
             out.betButton = state ? state.betButton : null;
             out.cashoutButton = state ? state.cashoutButton : null;
