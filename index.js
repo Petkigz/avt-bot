@@ -40,11 +40,95 @@ function emitSiteStatus(phase, extra = {}) {
     });
 }
 
+function sessionsSnapshot() {
+    return [...sessions.values()].map((s) => ({
+        accountId: s.account.id,
+        accountLabel: s.account.label,
+        siteId: s.site.id,
+        siteName: s.site.name,
+        currency: s.site.currency,
+        phase: s.phase || 'starting',
+        monitoring: !!s.monitor,
+        roundsSeen: s.monitor ? s.monitor.roundId : 0
+    }));
+}
+
+function emitSessions() {
+    if (dashboard) dashboard.io.emit('sessions', sessionsSnapshot());
+}
+
+function setSessionPhase(session, phase) {
+    session.phase = phase;
+    emitSessions();
+}
+
 // ---------------------------------------------------------------------------
-// Interactive strategy selection (MICRO is the safe default)
+// Interactive site + account selection (CLI dropdown), then strategy
 // ---------------------------------------------------------------------------
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const askQuestion = (query) => new Promise((resolve) => rl.question(query, resolve));
+
+/**
+ * CLI site/account selector.
+ *  - SITE env set           -> use it (no prompt)
+ *  - TTY, no SITE env       -> interactive dropdown of sites, then accounts
+ *  - no TTY, no SITE env    -> restore the last-active site/account
+ * Falls back to the default site + default account.
+ */
+async function selectSiteAndAccount() {
+    let site = getSite(config.SITE_ID);
+
+    if (process.env.SITE) {
+        logger.info(`Site selected via SITE env: ${site.name}`);
+    } else if (process.stdin.isTTY) {
+        const sites = listSites();
+        console.log('\nAvailable sites:');
+        sites.forEach((s, i) => console.log(`  ${i + 1}. ${s.id} — ${s.name} (${s.currency})`));
+        const choice = await askQuestion(`Select site (1-${sites.length}) [default 1]: `);
+        const idx = parseInt(choice, 10) - 1;
+        if (Number.isInteger(idx) && idx >= 0 && idx < sites.length) {
+            site = sites[idx];
+        } else if (choice.trim() !== '') {
+            logger.warn(`Invalid choice "${choice.trim()}" — using ${site.id}`);
+        }
+    } else {
+        const last = accounts.getLastActive();
+        if (last && last.siteId) {
+            site = getSite(last.siteId);
+            logger.info(`Restoring last-active site: ${site.id}`);
+        }
+    }
+
+    const saved = accounts.list(site.id);
+    let account = null;
+
+    if (process.stdin.isTTY) {
+        console.log(`\nSaved login profiles for ${site.id}:`);
+        if (saved.length === 0) console.log('  (none yet)');
+        saved.forEach((a, i) => {
+            const lastLogin = a.lastLoginAt ? ` — last login ${a.lastLoginAt.slice(0, 10)}` : '';
+            console.log(`  ${i + 1}. "${a.label}"${lastLogin}`);
+        });
+        console.log(`  ${saved.length + 1}. + Create a new account`);
+        const choice = await askQuestion(`Select account (1-${saved.length + 1}) [default 1]: `);
+        const n = parseInt(choice, 10);
+        if (n === saved.length + 1) {
+            const label = (await askQuestion('Label for the new account: ')).trim() || `${site.id} account`;
+            account = accounts.add({ site: site.id, label });
+        } else if (Number.isInteger(n) && n >= 1 && n <= saved.length) {
+            account = saved[n - 1];
+        } else if (choice.trim() !== '') {
+            logger.warn(`Invalid choice "${choice.trim()}" — using the first/default account`);
+        }
+    }
+
+    if (!account) {
+        const last = accounts.getLastActive();
+        account = (last && last.siteId === site.id && accounts.get(last.accountId)) ||
+            accounts.ensureDefault(site.id);
+    }
+    return { site, account };
+}
 
 function listStrategyCatalog() {
     return Object.values(config.BETTING_STRATEGIES)
@@ -150,11 +234,13 @@ async function launchSession(account, site) {
     const page = await browser.newPage();
     page.setDefaultNavigationTimeout(config.NAVIGATION.TIMEOUT);
 
-    const session = { browser, page, account, site, monitor: null };
+    const session = { browser, page, account, site, monitor: null, phase: 'launching' };
     sessions.set(account.id, session);
+    emitSessions();
 
     browser.on('disconnected', () => {
         sessions.delete(account.id);
+        emitSessions();
         logger.warn(`Browser session closed for account "${account.label}" (${site.name})`);
         if (sessions.size === 0) {
             logger.error('No browser sessions left — exiting for supervisor restart');
@@ -171,11 +257,21 @@ async function launchSession(account, site) {
  *  - click "I'm logged in — continue" on the dashboard
  *  - press ENTER in the terminal (when running in a TTY)
  */
-function waitForLoginConfirmation(site) {
+function waitForLoginConfirmation(session) {
+    const site = session.site;
     return new Promise((resolve) => {
-        loginWaiter = { resolve: () => { loginWaiter = null; resolve(); } };
+        loginWaiter = {
+            account: session.account,
+            resolve: () => {
+                accounts.touchLogin(session.account.id);
+                logger.info(`Login confirmed for "${session.account.label}" — profile remembered`);
+                loginWaiter = null;
+                resolve();
+            }
+        };
         logger.warn(
-            `>> LOG IN to ${site.name} in the browser window now. ` +
+            `>> LOG IN to ${site.name} in the browser window now ` +
+            `(login page: ${site.loginUrl || site.baseUrl}). ` +
             `Then click "I'm logged in" on the dashboard` +
             (process.stdin.isTTY ? ' (or press ENTER here)' : '') + '.'
         );
@@ -192,15 +288,19 @@ async function navigateSessionToGame(session) {
     await gotoSafe(page, site.baseUrl, `${site.name} home`);
 
     if (site.loginFlow === 'manual') {
+        setSessionPhase(session, 'loginRequired');
         emitSiteStatus('loginRequired', { accountLabel: session.account.label });
-        await waitForLoginConfirmation(site);
+        await waitForLoginConfirmation(session);
     }
 
     if (site.gameUrl) {
+        setSessionPhase(session, 'navigating');
         await gotoSafe(page, site.gameUrl, `${site.name} Aviator`);
+        setSessionPhase(session, 'active');
         emitSiteStatus('active', { accountLabel: session.account.label });
     } else {
         logger.warn(`${site.name}: no deep link configured — open Aviator from the site menu; the watcher will find it`);
+        setSessionPhase(session, 'findGame');
         emitSiteStatus('findGame', { accountLabel: session.account.label });
     }
 }
@@ -223,16 +323,20 @@ async function switchSite({ siteId, accountId } = {}) {
         sessions.delete(oldestId);
     }
 
-    // Same account already open? Just re-navigate it.
+    // Same account already open? Just re-navigate it (account switching =
+    // closing the old profile's browser and opening the new one).
     let session = sessions.get(account.id);
     activeSite = site;
     if (!session) {
         session = await launchSession(account, site);
     } else {
         session.site = site;
+        emitSessions();
     }
+    accounts.setLastActive(site.id, account.id);
     await navigateSessionToGame(session);
     emitSiteStatus(site.gameUrl ? 'active' : 'findGame', { accountLabel: account.label });
+    emitSessions();
     logger.info(`Site switch complete: ${site.name} / "${account.label}"`);
 }
 
@@ -325,15 +429,19 @@ async function main() {
         try {
             dashboard = await startDashboard(config.DASHBOARD.PORT, logger, {
                 accounts,
-                getActiveSite: () => ({ id: activeSite.id, name: activeSite.name, currency: activeSite.currency })
+                getActiveSite: () => ({ id: activeSite.id, name: activeSite.name, currency: activeSite.currency }),
+                getSessions: sessionsSnapshot
             });
             dashboard.io.on('connection', (socket) => {
-                socket.on('switchSite', (payload) => {
+                socket.emit('sessions', sessionsSnapshot());
+                const doSwitch = (payload) => {
                     switchSite(payload || {}).catch((error) => {
-                        logger.error(`Site switch failed: ${error.message}`);
+                        logger.error(`Site/account switch failed: ${error.message}`);
                         emitSiteStatus('error', { message: error.message });
                     });
-                });
+                };
+                socket.on('switchSite', doSwitch);
+                socket.on('switchAccount', doSwitch); // same flow: {siteId, accountId}
                 socket.on('confirmLogin', () => {
                     if (loginWaiter) loginWaiter.resolve();
                 });
@@ -407,6 +515,7 @@ async function main() {
         });
 
         monitor.startMonitoring();
+        setSessionPhase(session, 'monitoring');
         logger.info(`Game monitor started on ${candidate.url()} [${session.site.name} / "${session.account.label}"]`);
     };
 
@@ -428,11 +537,16 @@ async function main() {
         }
     }, 3000);
 
-    // ---- Initial session: active site + default account ----
-    activeSite = getSite(config.SITE_ID);
-    const initialAccount = accounts.ensureDefault(activeSite.id);
-    const initialSession = await launchSession(initialAccount, activeSite);
+    // ---- Initial session: CLI site/account selection (or last-active) ----
+    const selection = await selectSiteAndAccount();
+    activeSite = selection.site;
+    accounts.setLastActive(activeSite.id, selection.account.id);
+    logger.info(`Session: ${activeSite.name} / "${selection.account.label}" (profile ${selection.account.id})`);
+    const initialSession = await launchSession(selection.account, activeSite);
     await navigateSessionToGame(initialSession);
+
+    // Keep the dashboard's session view fresh even between phase changes
+    const sessionsHeartbeat = setInterval(emitSessions, 10000);
 
     // ---- Graceful shutdown ----
     let shuttingDown = false;
@@ -441,6 +555,7 @@ async function main() {
         shuttingDown = true;
         logger.info(`Shutting down (${reason})...`);
         clearInterval(watcher);
+        clearInterval(sessionsHeartbeat);
         for (const session of sessions.values()) {
             if (session.monitor) session.monitor.stopMonitoring();
             try { await session.browser.close(); } catch (error) { /* already closed */ }

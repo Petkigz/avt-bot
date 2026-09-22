@@ -438,6 +438,149 @@ el('logRoundsBtn').addEventListener('click', () => { logType = 'rounds'; loadLog
 el('logTradesBtn').addEventListener('click', () => { logType = 'trades'; loadLogs(); });
 el('logRefreshBtn').addEventListener('click', loadLogs);
 
+// ---------------------------------------------------------------------------
+// Live bot sessions (connected to real session state via socket + REST)
+// ---------------------------------------------------------------------------
+function renderSessions(list) {
+  const body = el('sessionsTableBody');
+  body.innerHTML = '';
+  const note = el('sessionsNote');
+  if (!list || list.length === 0) {
+    note.textContent = 'No browser sessions open right now.';
+    return;
+  }
+  note.textContent = `${list.length} session(s) open (cap set by MAX_SESSIONS).`;
+  for (const s of list) {
+    const tr = document.createElement('tr');
+    const phaseCls = s.phase === 'monitoring' ? 'live' : (s.phase === 'loginRequired' ? 'paper' : '');
+    tr.innerHTML =
+      `<td>${s.siteName || s.siteId}</td>` +
+      `<td>${s.accountLabel}</td>` +
+      `<td><span class="${phaseCls}">${s.phase}</span></td>` +
+      `<td>${s.monitoring ? '✅' : '—'}</td>` +
+      `<td>${s.roundsSeen}</td>`;
+    body.appendChild(tr);
+  }
+}
+
+socket.on('sessions', renderSessions);
+fetch('/api/sessions').then((r) => r.json()).then(renderSessions).catch(() => {});
+
+// ---------------------------------------------------------------------------
+// Saved login profiles (multi-account) — with per-account switch buttons
+// ---------------------------------------------------------------------------
+async function loadAccountsPanel() {
+  try {
+    const res = await fetch('/api/accounts');
+    const accountsList = await res.json();
+    const body = el('accountsTableBody');
+    body.innerHTML = '';
+    if (accountsList.length === 0) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td colspan="4">No saved profiles yet — add one with "+ account".</td>';
+      body.appendChild(tr);
+      return;
+    }
+    for (const a of accountsList) {
+      const tr = document.createElement('tr');
+      const lastLogin = a.lastLoginAt ? a.lastLoginAt.slice(0, 10) : 'never';
+      tr.innerHTML = `<td>${a.site}</td><td>${a.label}</td><td>${lastLogin}</td>`;
+      const td = document.createElement('td');
+      const btn = document.createElement('button');
+      btn.textContent = 'Switch to';
+      btn.addEventListener('click', () => {
+        el('siteStatus').textContent = `Switching to "${a.label}"…`;
+        socket.emit('switchAccount', { siteId: a.site, accountId: a.id });
+      });
+      td.appendChild(btn);
+      tr.appendChild(td);
+      body.appendChild(tr);
+    }
+  } catch (e) { /* server not ready */ }
+}
+
+loadAccountsPanel();
+setInterval(loadAccountsPanel, 15000);
+
+// ---------------------------------------------------------------------------
+// Cross-site history charts (from /api/history/bySite)
+// ---------------------------------------------------------------------------
+let siteRoundsChart = null;
+let siteRecentChart = null;
+const sitePalette = ['#4bc0c0', '#ff6384', '#ffce56', '#8e7cff', '#7bd88f', '#ff9f40'];
+
+async function loadSiteHistory() {
+  try {
+    const res = await fetch('/api/history/bySite');
+    const data = await res.json();
+    const sites = data.sites || [];
+
+    const statsBody = el('siteStatsBody');
+    statsBody.innerHTML = '';
+    for (const s of sites) {
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        `<td>${s.siteName}</td>` +
+        `<td>${s.rounds}</td>` +
+        `<td>${s.avg.toFixed(2)}x</td>` +
+        `<td>${s.pctBelow15.toFixed(1)}%</td>` +
+        `<td>${s.accounts.map((a) => `${a.label} (${a.rounds})`).join(', ') || '—'}</td>` +
+        `<td>${s.lastTs ? s.lastTs.slice(0, 16).replace('T', ' ') : '—'}</td>`;
+      statsBody.appendChild(tr);
+    }
+
+    if (sites.length === 0) return;
+
+    if (siteRoundsChart) siteRoundsChart.destroy();
+    siteRoundsChart = new Chart(el('siteRoundsChart'), {
+      type: 'bar',
+      data: {
+        labels: sites.map((s) => s.siteName),
+        datasets: [{
+          label: 'Stored rounds',
+          data: sites.map((s) => s.rounds),
+          backgroundColor: sites.map((_, i) => sitePalette[i % sitePalette.length])
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { title: { display: true, text: 'Rounds recorded per site', color: '#8a97a3' }, legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#8a97a3' }, grid: { color: '#333' } },
+          y: { ticks: { color: '#8a97a3' }, grid: { color: '#333' }, beginAtZero: true }
+        }
+      }
+    });
+
+    if (siteRecentChart) siteRecentChart.destroy();
+    siteRecentChart = new Chart(el('siteRecentChart'), {
+      type: 'line',
+      data: {
+        labels: Array.from({ length: Math.max(...sites.map((s) => s.recent.length)) }, (_, i) => i + 1),
+        datasets: sites.map((s, i) => ({
+          label: s.siteName,
+          data: s.recent,
+          borderColor: sitePalette[i % sitePalette.length],
+          backgroundColor: 'transparent',
+          pointRadius: 1,
+          tension: 0.2
+        }))
+      },
+      options: {
+        responsive: true,
+        plugins: { title: { display: true, text: 'Last 30 crashes per site (same global feed)', color: '#8a97a3' } },
+        scales: {
+          x: { ticks: { color: '#8a97a3', maxTicksLimit: 10 }, grid: { color: '#333' } },
+          y: { ticks: { color: '#8a97a3' }, grid: { color: '#333' } }
+        }
+      }
+    });
+  } catch (e) { /* ignore */ }
+}
+
+loadSiteHistory();
+setInterval(loadSiteHistory, 20000);
+
 loadSiteControls();
 loadLogs();
 setInterval(loadLogs, 15000);

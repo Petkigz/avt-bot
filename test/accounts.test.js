@@ -57,6 +57,53 @@ test('remove drops the account from the registry', () => {
     assert.equal(mgr.get(a.id), null);
 });
 
+test('touchLogin records a last-login timestamp that persists', () => {
+    const dir = tmpDir();
+    const mgr = new AccountsManager(dir);
+    const a = mgr.add({ site: 'betpawa.ug', label: 'one' });
+    assert.equal(a.lastLoginAt, null);
+    mgr.touchLogin(a.id);
+    const mgr2 = new AccountsManager(dir);
+    assert.ok(mgr2.get(a.id).lastLoginAt);
+    assert.equal(typeof mgr.touchLogin('missing'), 'object'); // null-safe
+});
+
+test('update only allows whitelisted metadata fields', () => {
+    const dir = tmpDir();
+    const mgr = new AccountsManager(dir);
+    const a = mgr.add({ site: 'betpawa.ug', label: 'one' });
+    mgr.update(a.id, { label: 'renamed', notes: 'my notes', password: 'nope', site: 'evil' });
+    const updated = mgr.get(a.id);
+    assert.equal(updated.label, 'renamed');
+    assert.equal(updated.notes, 'my notes');
+    assert.equal(updated.password, undefined);
+    assert.equal(updated.site, 'betpawa.ug');
+});
+
+test('lastActive session is remembered across restarts', () => {
+    const dir = tmpDir();
+    const mgr = new AccountsManager(dir);
+    const a = mgr.add({ site: 'betpawa.co.zm', label: 'zm' });
+    mgr.setLastActive('betpawa.co.zm', a.id);
+    const mgr2 = new AccountsManager(dir);
+    assert.equal(mgr2.getLastActive().siteId, 'betpawa.co.zm');
+    assert.equal(mgr2.getLastActive().accountId, a.id);
+    mgr2.remove(a.id); // removing the active account clears lastActive
+    assert.equal(mgr2.getLastActive(), null);
+});
+
+test('legacy plain-array accounts.json still loads (backward compat)', () => {
+    const dir = tmpDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'accounts.json'), JSON.stringify([
+        { id: 'old-1', site: 'betpawa.ug', label: 'legacy' }
+    ]));
+    const mgr = new AccountsManager(dir);
+    assert.equal(mgr.list().length, 1);
+    assert.equal(mgr.get('old-1').label, 'legacy');
+    assert.equal(mgr.getLastActive(), null);
+});
+
 test('metadata store never holds credentials', () => {
     const dir = tmpDir();
     const mgr = new AccountsManager(dir);

@@ -36,9 +36,10 @@
         button.primary { background: rgba(75,192,192,0.25); border-color: rgba(75,192,192,0.6); }
         button.warn { background: #7a5c2e; border-color: #ffc46b; }
         .hidden { display: none; }
-        #sitePanel, #logPanel { border: 1px solid #3a4048; }
+        #sitePanel, #logPanel, #siteHistoryPanel { border: 1px solid #3a4048; }
+        #sessionRow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
         #logTable { font-size: 0.75em; }
-        @media (max-width: 800px) { #learningPanel { grid-template-columns: 1fr; } }
+        @media (max-width: 800px) { #learningPanel, #sessionRow { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
@@ -63,6 +64,25 @@
             </div>
             <p class="small" id="siteStatus">Current: —</p>
             <p class="small" id="multiSiteNote">Rounds from every site feed the SAME memory (Aviator is one global game feed).</p>
+        </div>
+
+        <div id="sessionRow">
+            <div class="panel" id="sessionsPanel">
+                <h2>Live bot sessions</h2>
+                <table id="sessionsTable" border="1">
+                    <thead><tr><th>Site</th><th>Account</th><th>Phase</th><th>Monitoring</th><th>Rounds seen</th></tr></thead>
+                    <tbody id="sessionsTableBody"></tbody>
+                </table>
+                <p class="small" id="sessionsNote"></p>
+            </div>
+            <div class="panel" id="accountsPanel">
+                <h2>Saved login profiles</h2>
+                <table id="accountsTable" border="1">
+                    <thead><tr><th>Site</th><th>Label</th><th>Last login</th><th></th></tr></thead>
+                    <tbody id="accountsTableBody"></tbody>
+                </table>
+                <p class="small">Each profile is its own persistent browser — log in once and it stays logged in. Passwords are never stored.</p>
+            </div>
         </div>
 
         <div class="cards">
@@ -120,6 +140,18 @@
                     <tbody id="logTableBody"></tbody>
                 </table>
             </div>
+        </div>
+
+        <div class="panel" id="siteHistoryPanel">
+            <h2>Cross-site history (stored rounds, per site)</h2>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div><canvas id="siteRoundsChart" height="140"></canvas></div>
+                <div><canvas id="siteRecentChart" height="140"></canvas></div>
+            </div>
+            <table id="siteStatsTable" border="1">
+                <thead><tr><th>Site</th><th>Rounds</th><th>Avg crash</th><th>% below 1.5x</th><th>Accounts</th><th>Last round</th></tr></thead>
+                <tbody id="siteStatsBody"></tbody>
+            </table>
         </div>
 
         <div id="chartContainer">

@@ -220,18 +220,34 @@ site feeds the same memory, model and pattern miner.
 | `betpawa.co.mw` | MWK | No verified deep link — open Aviator from the site menu; the watcher finds the game page |
 | `custom` | env | Point `CUSTOM_BASE_URL` / `CUSTOM_GAME_URL` at any Spribe-Aviator site |
 
-**Switching sites live:** use the *Site & Account* card on the dashboard —
-pick a site, pick (or create) an account, click **Switch site**. The bot closes
-excess sessions (`MAX_SESSIONS`), opens a browser with that account's own
-persistent profile, waits for you to log in, then navigates to the game. You
-can also press ENTER in the terminal instead of clicking continue.
+**Choosing site & account at startup (CLI dropdown):** unless `SITE` is set in
+`.env`, startup shows an interactive menu — pick the site (1–4), then pick one
+of your saved login profiles or create a new one. Without a terminal, the bot
+restores the last-active site/account automatically.
 
-**Accounts:** each account is a persistent browser profile under
+**Switching sites/accounts live:** use the *Site & Account* card on the
+dashboard — pick a site, pick (or create) an account, click **Switch site**.
+Saved profiles are listed in *Saved login profiles* with a per-account
+**Switch to** button (account switching = close old profile's browser, open
+the new one). The bot enforces `MAX_SESSIONS`, waits for you to log in, then
+navigates to the game. You can also press ENTER in the terminal instead of
+clicking continue.
+
+**Saved login profiles:** each account is a persistent browser profile under
 `data/profiles/<id>` — log in once per account and the session survives
-restarts. Only metadata (id/site/label) is stored in `data/accounts.json`;
+restarts; the dashboard shows each profile's last confirmed login. Only
+metadata (id/site/label/lastLoginAt) is stored in `data/accounts.json`;
 **passwords are never stored anywhere**. Multiple accounts per site are
 supported; concurrent sessions are capped by `MAX_SESSIONS` (oldest over the
 cap is closed).
+
+**Real site config structure:** every profile in `util/sites.js` carries
+`baseUrl`, `loginUrl`, `loginSelectors` (username/PIN/submit/logged-in hints),
+`balanceSelector`, `gameUrl` and per-site notes. Login stays manual by design —
+the selector hints only let tooling point at the right fields. The dashboard's
+*Live bot sessions* panel shows each open browser session's site, account,
+phase (`launching / loginRequired / navigating / active / monitoring`) and
+rounds seen, and *Cross-site history* charts the stored rounds per site.
 
 **Cross-site data:** every row in `data/rounds.csv` and `data/trades.csv` is
 tagged with `site` and `account`, so you can always see which site/account
@@ -316,14 +332,17 @@ REST endpoints:
 | Endpoint | Returns |
 |---|---|
 | `GET /api/history` | All-time round count, averages, %-below-1.5x, last 50 rounds |
+| `GET /api/history/bySite` | Stored rounds aggregated per site (counts, avg, %-below-1.5x, per-account splits, last 30 crashes) |
 | `GET /api/sites` | Registered site profiles + the active one |
-| `GET /api/accounts` | Account metadata (never credentials) |
+| `GET /api/accounts` | Account metadata + last login (never credentials) |
 | `POST /api/accounts/new` | Create an account `{site, label}` |
+| `GET /api/sessions` | Live browser sessions (site/account/phase/rounds seen) |
 | `GET /api/logs?type=rounds\|trades&limit=N` | Stored log rows as JSON (newest first) |
 
 Socket.IO: the server emits `siteStatus` (`switching` / `loginRequired` /
-`findGame` / `active` / `error`); the client sends `switchSite
-{siteId, accountId}` and `confirmLogin`.
+`findGame` / `active` / `error`) and `sessions` (live session snapshots); the
+client sends `switchSite {siteId, accountId}`, `switchAccount {siteId,
+accountId}` and `confirmLogin`.
 
 ## Database
 

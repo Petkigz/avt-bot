@@ -30,6 +30,20 @@ test('all spribe-widget sites share the same selector set', () => {
     assert.ok(ug.BET_BUTTON.length > 0);
 });
 
+test('built-in sites define login URLs and login-form selector hints', () => {
+    for (const s of listSites()) {
+        if (s.id === 'custom') continue; // env-driven, empty until configured
+        assert.match(s.loginUrl, /^https:\/\//, `${s.id} loginUrl`);
+        assert.ok(s.loginSelectors.usernameInput.length > 0, `${s.id} usernameInput`);
+        assert.ok(s.loginSelectors.passwordInput.length > 0, `${s.id} passwordInput`);
+        assert.ok(s.loginSelectors.submitButton.length > 0, `${s.id} submitButton`);
+        assert.ok(s.loginSelectors.loggedInIndicator.length > 0, `${s.id} loggedInIndicator`);
+        assert.ok(s.balanceSelector.length > 0, `${s.id} balanceSelector`);
+        assert.ok(typeof s.notes === 'string' && s.notes.length > 0, `${s.id} notes`);
+        assert.equal(s.loginFlow, 'manual', `${s.id} loginFlow`);
+    }
+});
+
 test('built-in sites expose working URLs; unknown sites degrade gracefully', () => {
     for (const s of listSites()) {
         assert.ok(Number.isFinite(s.minStake) && s.minStake >= 0, `${s.id} minStake`);
