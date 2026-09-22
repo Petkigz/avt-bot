@@ -150,8 +150,25 @@ class GameMonitor extends EventEmitter {
         }
         this.stripPath = marker.stripPath;
 
-        const state = await this.readState(marker.frame, marker.stripPath);
+        let state = await this.readState(marker.frame, marker.stripPath);
         if (!state) return;
+        // Classic selectors can match hidden/template elements that yield no
+        // parseable rounds — fall back to the content-discovered strip then.
+        if (state.bubbles.length === 0 && !marker.stripPath) {
+            try {
+                const strip = await FrameHelper.findMultiplierStrip(this.page);
+                if (strip) {
+                    if (!this.stripAnnounced) {
+                        this.stripAnnounced = true;
+                        logger.warn('Classic selectors matched a hidden element — switching to the content-discovered round strip');
+                    }
+                    marker = { frame: strip.frame, stripPath: strip.path };
+                    this.stripPath = strip.path;
+                    const alt = await this.readState(marker.frame, marker.stripPath);
+                    if (alt) state = alt;
+                }
+            } catch (error) { /* frame busy */ }
+        }
         if (!this.attachedUrl) this.attachedUrl = this.page.url();
 
         // ---- Auto-detect which END of the strip carries the newest round
