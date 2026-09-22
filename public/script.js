@@ -461,12 +461,17 @@ function renderSessions(list) {
   for (const s of list) {
     const tr = document.createElement('tr');
     const phaseCls = s.phase === 'monitoring' ? 'live' : (s.phase === 'loginRequired' ? 'paper' : '');
+    const rate = Number.isFinite(s.roundsPerHour) && s.roundsPerHour > 0 ? s.roundsPerHour.toFixed(0) : '—';
+    const stall = s.stalled ? ' <span class="neg" title="no new rounds for 5+ minutes — the monitor likely lost the game page">⚠ STALLED</span>' : '';
+    const balance = s.balance !== null && s.balance !== undefined ? esc(s.balance) + ' ' + esc(s.currency || '') : '—';
     tr.innerHTML =
       `<td>${esc(s.siteName || s.siteId)}</td>` +
       `<td>${esc(s.accountLabel)}</td>` +
       `<td><span class="${phaseCls}">${esc(s.phase)}</span></td>` +
-      `<td>${s.monitoring ? '✅' : '—'}</td>` +
-      `<td>${esc(s.roundsSeen)}</td>`;
+      `<td>${s.monitoring ? '✅' : '—'}${stall}</td>` +
+      `<td>${esc(s.roundsSeen)}</td>` +
+      `<td>${rate}</td>` +
+      `<td>${balance}</td>`;
     body.appendChild(tr);
   }
 }

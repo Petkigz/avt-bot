@@ -1,4 +1,6 @@
 const EventEmitter = require('events');
+const fs = require('fs');
+const path = require('path');
 const BettingStrategy = require('./strategies');
 const StatsTracker = require('./statsTracker');
 const BetManager = require('./betManager');
@@ -58,6 +60,7 @@ class GameMonitor extends EventEmitter {
         this.attachedUrl = null;
         this.timer = null;
         this.nextPrediction = null;
+        this.lastBalance = null;    // last balance read from the game page
         this.roundBetMeta = null; // {stake, confidence, pattern, tier} of this round's bet
 
         // Every settled trade feeds the Brain (model, patterns, bankroll,
@@ -174,6 +177,7 @@ class GameMonitor extends EventEmitter {
 
         // ---- Balance into the bankroll manager ----
         const balance = parseBalance(state.balanceText);
+        if (Number.isFinite(balance)) this.lastBalance = balance;
         if (Number.isFinite(balance) && this.brain.bankroll) {
             this.brain.bankroll.setBalance(balance);
         }
@@ -407,6 +411,28 @@ class GameMonitor extends EventEmitter {
             `loss=${stats.totalLoss.toFixed(2)}, consecutiveLosses=${this.strategy.consecutiveLosses}`
         );
         this.emit('tradingStopped', stats);
+        this.saveDebugScreenshot('halted');
+    }
+
+    /**
+     * Saves a timestamped screenshot for post-mortem debugging (max 20 kept).
+     * Fire-and-forget: never throws into the monitoring loop.
+     */
+    saveDebugScreenshot(tag) {
+        (async () => {
+            try {
+                if (!this.page || this.page.isClosed()) return;
+                const dir = path.join(this.config.DATA_DIR, 'screenshots');
+                fs.mkdirSync(dir, { recursive: true });
+                const files = fs.readdirSync(dir).filter((f) => f.endsWith('.png')).sort();
+                while (files.length >= 20) fs.unlinkSync(path.join(dir, files.shift()));
+                const file = path.join(dir, `${tag}-${this.site || 'site'}-${Date.now()}.png`);
+                await this.page.screenshot({ path: file });
+                logger.warn(`Debug screenshot saved: ${file}`);
+            } catch (error) {
+                logger.debug(`Debug screenshot failed: ${error.message}`);
+            }
+        })();
     }
 
     /**
@@ -461,13 +487,14 @@ class GameMonitor extends EventEmitter {
     async recover() {
         this.recoveryLevel++;
         this.consecutiveFailures = 0;
+        this.saveDebugScreenshot(`recover-L${this.recoveryLevel}`);
 
         const currentUrl = this.page.url();
         if (this.attachedUrl && currentUrl !== this.attachedUrl &&
             !currentUrl.includes('aviator')) {
             logger.error(
-                `Page navigated away from the game (${currentUrl}) — your BetPawa session may have ` +
-                'expired. Log in again in the browser window; the bot will keep retrying.'
+                `Page navigated away from the game (${currentUrl}) — your ${this.site || 'site'} login ` +
+                'session may have expired. Log in again in the browser window; the bot will keep retrying.'
             );
         }
 

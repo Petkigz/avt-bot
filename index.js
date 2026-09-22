@@ -17,6 +17,7 @@ const Bankroll = require('./game/bankroll');
 const Brain = require('./game/brain');
 const CsvLog = require('./util/csvLog');
 const AccountsManager = require('./util/accounts');
+const { recordSample, roundsPerHour, isStalled } = require('./util/rate');
 const { getSite, listSites, selectorsFor } = require('./util/sites');
 const { startDashboard } = require('./server');
 
@@ -43,16 +44,23 @@ function emitSiteStatus(phase, extra = {}) {
 }
 
 function sessionsSnapshot() {
-    return [...sessions.values()].map((s) => ({
-        accountId: s.account.id,
-        accountLabel: s.account.label,
-        siteId: s.site.id,
-        siteName: s.site.name,
-        currency: s.site.currency,
-        phase: s.phase || 'starting',
-        monitoring: !!s.monitor,
-        roundsSeen: s.monitor ? s.monitor.roundId : 0
-    }));
+    return [...sessions.values()].map((s) => {
+        const monitoring = !!s.monitor;
+        if (monitoring) recordSample(s.rateWindow, s.monitor.roundId);
+        return {
+            accountId: s.account.id,
+            accountLabel: s.account.label,
+            siteId: s.site.id,
+            siteName: s.site.name,
+            currency: s.site.currency,
+            phase: s.phase || 'starting',
+            monitoring,
+            roundsSeen: monitoring ? s.monitor.roundId : 0,
+            roundsPerHour: monitoring ? Math.round(roundsPerHour(s.rateWindow) * 10) / 10 : 0,
+            stalled: monitoring && isStalled(s.rateWindow),
+            balance: monitoring ? s.monitor.lastBalance : null
+        };
+    });
 }
 
 function emitSessions() {
@@ -236,7 +244,7 @@ async function launchSession(account, site) {
     const page = await browser.newPage();
     page.setDefaultNavigationTimeout(config.NAVIGATION.TIMEOUT);
 
-    const session = { browser, page, account, site, monitor: null, phase: 'launching' };
+    const session = { browser, page, account, site, monitor: null, phase: 'launching', rateWindow: [] };
     sessions.set(account.id, session);
     emitSessions();
 

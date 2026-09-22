@@ -134,5 +134,16 @@ test('server exposes health + history + sites + accounts + logs', async () => {
         assert.equal(trades.rows[0].won, 'yes');
         const invalid = await fetch(`http://127.0.0.1:${port}/api/logs?type=evil`).then((r) => r.json());
         assert.equal(invalid.type, 'rounds'); // unknown type degrades to rounds, never path-escapes
+
+        // CSV/JSON export
+        const dl = await fetch(`http://127.0.0.1:${port}/api/export?type=rounds`);
+        assert.equal(dl.status, 200);
+        assert.match(dl.headers.get('content-disposition') || '', /rounds\.csv/);
+        assert.match(await dl.text(), /betpawa\.ug/);
+        const dlBad = await fetch(`http://127.0.0.1:${port}/api/export?type=../../etc/passwd`);
+        assert.equal(dlBad.status, 400);
+        fs.unlinkSync(path.join(dir, 'trades.csv'));
+        const dlMissing = await fetch(`http://127.0.0.1:${port}/api/export?type=trades`);
+        assert.equal(dlMissing.status, 404);
     });
 });

@@ -339,6 +339,7 @@ REST endpoints:
 | `POST /api/accounts/new` | Create an account `{site, label}` |
 | `GET /api/sessions` | Live browser sessions (site/account/phase/rounds seen) |
 | `GET /api/logs?type=rounds\|trades&limit=N` | Stored log rows as JSON (newest first) |
+| `GET /api/export?type=rounds\|trades\|history` | Download the raw stored files (CSV/JSON) |
 
 Socket.IO: the server emits `siteStatus` (`switching` / `loginRequired` /
 `findGame` / `active` / `error`) and `sessions` (live session snapshots); the
@@ -372,8 +373,30 @@ connection drops.
 npm test
 ```
 
-Runs 87 unit tests: strategy engine, stats, balance parsing, model, patterns,
-bankroll, confidence tiers, round detection, recovery ladder and the simulator.
+Runs 115 tests: strategy engine, stats, balance parsing, model, patterns,
+bankroll, confidence tiers, round detection, recovery ladder, simulator,
+site registry, accounts, round-rate math, REST endpoints and a live
+socket.io integration test.
+
+### Pre-flight & offline demo
+
+```bash
+npm run doctor   # checks Node, deps, Chrome binary, .env, data/, port, network
+npm run demo     # OFFLINE synthetic feed through the real dashboard
+```
+
+`npm run demo` streams fake Aviator rounds through the real dashboard, CSV
+logs and history store — all isolated in `data/demo/` (your real memory is
+never touched). It lights up every panel — crash chart, learning panel, live
+sessions (with rounds/hour rate + balance), cross-site history charts and the
+log viewer — without a browser, a login or any risk. Great for verifying an
+install before pointing it at a real site.
+
+### Debug screenshots
+
+When the monitor hits its recovery ladder or trading halts, a timestamped
+screenshot is saved to `data/screenshots/` (max 20 kept) — so you can see
+exactly what the bot saw when something went wrong.
 
 ## Paper mode & simulation (do this BEFORE real funds)
 

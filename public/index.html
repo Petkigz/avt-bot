@@ -36,6 +36,8 @@
         button.primary { background: rgba(75,192,192,0.25); border-color: rgba(75,192,192,0.6); }
         button.warn { background: #7a5c2e; border-color: #ffc46b; }
         .hidden { display: none; }
+        .dlLink { color: rgba(75,192,192,1); font-size: 0.8em; text-decoration: none; border: 1px solid #3a4048; border-radius: 6px; padding: 4px 8px; }
+        .dlLink:hover { background: #1a1d21; }
         #sitePanel, #logPanel, #siteHistoryPanel { border: 1px solid #3a4048; }
         #sessionRow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
         #logTable { font-size: 0.75em; }
@@ -70,7 +72,7 @@
             <div class="panel" id="sessionsPanel">
                 <h2>Live bot sessions</h2>
                 <table id="sessionsTable" border="1">
-                    <thead><tr><th>Site</th><th>Account</th><th>Phase</th><th>Monitoring</th><th>Rounds seen</th></tr></thead>
+                    <thead><tr><th>Site</th><th>Account</th><th>Phase</th><th>Monitoring</th><th>Rounds</th><th>Rate/hr</th><th>Balance</th></tr></thead>
                     <tbody id="sessionsTableBody"></tbody>
                 </table>
                 <p class="small" id="sessionsNote"></p>
@@ -132,6 +134,9 @@
                 <button id="logRoundsBtn" class="primary">Rounds</button>
                 <button id="logTradesBtn">Trades</button>
                 <button id="logRefreshBtn">↻ refresh</button>
+                <a class="dlLink" href="/api/export?type=rounds" download>⬇ rounds.csv</a>
+                <a class="dlLink" href="/api/export?type=trades" download>⬇ trades.csv</a>
+                <a class="dlLink" href="/api/export?type=history" download>⬇ history.json</a>
                 <span class="small" id="logInfo"></span>
             </div>
             <div style="overflow-x:auto;">

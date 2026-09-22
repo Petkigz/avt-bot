@@ -109,6 +109,15 @@ function startDashboard(port, logger, deps = {}) {
             res.json({ id: account.id, site: account.site, label: account.label });
         });
 
+        app.get('/api/export', (req, res) => {
+            const allowed = { rounds: 'rounds.csv', trades: 'trades.csv', history: 'history.json' };
+            const file = allowed[req.query.type];
+            if (!file) return res.status(400).json({ error: 'invalid type (rounds|trades|history)' });
+            const full = path.join(dataDir, file);
+            if (!fs.existsSync(full)) return res.status(404).json({ error: 'no data stored yet' });
+            res.download(full, file);
+        });
+
         app.get('/api/logs', (req, res) => {
             const type = req.query.type === 'trades' ? 'trades' : 'rounds';
             const limit = Math.min(parseInt(req.query.limit || '50', 10) || 50, 500);
