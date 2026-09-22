@@ -29,9 +29,8 @@ const { listSites } = require('./util/sites');
  *                     startSession {siteId, accountId, strategy},
  *                     pauseBetting, resumeBetting
  */
-function startDashboard(port, logger, deps = {}) {
+async function startDashboard(port, logger, deps = {}) {
     const dataDir = deps.dataDir || config.DATA_DIR;
-    return new Promise((resolve, reject) => {
         const app = express();
         app.use(express.json());
         app.use(express.static(path.join(__dirname, 'public')));
@@ -76,6 +75,55 @@ function startDashboard(port, logger, deps = {}) {
                 sites: listSites(),
                 active: deps.getActiveSite ? deps.getActiveSite() : null
             });
+        });
+
+        // Add a user-defined site from the dashboard (validated here,
+        // persisted by deps.addSite).
+        app.post('/api/sites/new', (req, res) => {
+            if (!deps.addSite) return res.status(503).json({ error: 'site management unavailable' });
+            const b = req.body || {};
+            const str = (v) => (typeof v === 'string' ? v.trim() : '');
+            const name = str(b.name);
+            const baseUrl = str(b.baseUrl);
+            if (!name || name.length > 60) return res.status(400).json({ error: 'name is required (max 60 chars)' });
+            if (!/^https:\/\//.test(baseUrl)) return res.status(400).json({ error: 'baseUrl must start with https://' });
+            const gameUrl = str(b.gameUrl);
+            const loginUrl = str(b.loginUrl);
+            if (gameUrl && !/^https:\/\//.test(gameUrl)) return res.status(400).json({ error: 'gameUrl must be empty or start with https://' });
+            if (loginUrl && !/^https:\/\//.test(loginUrl)) return res.status(400).json({ error: 'loginUrl must start with https://' });
+            const currency = str(b.currency) || 'UNITS';
+            if (!/^[A-Za-z]{3,8}$/.test(currency)) return res.status(400).json({ error: 'currency must be 3-8 letters (e.g. UGX)' });
+            const minStake = parseFloat(b.minStake);
+            if (b.minStake !== '' && b.minStake !== undefined && (!Number.isFinite(minStake) || minStake < 0)) {
+                return res.status(400).json({ error: 'minStake must be a number >= 0' });
+            }
+            // id: host-like slug, guaranteed unique
+            let id = str(b.id) || baseUrl.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/[^a-z0-9.-]/gi, '-').toLowerCase();
+            if (!id) return res.status(400).json({ error: 'could not derive a site id' });
+            let candidate = id;
+            let n = 2;
+            const taken = (x) => x === 'custom' || listSites().some((s) => s.id === x);
+            while (taken(candidate)) candidate = `${id}-${n++}`;
+            try {
+                const site = deps.addSite({
+                    id: candidate, name, baseUrl,
+                    loginUrl: loginUrl || baseUrl,
+                    gameUrl, currency,
+                    minStake: Number.isFinite(minStake) ? minStake : 0,
+                    notes: str(b.notes).slice(0, 200)
+                });
+                res.status(201).json(site);
+            } catch (error) {
+                res.status(400).json({ error: error.message });
+            }
+        });
+
+        // Remove a user-defined site (built-ins are protected).
+        app.delete('/api/sites/:id', (req, res) => {
+            if (!deps.removeSite) return res.status(503).json({ error: 'site management unavailable' });
+            const ok = deps.removeSite(req.params.id);
+            if (!ok) return res.status(400).json({ error: 'only user-defined sites can be removed' });
+            res.json({ removed: req.params.id });
         });
 
         app.get('/api/accounts', (req, res) => {
@@ -177,12 +225,39 @@ function startDashboard(port, logger, deps = {}) {
             }
         });
 
-        server.once('error', reject);
-        server.listen(port, host, () => {
-            logger.info(`Dashboard running at http://${host === '0.0.0.0' ? 'localhost' : host}:${server.address().port} (bound to ${host})`);
-            resolve({ io, server });
+        // Bind with automatic port fallback: if the configured port is busy,
+        // walk up to 10 higher ports instead of failing to start.
+        const tryListen = (p) => new Promise((res, rej) => {
+            const onError = (error) => { server.removeListener('listening', onListening); rej(error); };
+            const onListening = () => { server.removeListener('error', onError); res(); };
+            server.once('error', onError);
+            server.once('listening', onListening);
+            server.listen(p, host);
         });
-    });
+        let bindPort = port;
+        try {
+            for (let attempt = 0; attempt <= 10; attempt++) {
+                try {
+                    await tryListen(bindPort);
+                    break;
+                } catch (error) {
+                    if (error.code !== 'EADDRINUSE' || attempt === 10) throw error;
+                    logger.warn(`Dashboard port ${bindPort} is busy — trying ${bindPort + 1}`);
+                    bindPort++;
+                }
+            }
+        } catch (error) {
+            throw error;
+        }
+
+        const actualPort = server.address().port;
+        // Tell the launcher (and anyone else) where the dashboard actually is.
+        try {
+            fs.mkdirSync(dataDir, { recursive: true });
+            fs.writeFileSync(path.join(dataDir, 'dashboard-port'), String(actualPort));
+        } catch { /* non-critical */ }
+        logger.info(`Dashboard running at http://${host === '0.0.0.0' ? 'localhost' : host}:${actualPort}${actualPort !== port ? ` (requested ${port} was busy)` : ''}`);
+        return { io, server };
 }
 
 /**

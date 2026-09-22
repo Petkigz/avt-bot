@@ -195,8 +195,8 @@ All settings live in `.env` (see [.env.example](.env.example)). Highlights:
 | `MAX_BET_LIFETIME_MS` | `180000` | Absolute max lifetime of an open bet |
 | `FLIGHT_END_GRACE_MS` | `10000` | Settle if flight ended but bubble never updates |
 | `DASHBOARD_ENABLED` | `true` | Serve the live dashboard |
-| `DASHBOARD_PORT` | `3000` | Dashboard port |
-| `DASHBOARD_HOST` | `0.0.0.0` | Bind interface (`127.0.0.1` = local only, no auth built in) |
+| `DASHBOARD_PORT` | `4100` | Dashboard port (auto-moves up if busy; final port written to `data/dashboard-port`) |
+| `DASHBOARD_HOST` | `127.0.0.1` | Bind interface (`127.0.0.1` = local only, no auth built in) |
 | `UI_START` | `false` | Start sessions from Mission Control instead of terminal prompts |
 | `DATABASE_ENABLED` | `false` | Enable MySQL persistence |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
@@ -276,6 +276,14 @@ metadata (id/site/label/lastLoginAt) is stored in `data/accounts.json`;
 **passwords are never stored anywhere**. Multiple accounts per site are
 supported; concurrent sessions are capped by `MAX_SESSIONS` (oldest over the
 cap is closed).
+
+**Adding a new site from the dashboard:** the **Sites** panel lists every
+registered bookmaker and has an **Add site** form (name, base URL, optional
+Aviator deep link/login URL, currency, min stake). User sites persist in
+`data/user-sites.json`, survive restarts, and appear instantly in the site
+selector and CLI dropdown. Only user sites can be removed (built-ins are
+protected). New sites use the same manual-login flow and the shared Spribe
+widget selectors.
 
 **Real site config structure:** every profile in `util/sites.js` carries
 `baseUrl`, `loginUrl`, `loginSelectors` (username/PIN/submit/logged-in hints),

@@ -18,13 +18,20 @@ const Brain = require('./game/brain');
 const CsvLog = require('./util/csvLog');
 const AccountsManager = require('./util/accounts');
 const { recordSample, roundsPerHour, isStalled } = require('./util/rate');
-const { getSite, listSites, selectorsFor } = require('./util/sites');
+const { getSite, listSites, selectorsFor, loadUserSites, saveUserSites, registerSite, unregisterSite } = require('./util/sites');
 const { startDashboard } = require('./server');
 
 // ---------------------------------------------------------------------------
 // Global runtime state
 // ---------------------------------------------------------------------------
 const accounts = new AccountsManager(config.DATA_DIR);
+
+// User-defined sites (added from the dashboard) — load before anything else
+// reads the registry.
+const USER_SITES_FILE = path.join(config.DATA_DIR, 'user-sites.json');
+const userSitesLoaded = loadUserSites(USER_SITES_FILE);
+if (userSitesLoaded > 0) logger.info(`Loaded ${userSitesLoaded} user-defined site(s)`);
+
 const sessions = new Map(); // accountId -> { browser, page, account, site }
 let activeSite = getSite(config.SITE_ID);
 let dashboard = null;
@@ -532,7 +539,21 @@ async function main() {
                 accounts,
                 getActiveSite: () => ({ id: activeSite.id, name: activeSite.name, currency: activeSite.currency }),
                 getSessions: sessionsSnapshot,
-                getControlState: controlState
+                getControlState: controlState,
+                addSite: (site) => {
+                    const s = registerSite(site);
+                    saveUserSites(USER_SITES_FILE);
+                    logger.info(`Site added from dashboard: ${s.name} (${s.id})`);
+                    return s;
+                },
+                removeSite: (id) => {
+                    const ok = unregisterSite(id);
+                    if (ok) {
+                        saveUserSites(USER_SITES_FILE);
+                        logger.info(`User site removed: ${id}`);
+                    }
+                    return ok;
+                }
             });
             // server.js already sends the sessions/siteStatus snapshot on
             // connect; index.js only wires the command events.

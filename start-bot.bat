@@ -53,7 +53,7 @@ goto menu
 echo.
 echo Starting the bot... the dashboard opens in your browser shortly.
 echo Close the other window (or Ctrl+C in it) to stop the bot.
-start "" /b cmd /c "timeout /t 5 /nobreak >nul && start http://localhost:3000"
+start "" /b cmd /v:on /c "timeout /t 6 /nobreak >nul & set DP=4100 & if exist data\dashboard-port set /p DP=<data\dashboard-port & start http://localhost:!DP!"
 call npm start
 echo.
 echo Bot stopped.
@@ -70,7 +70,7 @@ goto menu
 :demo
 echo.
 echo Demo dashboard (synthetic rounds) - close the other window to stop.
-start "" /b cmd /c "timeout /t 4 /nobreak >nul && start http://localhost:3000"
+start "" /b cmd /v:on /c "timeout /t 5 /nobreak >nul & set DP=4100 & if exist data\dashboard-port set /p DP=<data\dashboard-port & start http://localhost:!DP!"
 call npm run demo
 echo.
 pause

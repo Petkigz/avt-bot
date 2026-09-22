@@ -40,11 +40,19 @@ test('server exposes health + history + sites + accounts + logs', async () => {
     const accounts = new AccountsManager(tmpDir());
     const mainAcct = accounts.add({ site: 'betpawa.ug', label: 'main' });
     accounts.touchLogin(mainAcct.id);
+    const addedSites = [];
 
     await withServer({
         accounts,
         dataDir: dir,
         getActiveSite: () => ({ id: 'betpawa.ug', name: 'BetPawa Uganda' }),
+        addSite: (site) => { addedSites.push(site); return site; },
+        removeSite: (id) => {
+            const i = addedSites.findIndex((s) => s.id === id);
+            if (i < 0) return false;
+            addedSites.splice(i, 1);
+            return true;
+        },
         getSessions: () => [{
             accountId: mainAcct.id,
             accountLabel: 'main',
@@ -150,5 +158,53 @@ test('server exposes health + history + sites + accounts + logs', async () => {
         fs.unlinkSync(path.join(dir, 'trades.csv'));
         const dlMissing = await fetch(`http://127.0.0.1:${port}/api/export?type=trades`);
         assert.equal(dlMissing.status, 404);
+
+        // Site management from the dashboard
+        const noName = await fetch(`http://127.0.0.1:${port}/api/sites/new`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ baseUrl: 'https://x.example' })
+        });
+        assert.equal(noName.status, 400);
+        const badUrl = await fetch(`http://127.0.0.1:${port}/api/sites/new`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'No Https', baseUrl: 'http://insecure.example' })
+        });
+        assert.equal(badUrl.status, 400);
+        const added = await fetch(`http://127.0.0.1:${port}/api/sites/new`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'Test Bookie', baseUrl: 'https://test.example', currency: 'TST', minStake: '5' })
+        });
+        assert.equal(added.status, 201);
+        const addedJson = await added.json();
+        assert.equal(addedJson.id, 'test.example');
+        assert.equal(addedJson.minStake, 5);
+        assert.equal(addedSites.length, 1);
+        const delBuiltin = await fetch(`http://127.0.0.1:${port}/api/sites/betpawa.ug`, { method: 'DELETE' });
+        assert.equal(delBuiltin.status, 400);
+        const delUser = await fetch(`http://127.0.0.1:${port}/api/sites/test.example`, { method: 'DELETE' });
+        assert.equal(delUser.status, 200);
+        assert.equal(addedSites.length, 0);
     });
+});
+
+test('dashboard walks to the next free port and records it', async () => {
+    const net = require('net');
+    const dir = tmpDir();
+    // Occupy a port first
+    const blocker = net.createServer();
+    const busyPort = await new Promise((resolve) => {
+        blocker.listen(0, '127.0.0.1', () => resolve(blocker.address().port));
+    });
+    try {
+        const dashboard = await startDashboard(busyPort, quietLogger, { dataDir: dir });
+        try {
+            assert.equal(dashboard.server.address().port, busyPort + 1);
+            assert.equal(fs.readFileSync(path.join(dir, 'dashboard-port'), 'utf8'), String(busyPort + 1));
+        } finally {
+            await new Promise((resolve) => dashboard.server.close(resolve));
+            dashboard.io.close();
+        }
+    } finally {
+        blocker.close();
+    }
 });

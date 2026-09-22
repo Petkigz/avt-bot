@@ -1,3 +1,6 @@
+const fs = require('fs');
+const path = require('path');
+
 /**
  * Site registry — the bot is NOT BetPawa-only.
  *
@@ -122,4 +125,87 @@ function selectorsFor(site) {
     return SELECTOR_SETS[site.selectorSet] || SELECTOR_SETS.spribe;
 }
 
-module.exports = { SITES, SELECTOR_SETS, getSite, listSites, selectorsFor };
+// ---------------------------------------------------------------------------
+// User-defined sites (added from the dashboard, persisted in data/)
+// ---------------------------------------------------------------------------
+const BUILTIN_IDS = Object.keys(SITES);
+let userSites = [];
+
+/**
+ * Registers a user site (dashboard "Add site"). Built-ins cannot be
+ * overridden and ids must be unique. Returns the full registered profile.
+ */
+function registerSite(site) {
+    if (!site || typeof site.id !== 'string' || !site.id) throw new Error('site needs an id');
+    if (BUILTIN_IDS.includes(site.id)) throw new Error('cannot override a built-in site');
+    if (SITES[site.id]) throw new Error(`site "${site.id}" already exists`);
+    const full = {
+        id: site.id,
+        name: site.name || site.id,
+        currency: site.currency || 'UNITS',
+        baseUrl: site.baseUrl,
+        loginUrl: site.loginUrl || site.baseUrl,
+        gameUrl: site.gameUrl || '',
+        loginFlow: 'manual',
+        loginSelectors: BETPAWA_LOGIN, // generic fallback hints; manual login anyway
+        balanceSelector: site.balanceSelector || '',
+        minStake: Number.isFinite(site.minStake) ? site.minStake : 0,
+        selectorSet: 'spribe',
+        notes: site.notes || 'User-defined site',
+        userDefined: true
+    };
+    SITES[full.id] = full;
+    userSites.push(full);
+    return full;
+}
+
+/**
+ * Removes a user-defined site. Built-ins are protected. Returns true/false.
+ */
+function unregisterSite(id) {
+    if (!id || BUILTIN_IDS.includes(id) || !SITES[id] || !SITES[id].userDefined) return false;
+    delete SITES[id];
+    userSites = userSites.filter((s) => s.id !== id);
+    return true;
+}
+
+function getUserSites() {
+    return [...userSites];
+}
+
+/**
+ * Loads user sites from a JSON file (one array of site objects).
+ * Sites that fail to register (duplicates/bad data) are skipped.
+ */
+function loadUserSites(file) {
+    try {
+        if (!fs.existsSync(file)) return 0;
+        const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (!Array.isArray(raw)) return 0;
+        let loaded = 0;
+        for (const site of raw) {
+            try { registerSite(site); loaded++; } catch { /* skip bad/duplicate entry */ }
+        }
+        return loaded;
+    } catch {
+        return 0;
+    }
+}
+
+/**
+ * Persists the current user sites to a JSON file.
+ */
+function saveUserSites(file) {
+    try {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, JSON.stringify(userSites, null, 2));
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+module.exports = {
+    SITES, SELECTOR_SETS, getSite, listSites, selectorsFor,
+    registerSite, unregisterSite, getUserSites, loadUserSites, saveUserSites
+};

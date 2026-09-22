@@ -763,6 +763,81 @@ el('mirrorImg').addEventListener('click', (ev) => {
   socket.emit('mirrorClick', { accountId: mirrorAccount, x, y });
 });
 
+// ---------------------------------------------------------------------------
+// Sites manager: list registered sites, add user sites, remove them
+// ---------------------------------------------------------------------------
+async function loadSitesPanel() {
+  try {
+    const res = await fetch('/api/sites');
+    const data = await res.json();
+    const body = el('sitesTableBody');
+    body.innerHTML = '';
+    for (const s of data.sites) {
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        `<td>${esc(s.id)}</td>` +
+        `<td>${esc(s.name)}</td>` +
+        `<td>${esc(s.currency)}</td>` +
+        `<td class="small">${s.gameUrl ? esc(s.gameUrl) : 'manual navigation'}</td>` +
+        `<td>${esc(s.minStake)}</td>` +
+        `<td>${s.userDefined ? '<span class="warn">user</span>' : '<span class="small">built-in</span>'}</td>`;
+      const td = document.createElement('td');
+      if (s.userDefined) {
+        const btn = document.createElement('button');
+        btn.textContent = '🗑';
+        btn.title = 'Remove this site';
+        btn.addEventListener('click', async () => {
+          if (!confirm(`Remove site "${s.name}" (${s.id})?`)) return;
+          await fetch(`/api/sites/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
+          loadSitesPanel();
+          loadSiteControls();
+        });
+        td.appendChild(btn);
+      }
+      tr.appendChild(td);
+      body.appendChild(tr);
+    }
+  } catch (e) { /* server not ready */ }
+}
+
+el('addSiteBtn').addEventListener('click', async () => {
+  const status = el('addSiteStatus');
+  const payload = {
+    name: el('nsName').value.trim(),
+    baseUrl: el('nsBaseUrl').value.trim(),
+    gameUrl: el('nsGameUrl').value.trim(),
+    loginUrl: el('nsLoginUrl').value.trim(),
+    currency: el('nsCurrency').value.trim(),
+    minStake: el('nsMinStake').value.trim(),
+    notes: el('nsNotes').value.trim()
+  };
+  if (!payload.name || !payload.baseUrl) {
+    status.textContent = 'Name and Base URL are required.';
+    return;
+  }
+  try {
+    const res = await fetch('/api/sites/new', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const out = await res.json();
+    if (!res.ok) {
+      status.textContent = `⚠ ${out.error || 'could not add site'}`;
+      return;
+    }
+    status.textContent = `✅ Added "${out.name}" (${out.id}) — it is now in the site selector.`;
+    ['nsName', 'nsBaseUrl', 'nsGameUrl', 'nsLoginUrl', 'nsCurrency', 'nsMinStake', 'nsNotes']
+      .forEach((id) => { el(id).value = ''; });
+    loadSitesPanel();
+    loadSiteControls();
+  } catch (e) {
+    status.textContent = `⚠ ${e.message}`;
+  }
+});
+
+loadSitesPanel();
+
 loadStrategies();
 
 loadSiteControls();

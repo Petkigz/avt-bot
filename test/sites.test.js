@@ -54,3 +54,37 @@ test('built-in sites expose working URLs; unknown sites degrade gracefully', () 
         if (s.gameUrl !== '') assert.match(s.gameUrl, /^https:\/\//, `${s.id} gameUrl`);
     }
 });
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { registerSite, unregisterSite, loadUserSites, saveUserSites } = require('../util/sites');
+
+test('registerSite adds a user site that behaves like a built-in', () => {
+    const s = registerSite({ id: 'test-site-x', name: 'Test Bookie', baseUrl: 'https://test.example', currency: 'TST', minStake: 5, gameUrl: 'https://test.example/aviator' });
+    assert.equal(s.loginFlow, 'manual');
+    assert.equal(s.userDefined, true);
+    assert.equal(getSite('test-site-x').name, 'Test Bookie');
+    assert.ok(listSites().some((x) => x.id === 'test-site-x'));
+    assert.equal(unregisterSite('test-site-x'), true);
+    assert.equal(getSite('test-site-x').id, 'custom'); // falls back after removal
+});
+
+test('registerSite protects built-ins and rejects duplicates', () => {
+    assert.throws(() => registerSite({ id: 'betpawa.ug', name: 'x', baseUrl: 'https://x.example' }));
+    registerSite({ id: 'dup-site', name: 'a', baseUrl: 'https://a.example' });
+    assert.throws(() => registerSite({ id: 'dup-site', name: 'b', baseUrl: 'https://b.example' }));
+    unregisterSite('dup-site');
+    assert.equal(unregisterSite('betpawa.ug'), false); // built-ins cannot be removed
+});
+
+test('user sites persist through a save/load round-trip', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'avt-sites-'));
+    const file = path.join(dir, 'user-sites.json');
+    registerSite({ id: 'saved-site', name: 'Saved', baseUrl: 'https://saved.example', currency: 'SVX' });
+    assert.equal(saveUserSites(file), true);
+    assert.equal(unregisterSite('saved-site'), true);
+    assert.equal(loadUserSites(file), 1);
+    assert.equal(getSite('saved-site').name, 'Saved');
+    unregisterSite('saved-site');
+});

@@ -59,6 +59,11 @@
         .panel h2::before { content: ''; width: 4px; height: 16px; background: var(--accent); border-radius: 2px; display: inline-block; }
         .panel h3 { font-size: 0.8em; color: var(--muted); margin: 10px 0 4px; }
         .siteRow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+        input {
+            background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+            border-radius: 8px; padding: 7px 10px; font-size: 0.85em; min-width: 120px;
+        }
+        input:focus { outline: none; border-color: var(--accent); }
         select, button {
             background: var(--panel2); color: var(--text); border: 1px solid var(--border);
             border-radius: 8px; padding: 7px 12px; cursor: pointer; font-size: 0.85em;
@@ -153,6 +158,29 @@
                 </table>
                 <p class="small">Each profile is its own persistent browser — log in once and it stays logged in. Passwords are never stored.</p>
             </div>
+        </div>
+
+        <div class="panel" id="sitesPanel">
+            <h2>Sites — registered bookmakers (add your own)</h2>
+            <table id="sitesTable" border="1">
+                <thead><tr><th>ID</th><th>Name</th><th>Currency</th><th>Aviator page</th><th>Min stake</th><th>Type</th><th></th></tr></thead>
+                <tbody id="sitesTableBody"></tbody>
+            </table>
+            <h3>Add a new site</h3>
+            <div class="siteRow">
+                <input id="nsName" placeholder="Name (e.g. BetPawa Tanzania)">
+                <input id="nsBaseUrl" placeholder="Base URL — https://…">
+                <input id="nsGameUrl" placeholder="Aviator URL — https://… (optional)">
+            </div>
+            <div class="siteRow">
+                <input id="nsLoginUrl" placeholder="Login URL (optional — defaults to base URL)">
+                <input id="nsCurrency" placeholder="Currency (UGX)" style="min-width:90px;">
+                <input id="nsMinStake" placeholder="Min stake" style="min-width:90px;">
+                <input id="nsNotes" placeholder="Notes (optional)">
+                <button id="addSiteBtn" class="primary">➕ Add site</button>
+                <span class="small" id="addSiteStatus"></span>
+            </div>
+            <p class="small">New sites are saved to data/user-sites.json and appear instantly in the site selector. Login is manual (one persistent profile per account); the bot reads the standard Spribe game widget.</p>
         </div>
 
         <div class="cards">

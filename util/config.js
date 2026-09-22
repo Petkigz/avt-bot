@@ -169,7 +169,9 @@ const config = {
 
     DASHBOARD: {
         ENABLED: bool(process.env.DASHBOARD_ENABLED, true),
-        PORT: num(process.env.DASHBOARD_PORT, 3000),
+        // 4100 is less contested than 3000; if it IS busy the server walks
+        // up to 10 higher ports automatically (see server.js).
+        PORT: num(process.env.DASHBOARD_PORT, 4100),
         // Network interface the dashboard binds to. DEFAULT IS LOCAL-ONLY:
         // the dashboard has no built-in auth, so keep it on your machine.
         // Set 0.0.0.0 only if you understand anyone on your LAN could
