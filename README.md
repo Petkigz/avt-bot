@@ -28,6 +28,36 @@ and streams live stats to a browser dashboard.
 - [Disclaimer](#-legal-disclaimer)
 - [License](#license)
 
+## What's new in v3 (risk-controlled structure)
+
+The bot is now built as a **risk-controlled trading system**, not a simple
+"bet when average is low" script:
+
+- **Bankroll guard** — hard session + daily loss limits (persisted across
+  restarts), a max-stake fraction of the bankroll (default 2%), and a balance
+  reserve. When a limit trips, betting is blocked — no override in code paths.
+- **Confidence tiers** — `OBSERVING → MICRO → ARMED`. Warm-up is mandatory:
+  zero bets for the first `MIN_ROUNDS_OBSERVE` rounds. Then only micro-bets
+  (default 0.5% of bankroll) until the bot sustains a 55%+ hit-rate over 20+
+  decisions; sagging performance demotes it back to micro.
+- **Pattern detector** — mines recent round clusters of length **10, 5 and 3**
+  (L/M/H symbols), carries a smoothed prediction for the next round, refuses
+  risky patterns, and benches patterns that keep failing live until they
+  re-earn trust. Patterns persist in `data/patterns.json`.
+- **Volatility risk evaluation** — wild recent rounds raise the confidence
+  required to bet.
+- **Paper mode by default** — `PAPER_MODE=true` observes the real site and logs
+  hypothetical trades without clicking anything. Real betting requires an
+  explicit opt-in.
+- **Simulator** — `npm run simulate` runs the bot's real decision stack over
+  thousands of rounds (replayed history, synthetic Aviator distribution, or
+  mixed) and writes a round-by-round CSV. Measure behavior BEFORE any funds.
+- **Round-by-round logs** — `data/rounds.csv` and `data/trades.csv` record
+  every decision with its full reasoning (confidence, pattern, tier, regime).
+- **Live learning dashboard** — tier, bankroll, loss-limit usage bars, model
+  probability, active pattern and last decision reasons at `localhost:3000`.
+- **MICRO default strategy** — UGX 100 stakes, 1.30x target, tiny limits.
+
 ## What's new in v2
 
 This release is a full overhaul focused on **correctness and money-safety**:
@@ -154,6 +184,15 @@ All settings live in `.env` (see [.env.example](.env.example)). Highlights:
 | `DASHBOARD_PORT` | `3000` | Dashboard port |
 | `DATABASE_ENABLED` | `false` | Enable MySQL persistence |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
+| `PAPER_MODE` | `true` | Observe + log without betting (SAFE default) |
+| `SESSION_LOSS_LIMIT` | `5000` | Hard session loss cap (UGX) |
+| `DAILY_LOSS_LIMIT` | `10000` | Hard daily loss cap (UGX, persists) |
+| `MAX_STAKE_FRACTION` | `0.02` | Max stake as fraction of bankroll |
+| `MIN_ROUNDS_OBSERVE` | `100` | Mandatory warm-up rounds before any bet |
+| `PATTERN_LENGTHS` | `10,5,3` | Cluster lengths the pattern miner tracks |
+
+Full list (promotion thresholds, volatility penalties, pattern bins, ...) is in
+[.env.example](.env.example).
 
 > **Note:** Automating a real bookmaker may violate its terms of service — know the
 > rules and the risks before pointing this at a funded account. If BetPawa serves a
@@ -236,7 +275,27 @@ connection drops.
 npm test
 ```
 
-Runs the unit tests for the strategy engine, stats tracker and balance parsing.
+Runs 87 unit tests: strategy engine, stats, balance parsing, model, patterns,
+bankroll, confidence tiers, round detection, recovery ladder and the simulator.
+
+## Paper mode & simulation (do this BEFORE real funds)
+
+1. **Simulate** — thousands of rounds, zero money, zero browser:
+   ```bash
+   npm run simulate                                            # realistic session
+   node sim/simulate.js --rounds 20000 --source mixed --long-run  # long-term behavior
+   ```
+   Prints P/L, max drawdown, win rate, tier progression and skip-reason
+   breakdown; writes a round-by-round CSV to `data/simulations/`.
+2. **Paper mode on the live site** — default. The bot logs in, watches real
+   rounds, makes real decisions, but never clicks. Check `data/rounds.csv`
+   and the dashboard.
+3. Only then consider `PAPER_MODE=false`, starting with the MICRO strategy.
+
+> **Read the simulation output honestly.** Aviator has a built-in house edge:
+> even a 75% win-rate at a 1.30x target is slightly negative long-term. The
+> model's job is discipline and loss limitation, not beating the RNG. If a
+> simulation shows steady profit, question it before trusting it.
 
 ## FAQ
 

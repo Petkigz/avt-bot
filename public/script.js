@@ -1,5 +1,5 @@
-/* Dashboard client: renders crash history, model state and trade stats from
- * the events broadcast by server.js over socket.io. */
+/* Dashboard client: renders crash history, bankroll, tier and model state
+ * from the events broadcast by server.js over socket.io. */
 
 const socket = io();
 
@@ -15,10 +15,16 @@ function fmt(n, digits = 2) {
 }
 
 // ---------------------------------------------------------------------------
-// Live bot / model state (driven by 'status' events)
+// Live bot / model / bankroll state (driven by 'status' events)
 // ---------------------------------------------------------------------------
 socket.on('status', (s) => {
   if (!s) return;
+
+  // Mode badge
+  const badge = document.getElementById('modeBadge');
+  const mode = s.brain && s.brain.mode;
+  if (mode === 'live') { badge.textContent = 'LIVE MODE'; badge.className = 'live'; }
+  else { badge.textContent = 'PAPER MODE'; badge.className = 'paper'; }
 
   // Bot state
   let state = 'watching';
@@ -32,15 +38,46 @@ socket.on('status', (s) => {
   const net = s.stats ? s.stats.netProfit : 0;
   setText('netProfit', (net >= 0 ? '+' : '') + fmt(net), net >= 0 ? 'pos' : 'neg');
   setText('winRate', s.stats && s.stats.totalTrades > 0 ? fmt(s.stats.winRate, 1) + '%' : '—');
-  setText('roundCount', String(s.roundId ?? 0));
+  setText('roundsStudied', String(s.roundId ?? 0));
 
-  const m = s.model;
-  if (m) {
-    const regime = m.regime || '—';
-    setText('regime', regime, regime === 'cold' ? 'neg' : regime === 'hot' ? 'pos' : '');
-    setText('modelProb', fmt(m.probability), m.probability !== null && m.probability >= m.entryProbability ? 'pos' : 'warn');
-    setText('entryThreshold', fmt(m.entryProbability));
-    setText('roundsStudied', String(m.roundsStudied ?? 0));
+  const b = s.brain;
+  if (b) {
+    const tierEl = document.getElementById('tier');
+    tierEl.textContent = b.tier;
+    tierEl.className = 'value ' + (b.tier === 'ARMED' ? 'pos' : b.tier === 'MICRO' ? 'warn' : '');
+    document.getElementById('tierNote').textContent =
+      b.tier === 'OBSERVING' ? '— warm-up: no bets until enough rounds are studied'
+        : b.tier === 'MICRO' ? '— unproven: micro-bets only'
+          : '— proven hit-rate: strategy stakes (bankroll-capped)';
+
+    setText('hitRate', b.hitRate !== null && b.hitRate !== undefined ? fmt(b.hitRate * 100, 1) + '%' : '—');
+
+    const m = b.model;
+    if (m) {
+      const regime = m.regime || '—';
+      setText('regime', regime, regime === 'cold' ? 'neg' : regime === 'hot' ? 'pos' : '');
+      setText('modelProb', fmt(m.probability), m.probability !== null && m.probability >= m.entryProbability ? 'pos' : 'warn');
+      setText('entryThreshold', fmt(m.entryProbability));
+      setText('roundsStudied', String(m.roundsStudied ?? 0));
+    }
+
+    const p = b.patterns && b.patterns.current;
+    setText('pattern', p ? `${p.pattern} (P=${fmt(p.probability)})` : 'none', p ? (p.risky ? 'neg' : '') : '');
+
+    const br = b.bankroll;
+    if (br) {
+      setText('dailyPnl', (br.dailyPnl >= 0 ? '+' : '') + fmt(br.dailyPnl, 0), br.dailyPnl >= 0 ? 'pos' : 'neg');
+      document.getElementById('sessionLimit').textContent =
+        `${fmt(-Math.min(0, br.sessionPnl), 0)} / ${fmt(br.sessionLossLimit, 0)}`;
+      document.getElementById('dailyLimit').textContent =
+        `${fmt(-Math.min(0, br.dailyPnl), 0)} / ${fmt(br.dailyLossLimit, 0)}`;
+      document.getElementById('sessionBar').style.width = (br.sessionLimitUsed * 100).toFixed(1) + '%';
+      document.getElementById('dailyBar').style.width = (br.dailyLimitUsed * 100).toFixed(1) + '%';
+    }
+
+    if (b.lastReasons && b.lastReasons.length) {
+      document.getElementById('lastReasons').textContent = 'Last decision: ' + b.lastReasons.join('; ');
+    }
   }
 });
 
@@ -125,7 +162,7 @@ socket.on('newData', (dataPoint) => {
   if (!dataPoint || typeof dataPoint.value !== 'number') return;
   const { value, created_at } = dataPoint;
 
-  if (lastValue !== null && lastValue === value) return; // duplicate emission
+  if (lastValue !== null && lastValue === value) return;
 
   chartData.labels.push(created_at);
   chartData.datasets[0].data.push(value);
@@ -136,7 +173,7 @@ socket.on('newData', (dataPoint) => {
 
   if (currentPrediction !== null) {
     document.getElementById('predictedValue').textContent =
-      'Predicted Value: ' + (Number.isFinite(currentPrediction) ? currentPrediction.toFixed(2) : 'N/A');
+      'Predicted value: ' + (Number.isFinite(currentPrediction) ? currentPrediction.toFixed(2) : 'N/A');
 
     const isCorrect = currentPrediction <= value;
     correctPredictions += isCorrect ? 1 : 0;
@@ -150,7 +187,6 @@ socket.on('newData', (dataPoint) => {
     document.getElementById('accuracyRate').textContent = 'Accuracy rate: ' + accuracyRate.toFixed(2) + '%';
   }
 
-  // The server sends the prediction made for the NEXT round.
   currentPrediction = Number.isFinite(dataPoint.predictedValue) ? dataPoint.predictedValue : null;
   lineChart.update();
   lastValue = value;

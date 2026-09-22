@@ -80,6 +80,46 @@ const config = {
         COLD_RECOVERY_COUNT: num(process.env.MODEL_COLD_RECOVERY_COUNT, 1)
     },
 
+    // Pattern mining over recent round clusters. See game/patternDetector.js.
+    PATTERN: {
+        ENABLED: bool(process.env.PATTERN_ENABLED, true),
+        LENGTHS: (process.env.PATTERN_LENGTHS || '10,5,3')
+            .split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n) && n >= 2),
+        MIN_SUPPORT: num(process.env.PATTERN_MIN_SUPPORT, 5),
+        BINS: (process.env.PATTERN_BINS || '1.5,2.5')
+            .split(',').map((s) => parseFloat(s.trim())).filter(Number.isFinite),
+        // Confidence multiplier when NO known pattern matches (unconfirmed round).
+        NO_PATTERN_PENALTY: num(process.env.PATTERN_NO_PATTERN_PENALTY, 0.95)
+    },
+
+    // Bankroll & confidence-tier policy. See game/bankroll.js and game/brain.js.
+    RISK: {
+        // Hard loss limits (site currency — UGX on BetPawa.ug)
+        SESSION_LOSS_LIMIT: num(process.env.SESSION_LOSS_LIMIT, 5000),
+        DAILY_LOSS_LIMIT: num(process.env.DAILY_LOSS_LIMIT, 10000),
+        // A stake can never exceed this fraction of the bankroll
+        MAX_STAKE_FRACTION: num(process.env.MAX_STAKE_FRACTION, 0.02),
+        // While unproven (MICRO tier), stakes are capped at this fraction
+        MICRO_STAKE_FRACTION: num(process.env.MICRO_STAKE_FRACTION, 0.005),
+        // Warm-up: rounds to study before ANY bet is allowed
+        MIN_ROUNDS_OBSERVE: num(process.env.MIN_ROUNDS_OBSERVE, 100),
+        // Promotion MICRO -> ARMED
+        PROMOTION_MIN_DECISIONS: num(process.env.PROMOTION_MIN_DECISIONS, 20),
+        PROMOTION_HIT_RATE: num(process.env.PROMOTION_HIT_RATE, 0.55),
+        // Demotion ARMED -> MICRO
+        DEMOTION_HIT_RATE: num(process.env.DEMOTION_HIT_RATE, 0.45),
+        DECISION_WINDOW: num(process.env.DECISION_WINDOW, 30),
+        // Volatility risk evaluation
+        HIGH_VOLATILITY_THRESHOLD: num(process.env.HIGH_VOLATILITY_THRESHOLD, 2.0),
+        VOLATILITY_CONFIDENCE_PENALTY: num(process.env.VOLATILITY_CONFIDENCE_PENALTY, 0.05)
+    },
+
+    MODE: {
+        // SAFE DEFAULT: paper mode observes the real site and logs hypothetical
+        // trades but never clicks. Set PAPER_MODE=false to bet real funds.
+        PAPER: bool(process.env.PAPER_MODE, true)
+    },
+
     // NOTE: BetPawa renders the Spribe Aviator widget, so the selectors below
     // are Spribe's. If BetPawa serves a different build, adjust these.
     SELECTORS: {
@@ -110,8 +150,20 @@ const config = {
     LOG_LEVEL: process.env.LOG_LEVEL || 'info',
 
     // Amounts are in the SITE CURRENCY — on BetPawa Uganda that is UGX.
-    // Scale accordingly (e.g. initialBet 1000 = UGX 1,000).
+    // MICRO is the DEFAULT: tiny stakes until the bot proves itself.
     BETTING_STRATEGIES: {
+        MICRO: {
+            name: 'MICRO',
+            initialBet: 100,
+            maxBet: 1000,
+            minBet: 100,
+            targetMultiplier: 1.30,
+            stopLoss: 2000,
+            takeProfit: 3000,
+            martingaleMultiplier: 1.4,
+            averageMultiplierThreshold: 1.80,
+            maxConsecutiveLosses: 4
+        },
         CONSERVATIVE: {
             name: 'CONSERVATIVE',
             initialBet: 500,

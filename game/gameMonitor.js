@@ -7,48 +7,35 @@ const { parseBalance } = require('../util/balance');
 const logger = require('../util/logger');
 
 /**
- * Watches one game page and drives the betting loop.
+ * Watches one game page and drives the loop. All BETTING DECISIONS go through
+ * the Brain (shared with paper mode and the simulator), so live behavior is
+ * exactly what was simulated.
  *
  * Round detection (multi-signal, hardened):
- *  - Primary: the payouts strip (`BUBBLE_MULTIPLIER`) only changes when a
- *    round CRASHES; the newest bubble IS that round's crash value.
- *  - Jitter guard: changes arriving < MIN_ROUND_GAP_MS after the previous
- *    accepted round end are deferred one cycle.
- *  - Flight-end fallback: if the flight visibly ends but the bubble never
- *    updates, the round is settled after FLIGHT_END_GRACE_MS so the loop
- *    can never stall.
- *  - Every accepted round end increments `roundId` for audit trails.
+ *  - payouts strip only changes when a round CRASHES (newest bubble = crash)
+ *  - jitter guard defers implausibly fast changes one cycle
+ *  - flight-end fallback settles rounds whose bubble never updates
+ *  - every accepted round end increments `roundId` (audit trail + CSV)
  *
- * Decision layers (ALL must agree before a bet):
- *  1. betting window open (button enabled, no round in flight)
- *  2. not halted, not in cooldown, no open bet
- *  3. strategy gate: recent average <= averageMultiplierThreshold
- *  4. model gate: predictor confidence / regime (unless warming up)
- *  5. balance >= stake + reserve
- *
- * Site-state recovery ladder (on repeated selector failures):
- *  level 1 -> reload the page and re-baseline
- *  level 2 -> emit 'needsRenavigation' (index.js navigates to GAME_URL)
- *  level 3 -> HALT trading permanently (monitoring continues); never bet blind
+ * Site-state recovery ladder on repeated selector failures:
+ *  level 1 reload -> level 2 re-navigate -> level 3 HALT trading.
  *
  * Events: roundStarted, roundEnded, trade, tradingStopped, status,
  *         needsRenavigation
  */
 class GameMonitor extends EventEmitter {
-    constructor(page, config, strategyConfig, deps = {}) {
+    constructor(page, config, brain, deps = {}) {
         super();
         this.page = page;
         this.config = config;
-        this.predictor = deps.predictor || null;
+        this.brain = brain;
         this.historyStore = deps.historyStore || null;
+        this.csvRounds = deps.csvRounds || null;
 
-        // Each monitor gets its OWN strategy instance so the selected
-        // strategy is actually the one used for betting and cashouts.
-        this.strategy = strategyConfig instanceof BettingStrategy
-            ? strategyConfig
-            : new BettingStrategy(strategyConfig || config.BETTING_STRATEGIES.MODERATE);
+        this.strategy = brain.strategy;
         this.statsTracker = new StatsTracker();
         this.betManager = new BetManager(config, this.strategy, this.statsTracker);
+        this.betManager.paperMode = !!(config.MODE && config.MODE.PAPER);
 
         this.multiplierHistory = [];
         this.historySize = config.GAME.HISTORY_SIZE;
@@ -56,7 +43,7 @@ class GameMonitor extends EventEmitter {
         this.lastRoundEndedAt = null;
         this.roundId = 0;
         this.roundInFlight = false;
-        this.flightEndedAt = null;   // set when flight ends before the bubble updates
+        this.flightEndedAt = null;
         this.tradingHalted = false;
         this.haltReason = null;
         this.cooldownRounds = 0;
@@ -65,27 +52,31 @@ class GameMonitor extends EventEmitter {
         this.consecutiveFailures = 0;
         this.recoveryLevel = 0;
         this.missingButtonCycles = 0;
-        this.sessionWarned = false;
         this.attachedUrl = null;
         this.timer = null;
         this.nextPrediction = null;
+        this.roundBetMeta = null; // {stake, confidence, pattern, tier} of this round's bet
 
-        this.betManager.onTrade = (trade) => {
-            if (this.predictor) this.predictor.recordOutcome(trade.won === true);
+        // Every settled trade feeds the Brain (model, patterns, bankroll,
+        // tier promotion) plus the dashboard/DB/CSV.
+        this.betManager.onTrade = (trade, meta) => {
+            this.brain.recordOutcome(trade, meta);
             this.emit('trade', trade);
         };
-        // A progression reset means the chain broke — cool down before
-        // re-entering so we don't immediately re-bet into the same situation.
-        this.betManager.onProgressionReset = () => {
-            this.enterCooldown(this.config.GAME.RESET_COOLDOWN_ROUNDS, 'progression reset (unfunded bet)');
-        };
+    }
+
+    mode() {
+        return this.betManager.paperMode ? 'paper' : 'live';
     }
 
     startMonitoring() {
         if (this.timer) return;
-        logger.info(`Starting game monitoring with ${this.strategy.name} strategy`);
+        logger.info(
+            `Starting game monitoring [${this.mode().toUpperCase()} mode] ` +
+            `strategy=${this.strategy.name} tier=${this.brain.tier}`
+        );
         this.timer = setInterval(() => this.tick(), this.config.GAME.POLLING_INTERVAL);
-        this.tick(); // first cycle immediately
+        this.tick();
     }
 
     stopMonitoring() {
@@ -175,9 +166,13 @@ class GameMonitor extends EventEmitter {
             this.emit('roundStarted', { roundId: this.roundId + 1 });
         } else if (!inflight && this.roundInFlight) {
             this.roundInFlight = false;
-            // Flight ended but the crash bubble hasn't updated yet — start
-            // the grace timer so a missed bubble can never stall the loop.
             this.flightEndedAt = Date.now();
+        }
+
+        // ---- Balance into the bankroll manager ----
+        const balance = parseBalance(state.balanceText);
+        if (Number.isFinite(balance) && this.brain.bankroll) {
+            this.brain.bankroll.setBalance(balance);
         }
 
         // ---- Stale/stuck bet sweep ----
@@ -188,18 +183,16 @@ class GameMonitor extends EventEmitter {
             await this.betManager.checkCashout(frame, state.liveMultiplier);
         }
 
-        // ---- Risk enforcement (stop-loss / take-profit / streak breaker) ----
+        // ---- Risk enforcement (strategy-level stop-loss / take-profit / streak) ----
         const stats = this.statsTracker.getStats();
         if (!this.tradingHalted && this.strategy.shouldStopTrading(stats)) {
-            this.haltTrading('risk limits reached (stop-loss / take-profit / loss streak)');
+            this.haltTrading('strategy risk limits reached (stop-loss / take-profit / loss streak)');
+        }
+        if (!this.tradingHalted && this.brain.bankroll && this.brain.bankroll.halted) {
+            this.haltTrading(`bankroll guard: ${this.brain.bankroll.haltReason}`);
         }
 
-        // ---- Bet placement (every gate must pass) ----
-        const balance = parseBalance(state.balanceText);
-        const usableBalance = Number.isFinite(balance)
-            ? balance - this.config.GAME.MIN_BALANCE_RESERVE
-            : null;
-
+        // ---- THE decision (all gates live inside Brain.decide) ----
         const bettingWindow =
             !inflight &&
             state.betButton.exists &&
@@ -207,29 +200,37 @@ class GameMonitor extends EventEmitter {
             !state.betButton.disabled &&
             state.betButton.text.includes('bet');
 
-        if (
-            bettingWindow &&
-            !this.tradingHalted &&
-            this.cooldownRounds === 0 &&
-            !this.betManager.isWaitingForResult &&
-            this.multiplierHistory.length >= this.historySize
-        ) {
-            const avg = this.average(this.multiplierHistory);
-            if (avg > this.strategy.averageMultiplierThreshold) {
-                logger.debug(`No bet: avg ${avg.toFixed(2)}x > threshold ${this.strategy.averageMultiplierThreshold}`);
-            } else {
-                const gate = this.predictor ? this.predictor.shouldAllowBet() : { allowed: true };
-                if (!gate.allowed) {
-                    logger.debug(`Model gate: standing down (${gate.reason})`);
-                } else {
-                    logger.info(
-                        `Bet opportunity (round #${this.roundId + 1}): avg ${avg.toFixed(2)}x, ` +
-                        `model ${gate.warmingUp ? 'warming up' : `P=${(gate.probability ?? 0).toFixed(2)}`} ` +
-                        `[regime: ${gate.regime || 'n/a'}]`
-                    );
-                    await this.betManager.placeBet(frame, usableBalance);
-                }
+        const decision = this.brain.decide({
+            bettingWindow,
+            balance: Number.isFinite(balance)
+                ? balance - this.config.GAME.MIN_BALANCE_RESERVE
+                : null,
+            cooldownRounds: this.cooldownRounds,
+            halted: this.tradingHalted
+        });
+
+        if (bettingWindow && decision.shouldBet) {
+            logger.info(
+                `[${this.mode().toUpperCase()}] BET round #${this.roundId + 1}: stake ${decision.stake} | ` +
+                `tier ${decision.tier} | confidence ${(decision.confidence ?? 0).toFixed(2)} | ` +
+                `pattern ${decision.pattern ? decision.pattern.pattern : 'none'}`
+            );
+            const ok = await this.betManager.placeBet(frame, balance, decision.stake, {
+                confidence: decision.confidence,
+                pattern: decision.pattern,
+                tier: decision.tier
+            });
+            if (ok) {
+                this.roundBetMeta = {
+                    stake: decision.stake,
+                    confidence: decision.confidence,
+                    pattern: decision.pattern ? decision.pattern.pattern : '',
+                    tier: decision.tier
+                };
             }
+        } else if (bettingWindow && this.cooldownRounds === 0 && !this.tradingHalted &&
+                   !this.betManager.isWaitingForResult && decision.reasons.length) {
+            logger.debug(`Standing down: ${decision.reasons.join('; ')}`);
         }
 
         this.emit('status', {
@@ -242,7 +243,8 @@ class GameMonitor extends EventEmitter {
             cooldownRounds: this.cooldownRounds,
             tradingHalted: this.tradingHalted,
             haltReason: this.haltReason,
-            model: this.predictor ? this.predictor.snapshot() : null,
+            decision: this.brain.lastDecision,
+            brain: this.brain.snapshot(),
             strategy: {
                 name: this.strategy.name,
                 nextStake: this.strategy.getNextBetAmount(),
@@ -253,7 +255,7 @@ class GameMonitor extends EventEmitter {
     }
 
     /**
-     * DOM-jitter guard for round-end detection (see class docs).
+     * DOM-jitter guard for round-end detection.
      * Returns true when the round end was accepted.
      */
     detectRoundEnd(latest, state) {
@@ -273,12 +275,8 @@ class GameMonitor extends EventEmitter {
     }
 
     /**
-     * Guarantees the bet state can never get stuck:
-     *  - unarmed bet never confirmed in flight -> written off (BET_STALENESS_MS)
-     *  - flight visibly ended but crash bubble never appeared -> written off
-     *    after FLIGHT_END_GRACE_MS
-     *  - any bet open longer than MAX_BET_LIFETIME_MS -> written off
-     * All write-offs are conservative losses, never wins.
+     * Guarantees the bet state can never get stuck. All write-offs are
+     * conservative losses, never wins.
      */
     sweepStaleBets() {
         const pending = this.betManager.currentBet;
@@ -304,8 +302,8 @@ class GameMonitor extends EventEmitter {
     }
 
     /**
-     * The newest bubble on the payouts strip changed -> the round that just
-     * ended crashed at `crashValue` (the NEW value, not the previous one).
+     * The newest bubble changed -> the round that just ended crashed at
+     * `crashValue` (the NEW value, not the previous one).
      */
     onRoundEnded(crashValue, state) {
         this.roundId++;
@@ -315,10 +313,9 @@ class GameMonitor extends EventEmitter {
 
         // ---- Feed memory + model BEFORE settling the bet ----
         if (this.historyStore) this.historyStore.append(crashValue);
-        if (this.predictor) this.predictor.addRound(crashValue);
+        this.brain.onRoundEnded(crashValue);
 
         // ---- Settle the open bet ----
-        const predictionForThisRound = this.nextPrediction;
         const bet = this.betManager.currentBet;
         if (this.betManager.isWaitingForResult && bet && !bet.settled) {
             if (bet.armed) {
@@ -342,21 +339,42 @@ class GameMonitor extends EventEmitter {
             }
         }
 
-        // ---- Update session history + prediction ----
+        // ---- Session history + prediction ----
         this.multiplierHistory.unshift(crashValue);
         if (this.multiplierHistory.length > this.historySize) {
             this.multiplierHistory.length = this.historySize;
         }
         this.nextPrediction = this.average(this.multiplierHistory);
 
+        // ---- Round-by-round CSV row ----
+        const lastTrade = this.statsTracker.trades.length
+            ? this.statsTracker.trades[this.statsTracker.trades.length - 1] : null;
+        const betWasThisRound = this.roundBetMeta !== null;
+        if (this.csvRounds) {
+            this.csvRounds.write({
+                ts: new Date().toISOString(),
+                mode: this.mode(),
+                roundId: this.roundId,
+                crash: crashValue,
+                betPlaced: betWasThisRound ? 'yes' : 'no',
+                stake: betWasThisRound ? this.roundBetMeta.stake : '',
+                outcome: betWasThisRound && lastTrade ? (lastTrade.won ? 'win' : 'loss') : 'none',
+                pnl: betWasThisRound && lastTrade ? (lastTrade.won ? lastTrade.profit : lastTrade.loss) : 0,
+                confidence: this.roundBetMeta ? (this.roundBetMeta.confidence ?? '') : '',
+                pattern: this.roundBetMeta ? this.roundBetMeta.pattern : '',
+                tier: this.brain.tier,
+                regime: this.brain.predictor ? this.brain.predictor.regime() : ''
+            });
+        }
+        this.roundBetMeta = null;
+
         this.emit('roundEnded', {
             roundId: this.roundId,
             crash: crashValue,
-            predicted: predictionForThisRound,
             nextPrediction: this.nextPrediction,
             history: [...this.multiplierHistory],
             stats: this.statsTracker.getStats(),
-            model: this.predictor ? this.predictor.snapshot() : null,
+            brain: this.brain.snapshot(),
             balanceText: state ? state.balanceText : null
         });
     }
@@ -427,14 +445,12 @@ class GameMonitor extends EventEmitter {
     }
 
     /**
-     * Site-state recovery LADDER. Escalates each time failures persist;
-     * never bets blind — final step halts trading entirely.
+     * Site-state recovery LADDER (reload -> re-navigate -> halt).
      */
     async recover() {
         this.recoveryLevel++;
         this.consecutiveFailures = 0;
 
-        // If the page is no longer on the game URL, the session likely died.
         const currentUrl = this.page.url();
         if (this.attachedUrl && currentUrl !== this.attachedUrl &&
             !currentUrl.includes('aviator')) {
@@ -442,7 +458,6 @@ class GameMonitor extends EventEmitter {
                 `Page navigated away from the game (${currentUrl}) — your BetPawa session may have ` +
                 'expired. Log in again in the browser window; the bot will keep retrying.'
             );
-            this.sessionWarned = true;
         }
 
         if (this.recoveryLevel === 1) {

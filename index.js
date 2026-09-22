@@ -12,56 +12,62 @@ const BettingStrategy = require('./game/strategies');
 const Database = require('./database/database');
 const HistoryStore = require('./game/historyStore');
 const Predictor = require('./game/predictor');
+const PatternDetector = require('./game/patternDetector');
+const Bankroll = require('./game/bankroll');
+const Brain = require('./game/brain');
+const CsvLog = require('./util/csvLog');
 const { startDashboard } = require('./server');
 
 // ---------------------------------------------------------------------------
-// Interactive strategy selection
+// Interactive strategy selection (MICRO is the safe default)
 // ---------------------------------------------------------------------------
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const askQuestion = (query) => new Promise((resolve) => rl.question(query, resolve));
 
 async function selectStrategy() {
     if (!process.stdin.isTTY) {
-        logger.warn('No interactive terminal detected — defaulting to MODERATE strategy');
-        return { ...config.BETTING_STRATEGIES.MODERATE };
+        logger.warn('No interactive terminal detected — defaulting to MICRO strategy');
+        return { ...config.BETTING_STRATEGIES.MICRO };
     }
 
     console.log('\nAvailable Strategies (amounts are in SITE CURRENCY — UGX on BetPawa.ug):');
-    console.log('1. Conservative (Lower risk, smaller profits)');
-    console.log('2. Moderate (Balanced risk and reward)');
-    console.log('3. Aggressive (Higher risk, larger potential profits)');
-    console.log('4. Custom (Define your own parameters)\n');
+    console.log('1. MICRO — tiny stakes, recommended default (UGX 100 initial)');
+    console.log('2. Conservative (Lower risk, smaller profits)');
+    console.log('3. Moderate (Balanced risk and reward)');
+    console.log('4. Aggressive (Higher risk, larger potential profits)');
+    console.log('5. Custom (Define your own parameters)\n');
 
-    const choice = await askQuestion('Select strategy (1-4): ');
+    const choice = await askQuestion('Select strategy (1-5): ');
     switch (choice) {
-        case '1': return { ...config.BETTING_STRATEGIES.CONSERVATIVE };
-        case '2': return { ...config.BETTING_STRATEGIES.MODERATE };
-        case '3': return { ...config.BETTING_STRATEGIES.AGGRESSIVE };
-        case '4': return customStrategySetup();
+        case '2': return { ...config.BETTING_STRATEGIES.CONSERVATIVE };
+        case '3': return { ...config.BETTING_STRATEGIES.MODERATE };
+        case '4': return { ...config.BETTING_STRATEGIES.AGGRESSIVE };
+        case '5': return customStrategySetup();
+        case '1':
         default:
-            logger.warn('Invalid choice, using Moderate strategy');
-            return { ...config.BETTING_STRATEGIES.MODERATE };
+            if (choice !== '1') logger.warn('Invalid choice, using MICRO strategy');
+            return { ...config.BETTING_STRATEGIES.MICRO };
     }
 }
 
 async function customStrategySetup(attempt = 1) {
     if (attempt > 3) {
-        logger.error('Too many invalid attempts — falling back to MODERATE strategy');
-        return { ...config.BETTING_STRATEGIES.MODERATE };
+        logger.error('Too many invalid attempts — falling back to MICRO strategy');
+        return { ...config.BETTING_STRATEGIES.MICRO };
     }
     console.log(`\nCustom strategy setup (attempt ${attempt}/3) — amounts in UGX on BetPawa.ug`);
     const askNum = async (label) => parseFloat(await askQuestion(label));
 
     const strategy = {
         name: 'CUSTOM',
-        initialBet: await askNum('Initial bet amount (e.g. 1000): '),
+        initialBet: await askNum('Initial bet amount (e.g. 100): '),
         maxBet: await askNum('Maximum bet amount: '),
         minBet: await askNum('Minimum bet amount: '),
-        targetMultiplier: await askNum('Target multiplier (e.g., 1.5): '),
+        targetMultiplier: await askNum('Target multiplier (e.g., 1.3): '),
         stopLoss: await askNum('Stop loss amount: '),
         takeProfit: await askNum('Take profit amount: '),
-        martingaleMultiplier: await askNum('Martingale multiplier (e.g., 2): '),
-        averageMultiplierThreshold: await askNum('Average multiplier threshold to trigger bets (e.g., 2): ')
+        martingaleMultiplier: await askNum('Martingale multiplier (e.g., 1.4): '),
+        averageMultiplierThreshold: await askNum('Average multiplier threshold to trigger bets (e.g., 1.8): ')
     };
 
     const { ok, errors } = BettingStrategy.validate(strategy);
@@ -81,7 +87,6 @@ async function initializeBrowser() {
         defaultViewport: null,
         args: ['--start-maximized']
     };
-    // Persistent profile -> your BetPawa login survives restarts.
     if (config.BROWSER.USER_DATA_DIR) {
         launchOptions.userDataDir = config.BROWSER.USER_DATA_DIR;
     }
@@ -107,10 +112,6 @@ async function gotoSafe(page, url) {
     }
 }
 
-/**
- * BetPawa flow: open the site, let the user log in manually (once — the
- * session is kept in the persistent Chrome profile), then open the game.
- */
 async function navigateToGame(page) {
     await gotoSafe(page, config.NAVIGATION.BASE_URL);
 
@@ -125,7 +126,6 @@ async function navigateToGame(page) {
 
     await gotoSafe(page, config.NAVIGATION.GAME_URL);
 
-    // Optional extra click steps (empty by default for BetPawa)
     for (const step of config.NAVIGATION_STEPS) {
         try {
             await page.waitForSelector(step.selector, {
@@ -149,6 +149,14 @@ async function navigateToGame(page) {
 // ---------------------------------------------------------------------------
 async function main() {
     logger.info('Starting Aviator Bot (target: BetPawa Uganda)...');
+    if (config.MODE.PAPER) {
+        logger.warn('=====================================================================');
+        logger.warn('PAPER MODE: observing + logging hypothetical trades. NO REAL BETS.');
+        logger.warn('Set PAPER_MODE=false in .env only after you trust the behavior.');
+        logger.warn('=====================================================================');
+    } else {
+        logger.error('LIVE MODE: the bot WILL place real bets. Loss limits are enforced.');
+    }
 
     const strategyConfig = await selectStrategy();
     logger.info(
@@ -157,9 +165,10 @@ async function main() {
         `take-profit ${strategyConfig.takeProfit}`
     );
 
-    // ---- Memory + model (persisted across runs) ----
+    // ---- Memory: history, model, patterns, bankroll ----
     const historyStore = new HistoryStore(path.join(config.DATA_DIR, 'history.json'));
     const roundsLoaded = historyStore.load();
+
     let predictor = null;
     if (config.MODEL.ENABLED) {
         predictor = Predictor.load(path.join(config.DATA_DIR, 'model.json'), {
@@ -171,21 +180,52 @@ async function main() {
             coldRecoveryCount: config.MODEL.COLD_RECOVERY_COUNT
         });
         predictor.setHistory(historyStore.values);
-        logger.info(
-            `Model ready: ${roundsLoaded} historical rounds loaded | ` +
-            `P(crash >= ${strategyConfig.targetMultiplier}x) = ` +
-            `${(predictor.probCrashAtLeast(strategyConfig.targetMultiplier) ?? 0).toFixed(2)} | ` +
-            `entry threshold ${predictor.entryProbability.toFixed(2)} | regime: ${predictor.regime()}`
-        );
-    } else {
-        logger.warn('Model disabled (MODEL_ENABLED=false) — betting on strategy rules only');
     }
+
+    let patterns = null;
+    if (config.PATTERN.ENABLED) {
+        patterns = PatternDetector.load(path.join(config.DATA_DIR, 'patterns.json'), {
+            lengths: config.PATTERN.LENGTHS,
+            minSupport: config.PATTERN.MIN_SUPPORT,
+            bins: config.PATTERN.BINS,
+            targetMultiplier: strategyConfig.targetMultiplier
+        });
+        patterns.rebuildStream(historyStore.values);
+    }
+
+    const bankroll = Bankroll.load(path.join(config.DATA_DIR, 'bankroll.json'), {
+        sessionLossLimit: config.RISK.SESSION_LOSS_LIMIT,
+        dailyLossLimit: config.RISK.DAILY_LOSS_LIMIT,
+        maxStakeFraction: config.RISK.MAX_STAKE_FRACTION,
+        microStakeFraction: config.RISK.MICRO_STAKE_FRACTION,
+        minStake: strategyConfig.minBet
+    });
+
+    const strategy = new BettingStrategy(strategyConfig);
+    const brain = new Brain({ config, strategy, predictor, patterns, bankroll });
+
+    logger.info(
+        `Memory loaded: ${roundsLoaded} rounds | ` +
+        `P(crash >= ${strategyConfig.targetMultiplier}x) = ` +
+        `${(predictor ? predictor.probCrashAtLeast(strategyConfig.targetMultiplier) : null ?? 0).toFixed(2)} | ` +
+        `patterns known: ${patterns ? patterns.patterns.size : 0} | tier: ${brain.tier} ` +
+        `(bets start only after ${config.RISK.MIN_ROUNDS_OBSERVE} rounds of warm-up)`
+    );
+
+    // Round-by-round + trade CSV logs
+    const csvRounds = new CsvLog(path.join(config.DATA_DIR, 'rounds.csv'), [
+        'ts', 'mode', 'roundId', 'crash', 'betPlaced', 'stake', 'outcome', 'pnl',
+        'confidence', 'pattern', 'tier', 'regime'
+    ]);
+    const csvTrades = new CsvLog(path.join(config.DATA_DIR, 'trades.csv'), [
+        'ts', 'mode', 'roundId', 'stake', 'target', 'multiplier', 'pnl', 'won', 'tier'
+    ]);
 
     // Optional persistence (DATABASE_ENABLED=true in .env)
     const database = new Database(config);
     database.connect();
 
-    // Live dashboard (serves /public over socket.io)
+    // Live dashboard
     let dashboard = null;
     if (config.DASHBOARD.ENABLED) {
         try {
@@ -203,7 +243,6 @@ async function main() {
         process.exit(1);
     });
 
-    // One monitor per game page, deduplicated.
     const monitors = new Map(); // page -> GameMonitor
 
     const attachMonitor = async (candidate) => {
@@ -219,11 +258,7 @@ async function main() {
             candidate.on('pageerror', (error) => logger.error(`Game page JS error: ${error.message}`));
         } catch (error) { /* page may already be closing */ }
 
-        // Fresh strategy instance per monitor so the SELECTED config is used.
-        const monitor = new GameMonitor(candidate, config, { ...strategyConfig }, {
-            predictor,
-            historyStore
-        });
+        const monitor = new GameMonitor(candidate, config, brain, { historyStore, csvRounds });
         monitors.set(candidate, monitor);
 
         monitor.on('roundEnded', (d) => {
@@ -234,11 +269,22 @@ async function main() {
                     created_at: Date.now(),
                     predictedValue: d.nextPrediction
                 });
-                dashboard.io.emit('model', d.model);
+                dashboard.io.emit('brain', d.brain);
             }
         });
         monitor.on('trade', (t) => {
             database.saveTrade(t);
+            csvTrades.write({
+                ts: new Date().toISOString(),
+                mode: monitor.mode(),
+                roundId: monitor.roundId,
+                stake: t.betAmount,
+                target: strategyConfig.targetMultiplier,
+                multiplier: t.multiplier ?? '',
+                pnl: t.won ? t.profit : t.loss,
+                won: t.won ? 'yes' : 'no',
+                tier: brain.tier
+            });
             if (dashboard) dashboard.io.emit('trade', t);
         });
         monitor.on('status', (s) => {
@@ -248,7 +294,6 @@ async function main() {
             logger.warn('Trading halted — monitoring continues');
             if (dashboard) dashboard.io.emit('tradingStopped', true);
         });
-        // Site-state recovery ladder level 2: bring the page back to the game.
         monitor.on('needsRenavigation', async () => {
             logger.info('Re-navigating game page to the Aviator URL...');
             await gotoSafe(candidate, config.NAVIGATION.GAME_URL);
@@ -258,7 +303,6 @@ async function main() {
         logger.info(`Game monitor started on ${candidate.url()}`);
     };
 
-    // New tabs/pages — race-free (attachMonitor no-ops until game markup exists)
     browser.on('targetcreated', async (target) => {
         if (target.type() !== 'page') return;
         try {
@@ -272,7 +316,6 @@ async function main() {
         }
     });
 
-    // Watcher loop: covers same-tab navigation, retries, and prune of closed pages.
     const watcher = setInterval(async () => {
         try {
             for (const [p, m] of [...monitors.entries()]) {
@@ -292,7 +335,7 @@ async function main() {
     }, 3000);
 
     await navigateToGame(page);
-    await attachMonitor(page); // in case the game loaded in the same tab
+    await attachMonitor(page);
 
     // ---- Graceful shutdown ----
     let shuttingDown = false;
@@ -303,11 +346,13 @@ async function main() {
         clearInterval(watcher);
         for (const monitor of monitors.values()) monitor.stopMonitoring();
         if (predictor) predictor.save();
+        if (patterns) patterns.save();
+        if (bankroll) bankroll.save();
         try { await browser.close(); } catch (error) { /* already closed */ }
         database.disconnect();
         if (dashboard) { try { dashboard.server.close(); } catch (error) { /* ignore */ } }
         rl.close();
-        logger.info('Cleanup completed — history and model state saved');
+        logger.info('Cleanup completed — memory, model, patterns and bankroll saved');
         process.exit(0);
     };
 

@@ -27,16 +27,20 @@ class BetManager {
         this.statsTracker = statsTracker;
         this.currentBet = null;
         this.isWaitingForResult = false;
-        this.lastResult = null; // {won: boolean} of the last settled trade
+        this.paperMode = false; // when true: no clicks, virtual fills (paper trading)
         this.onTrade = null;    // optional callback(trade) for dashboard/DB
-        this.onProgressionReset = null; // optional callback() when the stake chain resets
     }
 
     setStrategy(strategy) {
         this.strategy = strategy;
     }
 
-    async placeBet(frame, balance = null) {
+    /**
+     * Places a bet of `stake` (decided by the Brain). In paper mode no clicks
+     * happen — the fill is virtual and everything downstream (stats, model
+     * feedback, CSV logs) runs exactly as in live mode.
+     */
+    async placeBet(frame, balance = null, stake = null, meta = {}) {
         if (this.isWaitingForResult) {
             logger.debug('Already waiting for result, skipping bet');
             return false;
@@ -44,27 +48,31 @@ class BetManager {
 
         try {
             const sel = this.config.SELECTORS.GAME;
-
-            // Consume the previous result exactly once, then keep the
-            // progressed amount for any retries.
-            const betAmount = round2(this.strategy.calculateNextBet(this.lastResult));
-            this.lastResult = null;
+            const betAmount = round2(stake ?? this.strategy.getNextBetAmount());
 
             if (!Number.isFinite(betAmount) || betAmount <= 0) {
-                logger.warn(`Invalid bet amount computed: ${betAmount} — skipping`);
+                logger.warn(`Invalid bet amount: ${betAmount} — skipping`);
                 return false;
             }
 
             if (Number.isFinite(balance) && balance < betAmount) {
-                logger.warn(
-                    `Insufficient balance (${balance}) for bet of ${betAmount} — skipping and ` +
-                    'resetting progression so the chain restarts small when funds allow'
-                );
-                this.strategy.resetProgression();
-                if (typeof this.onProgressionReset === 'function') {
-                    try { this.onProgressionReset(); } catch (e) { /* telemetry must never break the loop */ }
-                }
+                logger.warn(`Insufficient balance (${balance}) for bet of ${betAmount} — skipping`);
                 return false;
+            }
+
+            if (this.paperMode) {
+                this.currentBet = {
+                    amount: betAmount,
+                    timestamp: Date.now(),
+                    targetMultiplier: this.strategy.targetMultiplier,
+                    armed: true,   // paper fills are treated as live in the round
+                    settled: false,
+                    unarmedRoundEnds: 0,
+                    meta
+                };
+                this.isWaitingForResult = true;
+                logger.info(`[PAPER] Virtual bet placed: ${betAmount} @ target ${this.currentBet.targetMultiplier}x`);
+                return true;
             }
 
             // --- Set the stake (Angular-safe) ---
@@ -184,6 +192,10 @@ class BetManager {
     async executeCashout(frame, liveMultiplier) {
         const sel = this.config.SELECTORS.GAME;
         try {
+            if (this.paperMode) {
+                this.recordWin(liveMultiplier);
+                return;
+            }
             const clicked = await frame.evaluate((selector) => {
                 const button = document.querySelector(selector);
                 if (button && !button.disabled) {
@@ -272,11 +284,12 @@ class BetManager {
     }
 
     settle(trade, result) {
+        const meta = this.currentBet ? (this.currentBet.meta || {}) : {};
         if (this.currentBet) this.currentBet.settled = true;
+        trade.result = result.won ? 'win' : 'loss';
         this.statsTracker.addTrade(trade);
-        this.lastResult = result; // consumed by the next calculateNextBet()
         if (typeof this.onTrade === 'function') {
-            try { this.onTrade(trade); } catch (e) { /* never break the loop for telemetry */ }
+            try { this.onTrade(trade, meta); } catch (e) { /* never break the loop for telemetry */ }
         }
         this.isWaitingForResult = false;
         this.currentBet = null;
