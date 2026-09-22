@@ -208,3 +208,21 @@ test('dashboard walks to the next free port and records it', async () => {
         blocker.close();
     }
 });
+
+test('PUT /api/strategies/:id hot-swaps or 400s on unknown', async () => {
+    const calls = [];
+    await withServer({
+        setStrategy: (id) => {
+            calls.push(id);
+            if (id !== 'MICRO') throw new Error(`unknown strategy "${id}"`);
+            return { name: 'MICRO' };
+        }
+    }, async (port) => {
+        const res = await fetch(`http://127.0.0.1:${port}/api/strategies/MICRO`, { method: 'PUT' });
+        assert.equal(res.status, 200);
+        assert.deepEqual(await res.json(), { name: 'MICRO' });
+        assert.deepEqual(calls, ['MICRO']);
+        const bad = await fetch(`http://127.0.0.1:${port}/api/strategies/NOPE`, { method: 'PUT' });
+        assert.equal(bad.status, 400);
+    });
+});

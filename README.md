@@ -263,11 +263,23 @@ confirm but the page still looks logged out, it warns once — and if you
 confirm again it trusts you and proceeds (it never deadlocks on an
 unrecognized site layout).
 
+**Your login is saved:** each account gets a persistent browser profile
+(cookies/session live on disk in `data/profiles/…`), so you log in ONCE per
+account — on every next start the bot detects the remembered session and
+continues without asking. Passwords are never stored; the profile itself is
+the session.
+
 **Finding the game page:** after login the bot checks whether Aviator is
 already open (then it stays put), otherwise it uses the site's deep link and
-verifies the game widget actually appears. If the deep link is stale/wrong
-for that site, it tells you to open Aviator from the menu — the watcher finds
-the game page automatically. The dashboard's **👁 live view** is a delayed,
+verifies the game widget actually appears. BetPawa Uganda uses the verified
+casino deep link (`/casino/game/3187`). If a deep link is ever stale/wrong,
+the bot tells you to open Aviator from the menu — the watcher finds the game
+page automatically.
+
+**Strategies from the dashboard:** all four presets are listed in Mission
+Control and can be applied at any time with **✓ Apply strategy** — before
+launch it remembers your choice, during a running session it hot-swaps the
+strategy live (progression resets). The dashboard's **👁 live view** is a delayed,
 view-only screenshot; the bot always acts on the real page at DOM speed, so
 mirror lag never affects monitoring or bets.
 

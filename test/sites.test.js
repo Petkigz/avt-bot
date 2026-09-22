@@ -96,3 +96,7 @@ test('login detection indicators are broad enough for regional builds', () => {
         assert.ok(ind.includes('logout'), `${id} checks logout marker`);
     }
 });
+
+test('betpawa.ug deep link is the verified casino URL', () => {
+    assert.ok(getSite('betpawa.ug').gameUrl.includes('/casino/game/3187'));
+});

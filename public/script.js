@@ -626,10 +626,10 @@ async function loadStrategies() {
     for (const s of strategies) {
       const opt = document.createElement('option');
       opt.value = s.name;
-      opt.textContent = `${s.name} — stake ${s.initialBet}, target ${s.targetMultiplier}x`;
+      opt.textContent = `${s.name} — stake ${s.initialBet}, min ${s.minBet}, max ${s.maxBet}, target ${s.targetMultiplier}x`;
       sel.appendChild(opt);
     }
-    sel.value = 'MICRO';
+    if (!sel.value || !sel.querySelector(`option[value="${sel.value}"]`)) sel.value = 'MICRO';
   } catch (e) { /* server not ready */ }
 }
 
@@ -639,16 +639,19 @@ function applyControlState(cs) {
   const switchBtn = el('switchBtn');
   const strategySelect = el('strategySelect');
   const status = el('controlStatus');
+  strategySelect.disabled = false; // strategy is switchable at any time via Apply
   if (cs.awaitingLaunch) {
     launchBtn.classList.remove('hidden');
     switchBtn.classList.add('hidden');
-    strategySelect.disabled = false;
     status.textContent = 'Bot is waiting — pick site, account and strategy, then LAUNCH.';
   } else {
     launchBtn.classList.add('hidden');
     switchBtn.classList.remove('hidden');
-    strategySelect.disabled = true;
     status.textContent = cs.strategy ? `Running — strategy ${cs.strategy} (${cs.mode || 'paper'})` : 'Running';
+  }
+  // Keep the selector in sync with the strategy actually in use
+  if (cs.strategy && strategySelect.querySelector(`option[value="${cs.strategy}"]`)) {
+    strategySelect.value = cs.strategy;
   }
   const pauseBtn = el('pauseBtn');
   const resumeBtn = el('resumeBtn');
@@ -685,8 +688,21 @@ el('launchBtn').addEventListener('click', () => {
 el('pauseBtn').addEventListener('click', () => socket.emit('pauseBetting'));
 el('resumeBtn').addEventListener('click', () => socket.emit('resumeBetting'));
 el('renavigateBtn').addEventListener('click', () => {
-  socket.emit('renavigate', {});
+  socket.emit('renavigate', { accountId: el('accountSelect').value || null });
   el('controlStatus').textContent = 'Navigating to the Aviator page…';
+});
+
+el('strategyApplyBtn').addEventListener('click', async () => {
+  const name = el('strategySelect').value;
+  const status = el('controlStatus');
+  try {
+    const res = await fetch(`/api/strategies/${encodeURIComponent(name)}`, { method: 'PUT' });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    status.textContent = `Strategy set to ${body.name} ✓`;
+  } catch (e) {
+    status.textContent = `Strategy change failed: ${e.message}`;
+  }
 });
 
 // Observe-only <-> live betting toggle (hard confirmation for LIVE)

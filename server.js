@@ -154,6 +154,17 @@ async function startDashboard(port, logger, deps = {}) {
             })));
         });
 
+        // Switch strategy: hot-swaps the running session's strategy, or
+        // remembers the choice for the next launch.
+        app.put('/api/strategies/:id', (req, res) => {
+            if (!deps.setStrategy) return res.status(503).json({ error: 'strategy switching unavailable' });
+            try {
+                res.json(deps.setStrategy(req.params.id));
+            } catch (error) {
+                res.status(400).json({ error: error.message });
+            }
+        });
+
         app.post('/api/accounts/new', (req, res) => {
             if (!deps.accounts) return res.status(503).json({ error: 'accounts unavailable' });
             const { site, label, notes } = req.body || {};

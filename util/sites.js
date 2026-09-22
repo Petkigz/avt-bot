@@ -58,7 +58,8 @@ const SITES = {
         currency: 'UGX',
         baseUrl: 'https://www.betpawa.ug',
         loginUrl: 'https://www.betpawa.ug',
-        gameUrl: 'https://www.betpawa.ug/virtual/aviator',
+        // Verified casino deep link for Aviator on BetPawa UG
+        gameUrl: 'https://www.betpawa.ug/casino/game/3187?redirectBack=%2Fcasino',
         loginFlow: 'manual', // bot waits for you to log in (once per profile)
         loginSelectors: BETPAWA_LOGIN,
         balanceSelector: '.balance .amount',

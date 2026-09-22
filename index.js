@@ -392,6 +392,16 @@ function waitLoginConfirmation(session) {
  */
 async function waitForLogin(session) {
     const site = session.site;
+
+    // Already logged in? The persistent browser profile keeps the site
+    // session between runs, so normally nothing needs to happen here.
+    const pre = await isLoggedIn(session.page, site);
+    if (pre === true) {
+        accounts.touchLogin(session.account.id);
+        logger.info(`${site.name}: already logged in — remembered from your persistent profile, no action needed`);
+        return;
+    }
+
     for (let attempt = 1; attempt <= 3; attempt++) {
         setSessionPhase(session, 'loginRequired');
         emitSiteStatus('loginRequired', { accountLabel: session.account.label, attempt });
@@ -581,18 +591,19 @@ async function main() {
     // ---- Dashboard FIRST: UI_START mode and live controls depend on it ----
     let brain = null;          // assigned after strategy selection (handlers are null-safe)
     let strategyConfig = null;
+    let pendingStrategyName = null; // strategy picked in the UI before launch
     let paperMode = config.MODE.PAPER; // live-switchable from the dashboard
     let controlState = () => ({
         awaitingLaunch: awaitingUiLaunch,
         paused: brain ? brain.paused : false,
-        strategy: strategyConfig ? strategyConfig.name : null,
+        strategy: strategyConfig ? strategyConfig.name : pendingStrategyName,
         mode: paperMode ? 'paper' : 'live'
     });
     const emitControlState = () => { if (dashboard) dashboard.io.emit('controlState', controlState()); };
 
     if (config.DASHBOARD.ENABLED) {
         try {
-            dashboard = await startDashboard(config.DASHBOARD.PORT, logger, {
+            const dashboardDeps = {
                 accounts,
                 getActiveSite: () => ({ id: activeSite.id, name: activeSite.name, currency: activeSite.currency }),
                 getSessions: sessionsSnapshot,
@@ -610,8 +621,23 @@ async function main() {
                         logger.info(`User site removed: ${id}`);
                     }
                     return ok;
+                },
+                setStrategy: (id) => {
+                    const preset = config.BETTING_STRATEGIES[String(id || '').toUpperCase()];
+                    if (!preset) throw new Error(`unknown strategy "${id}"`);
+                    if (brain) {
+                        // Hot-swap: Brain reads this.strategy live on every round.
+                        brain.strategy = new BettingStrategy({ ...preset });
+                        logger.warn(`Strategy switched to ${preset.name} from the dashboard (progression reset)`);
+                    } else {
+                        pendingStrategyName = preset.name;
+                        logger.info(`Strategy ${preset.name} selected from the dashboard — will be used for the next launch`);
+                    }
+                    emitControlState();
+                    return { name: preset.name };
                 }
-            });
+            };
+            dashboard = await startDashboard(config.DASHBOARD.PORT, logger, dashboardDeps);
             // server.js already sends the sessions/siteStatus snapshot on
             // connect; index.js only wires the command events.
             dashboard.io.on('connection', (socket) => {
@@ -634,8 +660,9 @@ async function main() {
                     const p = payload || {};
                     const site = getSite(p.siteId);
                     const account = (p.accountId && accounts.get(p.accountId)) || accounts.ensureDefault(site.id);
-                    const preset = config.BETTING_STRATEGIES[String(p.strategy || 'MICRO').toUpperCase()] ||
-                        config.BETTING_STRATEGIES.MICRO;
+                    const preset = config.BETTING_STRATEGIES[
+                        String(p.strategy || pendingStrategyName || 'MICRO').toUpperCase()
+                    ] || config.BETTING_STRATEGIES.MICRO;
                     logger.info(`Launch requested from dashboard: ${site.name} / "${account.label}" / ${preset.name}`);
                     uiLaunchWaiter.resolve({ site, account, strategyConfig: { ...preset } });
                 });
@@ -644,6 +671,14 @@ async function main() {
                 });
                 socket.on('resumeBetting', () => {
                     if (brain) { brain.paused = false; logger.info('Betting RESUMED from the dashboard'); emitControlState(); }
+                });
+                // Strategy hot-swap (running session) or pre-launch selection
+                socket.on('setStrategy', ({ strategy } = {}) => {
+                    try {
+                        dashboardDeps.setStrategy(strategy);
+                    } catch (error) {
+                        logger.error(`Strategy change failed: ${error.message}`);
+                    }
                 });
                 // Observe-only <-> live betting toggle (dashboard switch)
                 socket.on('setMode', ({ mode } = {}) => {
