@@ -472,7 +472,7 @@ async function waitForGameWidget(page, site, timeoutMs = 25000) {
     const t0 = Date.now();
     while (Date.now() - t0 < timeoutMs) {
         try {
-            if (!page.isClosed() && await FrameHelper.hasSelector(page, selectors.BUBBLE_MULTIPLIER)) return true;
+            if (!page.isClosed() && await FrameHelper.findGameMarker(page, selectors.BUBBLE_MULTIPLIER)) return true;
         } catch (error) { /* page busy */ }
         await sleep(1500);
     }
@@ -519,7 +519,7 @@ async function navigateSessionToGame(session) {
 
     // Already on the game page (you opened Aviator yourself)? Don't
     // re-navigate — that would throw away the working page.
-    if (await FrameHelper.hasSelector(page, selectorsFor(site).BUBBLE_MULTIPLIER).catch(() => false)) {
+    if (await FrameHelper.findGameMarker(page, selectorsFor(site).BUBBLE_MULTIPLIER).catch(() => null)) {
         logger.info(`${site.name}: Aviator is already open — staying on this page`);
         setSessionPhase(session, 'active');
         emitSiteStatus('active', { accountLabel: session.account.label });
@@ -744,10 +744,10 @@ async function main() {
                     const s = accountId ? sessions.get(accountId) : sessions.values().next().value;
                     if (!s) return;
                     const selectors = selectorsFor(s.site);
-                    FrameHelper.hasSelector(s.page, selectors.BUBBLE_MULTIPLIER)
-                        .catch(() => false)
-                        .then(async (alreadyOpen) => {
-                            if (alreadyOpen) {
+                    FrameHelper.findGameMarker(s.page, selectors.BUBBLE_MULTIPLIER)
+                        .catch(() => null)
+                        .then(async (found) => {
+                            if (found) {
                                 logger.info(`${s.site.name}: Aviator is already open — nothing to do`);
                                 emitSiteStatus('active', { accountLabel: s.account.label });
                                 return;
@@ -870,7 +870,7 @@ async function main() {
         if (!candidate || session.monitor) return;
         const selectors = selectorsFor(session.site);
         try {
-            if (!(await FrameHelper.hasSelector(candidate, selectors.BUBBLE_MULTIPLIER))) return;
+            if (!(await FrameHelper.findGameMarker(candidate, selectors.BUBBLE_MULTIPLIER))) return;
         } catch (error) {
             return;
         }

@@ -62,6 +62,8 @@ class GameMonitor extends EventEmitter {
         this.nextPrediction = null;
         this.lastBalance = null;    // last balance read from the game page
         this.seedEmitted = false;   // history-strip seed sent once per attach
+        this.stripPath = null;      // content-discovered history strip (new Spribe layouts)
+        this.stripAnnounced = false;
         this.roundBetMeta = null; // {stake, confidence, pattern, tier} of this round's bet
 
         // Every settled trade feeds the Brain (model, patterns, bankroll,
@@ -119,10 +121,30 @@ class GameMonitor extends EventEmitter {
 
     async monitorCycle() {
         const sel = this.selectors;
-        const frameTimeout = Math.min(this.config.GAME.POLLING_INTERVAL * 2, 10000);
-        const frame = await FrameHelper.waitForSelectorInFrames(this.page, sel.BUBBLE_MULTIPLIER, frameTimeout);
+        // Classic layout first (fast path); fall back to CONTENT-based strip
+        // discovery — new-generation Spribe clients ("aviator-next") do not
+        // use the historical class names.
+        let marker = null;
+        try {
+            const frame = await FrameHelper.findFrameWithSelector(this.page, sel.BUBBLE_MULTIPLIER);
+            if (frame) marker = { frame, stripPath: null };
+        } catch (error) { /* page busy */ }
+        if (!marker) {
+            try { marker = await FrameHelper.findMultiplierStrip(this.page); } catch (error) { /* busy */ }
+        }
+        if (!marker) return; // nothing rendered yet — the tick retries
 
-        const state = await this.readState(frame);
+        if (marker.stripPath && !this.stripAnnounced) {
+            this.stripAnnounced = true;
+            logger.warn(
+                `Round history detected via content scan (new Spribe layout). ` +
+                'Observation and analysis work normally; live-bet button selectors may ' +
+                'need an update for this layout before LIVE mode can click.'
+            );
+        }
+        this.stripPath = marker.stripPath;
+
+        const state = await this.readState(marker.frame, marker.stripPath);
         if (!state) return;
         if (!this.attachedUrl) this.attachedUrl = this.page.url();
 
@@ -152,9 +174,11 @@ class GameMonitor extends EventEmitter {
         }
 
         // ---- Selector-drift alarm (fail LOUDLY, not silently) ----
+        // Suppressed in content-scan fallback mode: the new layout simply has
+        // different button classes, which is expected, not drift.
         if (state.betButton.exists) {
             this.missingButtonCycles = 0;
-        } else {
+        } else if (!this.stripPath) {
             this.missingButtonCycles++;
             if (this.missingButtonCycles === 20 || this.missingButtonCycles % 50 === 0) {
                 logger.error(
@@ -445,21 +469,34 @@ class GameMonitor extends EventEmitter {
 
     /**
      * Reads all needed DOM state in ONE evaluate round-trip.
+     * stripPath: when set, bubbles come from the content-discovered strip
+     * container (new Spribe layouts) instead of the classic selector.
      */
-    async readState(frame) {
+    async readState(frame, stripPath = null) {
         try {
             const sel = this.selectors;
-            return await frame.evaluate((s) => {
+            return await frame.evaluate((s, path) => {
                 const q = (selector) => document.querySelector(selector);
                 const visible = (el) => {
                     if (!el) return false;
                     const box = el.getBoundingClientRect();
                     return box.width > 0 && box.height > 0;
                 };
-                const bubbles = Array.from(document.querySelectorAll(s.BUBBLE_MULTIPLIER))
-                    .slice(0, 12)
-                    .map((el) => parseFloat((el.textContent || '').trim().replace(/x/gi, '')))
-                    .filter((v) => Number.isFinite(v) && v > 0);
+                let bubbles;
+                if (path) {
+                    const container = document.querySelector(path);
+                    bubbles = container
+                        ? Array.from(container.children)
+                            .map((el) => parseFloat((el.textContent || '').trim().replace(/x/gi, '').replace(',', '.')))
+                            .filter((v) => Number.isFinite(v) && v > 0)
+                            .slice(0, 12)
+                        : [];
+                } else {
+                    bubbles = Array.from(document.querySelectorAll(s.BUBBLE_MULTIPLIER))
+                        .slice(0, 12)
+                        .map((el) => parseFloat((el.textContent || '').trim().replace(/x/gi, '')))
+                        .filter((v) => Number.isFinite(v) && v > 0);
+                }
 
                 const betBtn = q(s.BET_BUTTON);
                 const cashBtn = q(s.CASHOUT_BUTTON);
@@ -482,7 +519,7 @@ class GameMonitor extends EventEmitter {
                     liveMultiplier: live ? parseFloat((live.textContent || '').replace(/x/gi, '')) : null,
                     balanceText: balanceEl ? balanceEl.textContent : null
                 };
-            }, sel);
+            }, sel, stripPath || null);
         } catch (error) {
             logger.error(`Error reading game state: ${error.message}`);
             return null;

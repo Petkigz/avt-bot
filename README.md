@@ -277,6 +277,15 @@ casino deep link (`/casino/game/3187`). If a deep link is ever stale/wrong,
 the bot tells you to open Aviator from the menu — the watcher finds the game
 page automatically.
 
+**Spribe layout generations:** bookmakers run either the classic Aviator
+widget or Spribe's newer `aviator-next` client (e.g. BetPawa Uganda), which
+uses different class names. The bot handles both: it first looks for the
+classic round-history selectors, and if those miss it discovers the history
+strip by CONTENT (elements holding multiplier texts like `1.23x`) — so
+observation and analysis work on either generation without config. Live
+betting still needs the classic button selectors; on a next-gen layout the
+log says so explicitly.
+
 **Strategies from the dashboard:** all four presets are listed in Mission
 Control and can be applied at any time with **✓ Apply strategy** — before
 launch it remembers your choice, during a running session it hot-swaps the
