@@ -40,7 +40,13 @@ const config = {
         MAX_CONSECUTIVE_FAILURES: num(process.env.MAX_CONSECUTIVE_FAILURES, 5),
         // A bet that could not be confirmed as "in flight" is conservatively
         // written off after this many milliseconds.
-        BET_STALENESS_MS: num(process.env.BET_STALENESS_MS, 120000)
+        BET_STALENESS_MS: num(process.env.BET_STALENESS_MS, 120000),
+        // Round-cycle jitter guard: a bubble change arriving sooner than this
+        // after the previous accepted round end is deferred one cycle.
+        MIN_ROUND_GAP_MS: num(process.env.MIN_ROUND_GAP_MS, 2000),
+        // Absolute maximum lifetime of an open bet before it is written off
+        // (protects the loop from getting stuck if a crash is never detected).
+        MAX_BET_LIFETIME_MS: num(process.env.MAX_BET_LIFETIME_MS, 180000)
     },
 
     SELECTORS: {
@@ -80,7 +86,8 @@ const config = {
             stopLoss: 20.00,
             takeProfit: 40.00,
             martingaleMultiplier: 1.5,
-            averageMultiplierThreshold: 1.50
+            averageMultiplierThreshold: 1.50,
+            maxConsecutiveLosses: 5
         },
         MODERATE: {
             name: 'MODERATE',
@@ -91,7 +98,8 @@ const config = {
             stopLoss: 50.00,
             takeProfit: 100.00,
             martingaleMultiplier: 2,
-            averageMultiplierThreshold: 2.00
+            averageMultiplierThreshold: 2.00,
+            maxConsecutiveLosses: 5
         },
         AGGRESSIVE: {
             name: 'AGGRESSIVE',
@@ -102,7 +110,8 @@ const config = {
             stopLoss: 100.00,
             takeProfit: 300.00,
             martingaleMultiplier: 2.5,
-            averageMultiplierThreshold: 3.00
+            averageMultiplierThreshold: 3.00,
+            maxConsecutiveLosses: 5
         }
     }
 };

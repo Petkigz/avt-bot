@@ -55,7 +55,11 @@ class BetManager {
             }
 
             if (Number.isFinite(balance) && balance < betAmount) {
-                logger.warn(`Insufficient balance (${balance}) for bet of ${betAmount} — skipping`);
+                logger.warn(
+                    `Insufficient balance (${balance}) for bet of ${betAmount} — skipping and ` +
+                    'resetting progression so the chain restarts small when funds allow'
+                );
+                this.strategy.resetProgression();
                 return false;
             }
 

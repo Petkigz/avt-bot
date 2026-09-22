@@ -141,6 +141,14 @@ async function main() {
     const { browser, page } = await initializeBrowser();
     logger.info('Browser initialized');
 
+    // If the browser process dies, nothing can recover in-process — exit with
+    // a non-zero code so a supervisor (pm2, systemd, docker restart policy...)
+    // can bring the whole bot back up cleanly.
+    browser.on('disconnected', () => {
+        logger.error('Browser disconnected unexpectedly — exiting for supervisor restart');
+        process.exit(1);
+    });
+
     // One monitor per game page, deduplicated.
     const monitors = new Map(); // page -> GameMonitor
 
@@ -151,6 +159,12 @@ async function main() {
         } catch (error) {
             return;
         }
+
+        // Surface page-level failures loudly instead of silently stalling.
+        try {
+            candidate.on('error', (error) => logger.error(`Game page crashed: ${error.message}`));
+            candidate.on('pageerror', (error) => logger.error(`Game page JS error: ${error.message}`));
+        } catch (error) { /* page may already be closing */ }
 
         // Fresh strategy instance per monitor so the SELECTED config is used.
         const monitor = new GameMonitor(candidate, config, { ...strategyConfig });

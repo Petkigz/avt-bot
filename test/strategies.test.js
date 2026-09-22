@@ -86,3 +86,30 @@ test('validate rejects NaN fields', () => {
     const { ok } = BettingStrategy.validate(bad);
     assert.strictEqual(ok, false);
 });
+
+test('loss-streak breaker is configurable', () => {
+    const s = new BettingStrategy({ ...base, maxConsecutiveLosses: 3 });
+    s.recordResult({ won: false });
+    s.recordResult({ won: false });
+    assert.strictEqual(s.shouldStopTrading({ totalLoss: 0, totalProfit: 0 }), false);
+    s.recordResult({ won: false });
+    assert.strictEqual(s.shouldStopTrading({ totalLoss: 0, totalProfit: 0 }), true);
+});
+
+test('resetProgression returns stake to initial but keeps the loss counters', () => {
+    const s = new BettingStrategy(base);
+    s.recordResult({ won: false }); // currentBet -> 4
+    s.recordResult({ won: false }); // currentBet -> 8
+    assert.strictEqual(s.consecutiveLosses, 2);
+
+    s.resetProgression();
+    assert.strictEqual(s.getNextBetAmount(), base.initialBet); // restart small
+    assert.strictEqual(s.consecutiveLosses, 2); // breaker NOT evaded
+    assert.strictEqual(s.shouldStopTrading({ totalLoss: 0, totalProfit: 0 }), false);
+});
+
+test('validate rejects a bad maxConsecutiveLosses', () => {
+    const bad = { ...base, maxConsecutiveLosses: 0 };
+    const { ok } = BettingStrategy.validate(bad);
+    assert.strictEqual(ok, false);
+});

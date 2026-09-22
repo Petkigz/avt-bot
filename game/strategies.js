@@ -23,8 +23,19 @@ class BettingStrategy {
         // `undefined` are always false -> the bot never bet. Fall back to the
         // target multiplier, which is a sensible default.
         this.averageMultiplierThreshold = config.averageMultiplierThreshold ?? this.targetMultiplier;
+        // Hard circuit-breaker: stop trading after this many consecutive losses.
+        this.maxConsecutiveLosses = config.maxConsecutiveLosses ?? 5;
         this.consecutiveLosses = 0;
         this.consecutiveWins = 0;
+    }
+
+    /**
+     * Resets the stake back to the initial bet WITHOUT clearing the loss
+     * counters — used when a bet in the progression cannot be funded, so a
+     * broken chain restarts small instead of resuming at an escalated size.
+     */
+    resetProgression() {
+        this.currentBet = this.initialBet;
     }
 
     /**
@@ -70,7 +81,7 @@ class BettingStrategy {
         return (
             stats.totalLoss <= -this.stopLoss ||
             stats.totalProfit >= this.takeProfit ||
-            this.consecutiveLosses >= 5
+            this.consecutiveLosses >= this.maxConsecutiveLosses
         );
     }
 
@@ -96,6 +107,10 @@ class BettingStrategy {
             }
             if (cfg.targetMultiplier < 1.01) errors.push('targetMultiplier must be at least 1.01');
             if (cfg.martingaleMultiplier < 1) errors.push('martingaleMultiplier must be at least 1');
+        }
+        if (cfg.maxConsecutiveLosses !== undefined &&
+            (!Number.isInteger(cfg.maxConsecutiveLosses) || cfg.maxConsecutiveLosses < 1)) {
+            errors.push('maxConsecutiveLosses must be an integer >= 1');
         }
         return { ok: errors.length === 0, errors };
     }

@@ -42,11 +42,13 @@ class GameMonitor extends EventEmitter {
         this.multiplierHistory = [];
         this.historySize = config.GAME.HISTORY_SIZE;
         this.lastBubble = null;      // newest confirmed crash value on the strip
+        this.lastRoundEndedAt = null; // timestamp of last accepted round end (jitter guard)
         this.roundInFlight = false;
         this.tradingHalted = false;
         this.stopped = false;
         this.monitoring = false;     // re-entrancy lock
         this.consecutiveFailures = 0;
+        this.missingButtonCycles = 0; // selector-drift alarm counter
         this.timer = null;
         this.nextPrediction = null;  // prediction for the upcoming round
 
@@ -113,8 +115,20 @@ class GameMonitor extends EventEmitter {
             }
             logger.info(`Baseline crash value: ${latest}x`);
         } else if (latest !== this.lastBubble) {
-            this.onRoundEnded(latest, state);
-            this.lastBubble = latest;
+            this.detectRoundEnd(latest, state);
+        }
+
+        // ---- Selector-drift alarm (fail LOUDLY, not silently) ----
+        if (state.betButton.exists) {
+            this.missingButtonCycles = 0;
+        } else {
+            this.missingButtonCycles++;
+            if (this.missingButtonCycles === 20 || this.missingButtonCycles % 50 === 0) {
+                logger.error(
+                    `Bet button selector has not matched for ${this.missingButtonCycles} cycles — ` +
+                    'the page layout may have changed (check SELECTORS.GAME.BET_BUTTON)'
+                );
+            }
         }
 
         // ---- In-flight detection ----
@@ -135,11 +149,7 @@ class GameMonitor extends EventEmitter {
         }
 
         // ---- Stale bet sweep (never leave an unsettled bet blocking the loop) ----
-        const pending = this.betManager.currentBet;
-        if (pending && !pending.armed && Date.now() - pending.timestamp > this.config.GAME.BET_STALENESS_MS) {
-            logger.warn('Bet could not be confirmed as in-flight — booking conservatively as loss');
-            this.betManager.recordLoss(null);
-        }
+        this.sweepStaleBets();
 
         // ---- Cashout window ----
         if (this.betManager.isWaitingForResult && inflight && Number.isFinite(state.liveMultiplier)) {
@@ -189,6 +199,54 @@ class GameMonitor extends EventEmitter {
             stats: this.statsTracker.getStats(),
             history: [...this.multiplierHistory]
         });
+    }
+
+    /**
+     * DOM-jitter guard for round-end detection.
+     * A real round cycle (betting window + flight) takes several seconds, so a
+     * bubble change arriving suspiciously soon after the previous accepted
+     * round end is deferred by one cycle. If the value persists, it is
+     * accepted next cycle; if it was render noise, it never fires a settlement.
+     * Returns true when the round end was accepted.
+     */
+    detectRoundEnd(latest, state) {
+        const now = Date.now();
+        const sinceLastEnd = this.lastRoundEndedAt ? now - this.lastRoundEndedAt : Infinity;
+        if (sinceLastEnd < this.config.GAME.MIN_ROUND_GAP_MS) {
+            logger.warn(
+                `Bubble changed to ${latest}x only ${sinceLastEnd}ms after the previous round end — ` +
+                'deferring one cycle to confirm (jitter guard)'
+            );
+            return false;
+        }
+        this.onRoundEnded(latest, state);
+        this.lastBubble = latest;
+        this.lastRoundEndedAt = now;
+        return true;
+    }
+
+    /**
+     * Guarantees the bet state can never get stuck:
+     *  - a bet never confirmed as in-flight is written off after BET_STALENESS_MS
+     *  - an armed bet whose crash we somehow never see is written off after
+     *    MAX_BET_LIFETIME_MS so the loop can never be blocked forever
+     * Both are booked conservatively (as losses), never as wins.
+     */
+    sweepStaleBets() {
+        const pending = this.betManager.currentBet;
+        if (!pending || pending.settled) return;
+
+        const age = Date.now() - pending.timestamp;
+        if (!pending.armed && age > this.config.GAME.BET_STALENESS_MS) {
+            logger.warn('Bet could not be confirmed as in-flight — booking conservatively as loss');
+            this.betManager.recordLoss(null);
+        } else if (age > this.config.GAME.MAX_BET_LIFETIME_MS) {
+            logger.warn(
+                `Active bet has been open for ${Math.round(age / 1000)}s without a confirmed round end — ` +
+                'booking conservatively as loss to unblock the loop'
+            );
+            this.betManager.recordLoss(null);
+        }
     }
 
     /**
@@ -293,6 +351,7 @@ class GameMonitor extends EventEmitter {
             logger.error(`Page reload failed: ${error.message}`);
         }
         this.lastBubble = null; // re-baseline from the payouts strip
+        this.lastRoundEndedAt = null;
         this.roundInFlight = false;
     }
 

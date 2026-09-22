@@ -45,7 +45,14 @@ This release is a full overhaul focused on **correctness and money-safety**:
   being booked; unconfirmed outcomes are booked conservatively (never as phantom wins).
 - **Angular-safe bet input** — the stake is written through the native value setter so
   the game UI actually registers it.
-- **Self-healing** — repeated failures trigger a page reload and re-baseline.
+- **Self-healing** — repeated failures trigger a page reload and re-baseline; browser
+  disconnects exit non-zero so a supervisor can restart; selector drift raises loud errors.
+- **Anti-stuck guarantees** — a jitter guard debounces false round-end signals, and any
+  bet that cannot be settled (never armed, or crash never detected) is written off after a
+  configurable timeout so the loop can never block or double-bet.
+- **Tamer martingale** — the loss-streak breaker is configurable
+  (`maxConsecutiveLosses`), and a bet the balance can't fund resets the progression to the
+  initial stake instead of resuming escalated.
 - **Live dashboard** — a real Express + Socket.IO server (the previous client had no
   backend) at `http://localhost:3000`.
 - **Optional persistence** — MySQL via `mysql2` with auto-schema and reconnect.
@@ -108,6 +115,9 @@ All settings live in `.env` (see [.env.example](.env.example)). Highlights:
 | `HEADLESS` | `false` | Run browser without a window |
 | `POLLING_INTERVAL` | `4000` | How often the game is polled (ms) |
 | `HISTORY_SIZE` | `3` | Rounds used for the moving average |
+| `MIN_ROUND_GAP_MS` | `2000` | Jitter guard for round-end detection |
+| `BET_STALENESS_MS` | `120000` | Write-off timeout for an unconfirmed bet |
+| `MAX_BET_LIFETIME_MS` | `180000` | Absolute max lifetime of an open bet |
 | `DASHBOARD_ENABLED` | `true` | Serve the live dashboard |
 | `DASHBOARD_PORT` | `3000` | Dashboard port |
 | `DATABASE_ENABLED` | `false` | Enable MySQL persistence |
@@ -132,6 +142,7 @@ Strategy fields:
 - `martingaleMultiplier` — multiply the stake by this after each loss (capped at `maxBet`)
 - `stopLoss` / `takeProfit` — halt betting when net result crosses these
 - `averageMultiplierThreshold` — only bet when recent average crash is at/below this
+- `maxConsecutiveLosses` — halt betting after this many losses in a row (default 5)
 
 ## Live dashboard
 
