@@ -2,8 +2,9 @@
 
 > ⚠️ **Educational / research use only.** See the [disclaimer](#-legal-disclaimer).
 
-An automation tool for the Aviator crash game built with **Node.js + Puppeteer**. It
-watches the game, applies a configurable betting strategy with real risk management,
+An automation tool for the Aviator crash game on **BetPawa Uganda**, built with
+**Node.js + Puppeteer**. It watches the game, studies round history with a persistent
+adaptive model, applies a configurable betting strategy with layered risk management,
 and streams live stats to a browser dashboard.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -55,6 +56,18 @@ This release is a full overhaul focused on **correctness and money-safety**:
   initial stake instead of resuming escalated.
 - **Live dashboard** — a real Express + Socket.IO server (the previous client had no
   backend) at `http://localhost:3000`.
+- **BetPawa Uganda target** — login flow with a persistent browser profile (log in
+  once, the session is remembered), direct navigation to the Aviator game page.
+- **History memory + adaptive model** — every crash is stored in `data/history.json`
+  (survives restarts). A model estimates `P(crash >= target)` from all studied rounds,
+  pauses betting during cold streaks, and tunes its entry threshold from actual
+  outcomes. See [How the model learns](#how-the-model-learns).
+- **Safer resets** — progression resets and recovery events trigger round cooldowns;
+  a balance reserve is never touched; the loss-streak breaker is configurable.
+- **Best-possible round detection** — payouts-strip signal + jitter guard +
+  flight-end fallback, so rounds are neither double-counted nor missed.
+- **Site-state recovery ladder** — reload → re-navigate → halt trading. The bot never
+  bets blind, and session expiry is detected and reported.
 - **Optional persistence** — MySQL via `mysql2` with auto-schema and reconnect.
 - **Configurable via `.env`** — no more hard-coded secrets.
 - **Tested** — strategy, stats and balance-parsing logic covered by `node --test`.
@@ -96,14 +109,26 @@ Copy the example environment file and adjust as needed:
 cp .env.example .env
 ```
 
-Run the bot (defaults to the Spribe demo page, no login required):
+Run the bot:
 
 ```bash
 npm start
 ```
 
-You'll be prompted to pick a strategy. The live dashboard then starts at
-`http://localhost:3000`.
+You'll be prompted to pick a strategy. The bot then opens BetPawa Uganda in a
+browser window:
+
+1. **Log in** to your BetPawa account in that window (phone number + PIN). You only
+   do this once — the session is stored in a persistent Chrome profile
+   (`data/browser-profile`) and reused on later runs.
+2. Press **ENTER** in the terminal.
+3. The bot opens the Aviator game page and starts monitoring.
+
+The live dashboard runs at `http://localhost:3000`.
+
+> **Currency note:** all strategy amounts are in the site currency — **UGX** on
+> BetPawa.ug. The bundled presets are already scaled (e.g. UGX 1,000 initial bet on
+> MODERATE).
 
 ## Configuration
 
@@ -111,20 +136,29 @@ All settings live in `.env` (see [.env.example](.env.example)). Highlights:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `BASE_URL` | Spribe demo | Landing page to start from |
+| `BASE_URL` | `https://www.betpawa.ug` | Login/landing page |
+| `GAME_URL` | `https://www.betpawa.ug/virtual/aviator` | Aviator game page (after login) |
+| `MANUAL_LOGIN` | `true` | Pause for manual login, continue on ENTER |
 | `HEADLESS` | `false` | Run browser without a window |
 | `POLLING_INTERVAL` | `4000` | How often the game is polled (ms) |
-| `HISTORY_SIZE` | `3` | Rounds used for the moving average |
+| `HISTORY_SIZE` | `5` | Rounds used for the moving average |
+| `MIN_BALANCE_RESERVE` | `0` | Balance the bot will never bet into (UGX) |
+| `MODEL_ENABLED` | `true` | Enable the adaptive history model |
+| `MODEL_MIN_ENTRY_PROBABILITY` | `0.55` | Minimum confidence to place a bet |
+| `MODEL_COLD_STREAK_LIMIT` | `3` | Pause betting after this many low crashes |
 | `MIN_ROUND_GAP_MS` | `2000` | Jitter guard for round-end detection |
 | `BET_STALENESS_MS` | `120000` | Write-off timeout for an unconfirmed bet |
 | `MAX_BET_LIFETIME_MS` | `180000` | Absolute max lifetime of an open bet |
+| `FLIGHT_END_GRACE_MS` | `10000` | Settle if flight ended but bubble never updates |
 | `DASHBOARD_ENABLED` | `true` | Serve the live dashboard |
 | `DASHBOARD_PORT` | `3000` | Dashboard port |
 | `DATABASE_ENABLED` | `false` | Enable MySQL persistence |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
 
-> **Note:** Live bookmaker integration (e.g. Betika) is **not** included. Automating a
-> real bookmaker may violate its terms of service — use the demo target by default.
+> **Note:** Automating a real bookmaker may violate its terms of service — know the
+> rules and the risks before pointing this at a funded account. If BetPawa serves a
+> different Aviator build, the selectors in `util/config.js` are the only values to
+> adjust (they target the standard Spribe widget).
 
 ## Strategies
 
@@ -144,10 +178,35 @@ Strategy fields:
 - `averageMultiplierThreshold` — only bet when recent average crash is at/below this
 - `maxConsecutiveLosses` — halt betting after this many losses in a row (default 5)
 
+## How the model learns
+
+The bot keeps **memory across restarts** and refines its entry decisions:
+
+1. **History** — every round's crash value is appended to `data/history.json`
+   (capped at 5,000 rounds). On startup the full history is re-loaded.
+2. **Probability estimate** — `P(crash ≥ target)` is computed from all studied
+   rounds (Laplace-smoothed). If that confidence is below the entry threshold,
+   the bot stands down that round.
+3. **Regime detection** — after `MODEL_COLD_STREAK_LIMIT` consecutive crashes
+   below the target, betting **pauses** ("cold regime") until the strip warms up.
+   This is the primary loss-avoidance mechanism.
+4. **Outcome learning** — each settled bet nudges the entry threshold: losses
+   tighten it (bet less often), wins loosen it slightly. Adjustments are bounded
+   (`MODEL_MIN_ENTRY_PROBABILITY`..`MODEL_MAX_ENTRY_PROBABILITY`) so learning can
+   never run away. State persists in `data/model.json`.
+5. **Dashboard transparency** — regime, model probability, entry threshold, rounds
+   studied and bot state are all visible live at `http://localhost:3000`.
+
+> ⚠️ **Honest note:** Aviator rounds are produced by an RNG — **no model can predict
+> the next crash**, and none can guarantee profit. The model improves *entry
+> discipline* and protects the bankroll from bad stretches; the house edge remains.
+> Bet only what you can afford to lose.
+
 ## Live dashboard
 
 When `DASHBOARD_ENABLED=true`, open `http://localhost:3000` to see the crash history
-chart, the current prediction and a running accuracy table. The server pushes each
+chart, the model state (regime, probability, threshold), session P/L, win rate,
+the current prediction and a running accuracy table. The server pushes each
 completed round over Socket.IO.
 
 ## Database

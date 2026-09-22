@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const path = require('path');
 const puppeteer = require('puppeteer');
 const readline = require('readline');
 const config = require('./util/config');
@@ -9,6 +10,8 @@ const FrameHelper = require('./util/frameHelper');
 const GameMonitor = require('./game/gameMonitor');
 const BettingStrategy = require('./game/strategies');
 const Database = require('./database/database');
+const HistoryStore = require('./game/historyStore');
+const Predictor = require('./game/predictor');
 const { startDashboard } = require('./server');
 
 // ---------------------------------------------------------------------------
@@ -23,7 +26,7 @@ async function selectStrategy() {
         return { ...config.BETTING_STRATEGIES.MODERATE };
     }
 
-    console.log('\nAvailable Strategies:');
+    console.log('\nAvailable Strategies (amounts are in SITE CURRENCY — UGX on BetPawa.ug):');
     console.log('1. Conservative (Lower risk, smaller profits)');
     console.log('2. Moderate (Balanced risk and reward)');
     console.log('3. Aggressive (Higher risk, larger potential profits)');
@@ -46,12 +49,12 @@ async function customStrategySetup(attempt = 1) {
         logger.error('Too many invalid attempts — falling back to MODERATE strategy');
         return { ...config.BETTING_STRATEGIES.MODERATE };
     }
-    console.log(`\nCustom strategy setup (attempt ${attempt}/3)`);
+    console.log(`\nCustom strategy setup (attempt ${attempt}/3) — amounts in UGX on BetPawa.ug`);
     const askNum = async (label) => parseFloat(await askQuestion(label));
 
     const strategy = {
         name: 'CUSTOM',
-        initialBet: await askNum('Initial bet amount: '),
+        initialBet: await askNum('Initial bet amount (e.g. 1000): '),
         maxBet: await askNum('Maximum bet amount: '),
         minBet: await askNum('Minimum bet amount: '),
         targetMultiplier: await askNum('Target multiplier (e.g., 1.5): '),
@@ -73,26 +76,56 @@ async function customStrategySetup(attempt = 1) {
 // Browser automation
 // ---------------------------------------------------------------------------
 async function initializeBrowser() {
-    const browser = await puppeteer.launch({
+    const launchOptions = {
         headless: config.BROWSER.HEADLESS,
         defaultViewport: null,
         args: ['--start-maximized']
-    });
+    };
+    // Persistent profile -> your BetPawa login survives restarts.
+    if (config.BROWSER.USER_DATA_DIR) {
+        launchOptions.userDataDir = config.BROWSER.USER_DATA_DIR;
+    }
+    const browser = await puppeteer.launch(launchOptions);
     const page = await browser.newPage();
     page.setDefaultNavigationTimeout(config.NAVIGATION.TIMEOUT);
     return { browser, page };
 }
 
-async function navigateInitialPages(page) {
+async function gotoSafe(page, url) {
     try {
-        await page.goto(config.NAVIGATION.BASE_URL, {
-            waitUntil: 'networkidle2',
-            timeout: config.NAVIGATION.TIMEOUT
-        });
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: config.NAVIGATION.TIMEOUT });
+        return true;
     } catch (error) {
-        logger.warn(`networkidle2 wait timed out, continuing anyway: ${error.message}`);
+        logger.warn(`Navigation to ${url} did not reach networkidle2, continuing: ${error.message}`);
+        try {
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: config.NAVIGATION.TIMEOUT });
+            return true;
+        } catch (error2) {
+            logger.error(`Navigation to ${url} failed: ${error2.message}`);
+            return false;
+        }
+    }
+}
+
+/**
+ * BetPawa flow: open the site, let the user log in manually (once — the
+ * session is kept in the persistent Chrome profile), then open the game.
+ */
+async function navigateToGame(page) {
+    await gotoSafe(page, config.NAVIGATION.BASE_URL);
+
+    if (config.LOGIN.MANUAL && process.stdin.isTTY) {
+        await askQuestion(
+            '\n>> Log in to BetPawa in the browser window (if not already logged in),\n' +
+            '>> then press ENTER here to open the Aviator game...\n'
+        );
+    } else {
+        logger.warn('MANUAL_LOGIN disabled or no TTY — assuming the saved profile is logged in');
     }
 
+    await gotoSafe(page, config.NAVIGATION.GAME_URL);
+
+    // Optional extra click steps (empty by default for BetPawa)
     for (const step of config.NAVIGATION_STEPS) {
         try {
             await page.waitForSelector(step.selector, {
@@ -115,7 +148,7 @@ async function navigateInitialPages(page) {
 // Main
 // ---------------------------------------------------------------------------
 async function main() {
-    logger.info('Starting Aviator Bot...');
+    logger.info('Starting Aviator Bot (target: BetPawa Uganda)...');
 
     const strategyConfig = await selectStrategy();
     logger.info(
@@ -123,6 +156,30 @@ async function main() {
         `target ${strategyConfig.targetMultiplier}x | stop-loss ${strategyConfig.stopLoss} | ` +
         `take-profit ${strategyConfig.takeProfit}`
     );
+
+    // ---- Memory + model (persisted across runs) ----
+    const historyStore = new HistoryStore(path.join(config.DATA_DIR, 'history.json'));
+    const roundsLoaded = historyStore.load();
+    let predictor = null;
+    if (config.MODEL.ENABLED) {
+        predictor = Predictor.load(path.join(config.DATA_DIR, 'model.json'), {
+            targetMultiplier: strategyConfig.targetMultiplier,
+            minSampleSize: config.MODEL.MIN_SAMPLE_SIZE,
+            minEntryProbability: config.MODEL.MIN_ENTRY_PROBABILITY,
+            maxEntryProbability: config.MODEL.MAX_ENTRY_PROBABILITY,
+            coldStreakLimit: config.MODEL.COLD_STREAK_LIMIT,
+            coldRecoveryCount: config.MODEL.COLD_RECOVERY_COUNT
+        });
+        predictor.setHistory(historyStore.values);
+        logger.info(
+            `Model ready: ${roundsLoaded} historical rounds loaded | ` +
+            `P(crash >= ${strategyConfig.targetMultiplier}x) = ` +
+            `${(predictor.probCrashAtLeast(strategyConfig.targetMultiplier) ?? 0).toFixed(2)} | ` +
+            `entry threshold ${predictor.entryProbability.toFixed(2)} | regime: ${predictor.regime()}`
+        );
+    } else {
+        logger.warn('Model disabled (MODEL_ENABLED=false) — betting on strategy rules only');
+    }
 
     // Optional persistence (DATABASE_ENABLED=true in .env)
     const database = new Database(config);
@@ -139,11 +196,8 @@ async function main() {
     }
 
     const { browser, page } = await initializeBrowser();
-    logger.info('Browser initialized');
+    logger.info('Browser initialized (persistent profile keeps your login between runs)');
 
-    // If the browser process dies, nothing can recover in-process — exit with
-    // a non-zero code so a supervisor (pm2, systemd, docker restart policy...)
-    // can bring the whole bot back up cleanly.
     browser.on('disconnected', () => {
         logger.error('Browser disconnected unexpectedly — exiting for supervisor restart');
         process.exit(1);
@@ -160,14 +214,16 @@ async function main() {
             return;
         }
 
-        // Surface page-level failures loudly instead of silently stalling.
         try {
             candidate.on('error', (error) => logger.error(`Game page crashed: ${error.message}`));
             candidate.on('pageerror', (error) => logger.error(`Game page JS error: ${error.message}`));
         } catch (error) { /* page may already be closing */ }
 
         // Fresh strategy instance per monitor so the SELECTED config is used.
-        const monitor = new GameMonitor(candidate, config, { ...strategyConfig });
+        const monitor = new GameMonitor(candidate, config, { ...strategyConfig }, {
+            predictor,
+            historyStore
+        });
         monitors.set(candidate, monitor);
 
         monitor.on('roundEnded', (d) => {
@@ -178,23 +234,31 @@ async function main() {
                     created_at: Date.now(),
                     predictedValue: d.nextPrediction
                 });
+                dashboard.io.emit('model', d.model);
             }
         });
         monitor.on('trade', (t) => {
             database.saveTrade(t);
             if (dashboard) dashboard.io.emit('trade', t);
         });
+        monitor.on('status', (s) => {
+            if (dashboard) dashboard.io.emit('status', s);
+        });
         monitor.on('tradingStopped', () => {
-            logger.warn('Risk limits reached — betting halted, monitoring continues');
+            logger.warn('Trading halted — monitoring continues');
             if (dashboard) dashboard.io.emit('tradingStopped', true);
+        });
+        // Site-state recovery ladder level 2: bring the page back to the game.
+        monitor.on('needsRenavigation', async () => {
+            logger.info('Re-navigating game page to the Aviator URL...');
+            await gotoSafe(candidate, config.NAVIGATION.GAME_URL);
         });
 
         monitor.startMonitoring();
         logger.info(`Game monitor started on ${candidate.url()}`);
     };
 
-    // New tabs/pages: check them, but WITHOUT the old waitForNavigation race —
-    // attachMonitor simply no-ops until the game markup actually exists.
+    // New tabs/pages — race-free (attachMonitor no-ops until game markup exists)
     browser.on('targetcreated', async (target) => {
         if (target.type() !== 'page') return;
         try {
@@ -208,11 +272,9 @@ async function main() {
         }
     });
 
-    // Watcher loop: also covers SAME-TAB navigation (no targetcreated event)
-    // and retries pages that were not ready yet.
+    // Watcher loop: covers same-tab navigation, retries, and prune of closed pages.
     const watcher = setInterval(async () => {
         try {
-            // Prune monitors whose page has been closed.
             for (const [p, m] of [...monitors.entries()]) {
                 if (p.isClosed()) {
                     m.stopMonitoring();
@@ -229,7 +291,7 @@ async function main() {
         }
     }, 3000);
 
-    await navigateInitialPages(page);
+    await navigateToGame(page);
     await attachMonitor(page); // in case the game loaded in the same tab
 
     // ---- Graceful shutdown ----
@@ -240,11 +302,12 @@ async function main() {
         logger.info(`Shutting down (${reason})...`);
         clearInterval(watcher);
         for (const monitor of monitors.values()) monitor.stopMonitoring();
+        if (predictor) predictor.save();
         try { await browser.close(); } catch (error) { /* already closed */ }
         database.disconnect();
         if (dashboard) { try { dashboard.server.close(); } catch (error) { /* ignore */ } }
         rl.close();
-        logger.info('Cleanup completed');
+        logger.info('Cleanup completed — history and model state saved');
         process.exit(0);
     };
 

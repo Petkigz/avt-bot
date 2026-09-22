@@ -29,6 +29,7 @@ class BetManager {
         this.isWaitingForResult = false;
         this.lastResult = null; // {won: boolean} of the last settled trade
         this.onTrade = null;    // optional callback(trade) for dashboard/DB
+        this.onProgressionReset = null; // optional callback() when the stake chain resets
     }
 
     setStrategy(strategy) {
@@ -60,6 +61,9 @@ class BetManager {
                     'resetting progression so the chain restarts small when funds allow'
                 );
                 this.strategy.resetProgression();
+                if (typeof this.onProgressionReset === 'function') {
+                    try { this.onProgressionReset(); } catch (e) { /* telemetry must never break the loop */ }
+                }
                 return false;
             }
 

@@ -43,12 +43,14 @@ test('armed bet is settled as a loss against the round that just crashed', () =>
 });
 
 test('loss feeds martingale: next stake doubles', () => {
-    const m = makeMonitor(); // MODERATE: initial 2, multiplier 2
+    const m = makeMonitor(); // MODERATE preset (UGX-scaled)
+    const initial = m.strategy.initialBet;
+    const expected = Math.min(initial * m.strategy.martingaleMultiplier, m.strategy.maxBet);
     simulateActiveBet(m, true);
     m.onRoundEnded(1.23, null);
 
     const nextStake = m.strategy.calculateNextBet(m.betManager.lastResult);
-    assert.strictEqual(nextStake, 4);
+    assert.strictEqual(nextStake, expected);
 });
 
 test('confirmed win prevents double booking at round end', () => {
@@ -160,4 +162,115 @@ test('monitor uses the SELECTED strategy, not a hardcoded one', () => {
     assert.strictEqual(m.strategy.name, 'CONSERVATIVE');
     assert.strictEqual(m.betManager.strategy, m.strategy); // same instance
     assert.strictEqual(m.strategy.targetMultiplier, config.BETTING_STRATEGIES.CONSERVATIVE.targetMultiplier);
+});
+
+// --- Safer strategy reset logic (cooldowns) ---
+
+test('cooldown counts down one round at a time', () => {
+    const m = makeMonitor();
+    m.enterCooldown(2, 'test reset');
+    assert.strictEqual(m.cooldownRounds, 2);
+
+    m.lastBubble = 1.0;
+    m.lastRoundEndedAt = Date.now() - 5000;
+    m.detectRoundEnd(2.0, null);
+    assert.strictEqual(m.cooldownRounds, 1);
+
+    m.lastRoundEndedAt = Date.now() - 5000;
+    m.detectRoundEnd(3.0, null);
+    assert.strictEqual(m.cooldownRounds, 0);
+});
+
+test('progression reset triggers a cooldown via betManager callback', () => {
+    const m = makeMonitor();
+    assert.strictEqual(m.cooldownRounds, 0);
+    m.betManager.onProgressionReset();
+    assert.strictEqual(m.cooldownRounds, config.GAME.RESET_COOLDOWN_ROUNDS);
+});
+
+// --- Better round detection (flight-end fallback) ---
+
+test('flight-end grace settles an armed bet when the bubble never updates', () => {
+    const m = makeMonitor();
+    simulateActiveBet(m, true);
+    m.flightEndedAt = Date.now() - (config.GAME.FLIGHT_END_GRACE_MS + 1000);
+
+    m.sweepStaleBets();
+    assert.strictEqual(m.betManager.isWaitingForResult, false);
+    assert.strictEqual(m.statsTracker.getStats().losingTrades, 1);
+});
+
+test('flight-end grace leaves a fresh round alone', () => {
+    const m = makeMonitor();
+    simulateActiveBet(m, true);
+    m.flightEndedAt = Date.now(); // flight only just ended
+    m.sweepStaleBets();
+    assert.strictEqual(m.betManager.isWaitingForResult, true);
+});
+
+test('every accepted round end increments the round id', () => {
+    const m = makeMonitor();
+    m.onRoundEnded(1.5, null);
+    m.onRoundEnded(2.5, null);
+    assert.strictEqual(m.roundId, 2);
+});
+
+// --- Site-state recovery ladder ---
+
+function makeRecoveryMonitor() {
+    const fakePage = {
+        isClosed: () => false,
+        reload: async () => {},
+        url: () => 'https://www.betpawa.ug/virtual/aviator'
+    };
+    return new GameMonitor(fakePage, config, { ...config.BETTING_STRATEGIES.MODERATE });
+}
+
+test('recovery ladder: reload -> re-navigate -> halt', async () => {
+    const m = makeRecoveryMonitor();
+    let renavigations = 0;
+    let halted = false;
+    m.on('needsRenavigation', () => { renavigations++; });
+    m.on('tradingStopped', () => { halted = true; });
+
+    await m.recover();
+    assert.strictEqual(m.recoveryLevel, 1);
+    assert.strictEqual(m.lastBubble, null); // re-baselined
+
+    await m.recover();
+    assert.strictEqual(m.recoveryLevel, 2);
+    assert.strictEqual(renavigations, 1);
+
+    await m.recover();
+    assert.strictEqual(m.tradingHalted, true);
+    assert.strictEqual(halted, true);
+    assert.match(m.haltReason, /selector failures/);
+});
+
+test('recovery enters a cooldown so we never bet mid-recovery', async () => {
+    const m = makeRecoveryMonitor();
+    await m.recover();
+    assert.ok(m.cooldownRounds >= 1);
+});
+
+// --- Model wiring ---
+
+test('model outcomes are fed back when bets settle', () => {
+    const fakePage = { isClosed: () => false };
+    const outcomes = [];
+    const rounds = [];
+    const stubPredictor = {
+        recordOutcome: (won) => outcomes.push(won),
+        addRound: (v) => rounds.push(v),
+        shouldAllowBet: () => ({ allowed: true }),
+        snapshot: () => ({})
+    };
+    const m = new GameMonitor(fakePage, config, { ...config.BETTING_STRATEGIES.MODERATE }, {
+        predictor: stubPredictor
+    });
+
+    simulateActiveBet(m, true);
+    m.onRoundEnded(1.2, null); // armed bet loses
+    assert.deepStrictEqual(outcomes, [false]);
+    assert.deepStrictEqual(rounds, [1.2]); // history fed to the model
 });

@@ -9,27 +9,44 @@
     <script src="/socket.io/socket.io.js"></script>
     <style>
         body {
-            background-color: #222;
+            background-color: #1a1d21;
             color: #ddd;
             font-family: Arial, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
             margin: 0;
+            padding: 20px;
         }
+
+        h1 { color: rgba(75, 192, 192, 1); font-size: 1.4em; margin: 0 0 15px; }
+
+        #container { max-width: 1100px; margin: 0 auto; }
+
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .card {
+            background-color: #2a2f35;
+            border-radius: 10px;
+            padding: 10px 12px;
+        }
+
+        .card .label { font-size: 0.72em; color: #8a97a3; text-transform: uppercase; letter-spacing: 0.5px; }
+        .card .value { font-size: 1.25em; font-weight: bold; margin-top: 3px; }
+
+        .pos { color: #4caf7d; }
+        .neg { color: #ff8080; }
+        .warn { color: #ffc46b; }
 
         #chartContainer {
-            background-color: #333;
+            background-color: #2a2f35;
             border-radius: 15px;
             padding: 20px;
-            width: 80%;
         }
 
-        canvas {
-            width: 100% !important;
-            height: auto !important;
-        }
+        canvas { width: 100% !important; }
 
         table {
             width: 100%;
@@ -38,29 +55,42 @@
             color: #ddd;
         }
 
-        th, td {
-            padding: 6px 10px;
-            text-align: center;
-        }
+        th, td { padding: 6px 10px; text-align: center; }
+        th { color: #8a97a3; }
     </style>
 </head>
 <body>
-    <div id="chartContainer">
-        <canvas id="lineChart"></canvas>
-        <p id="predictedValue">Predicted value: N/A</p>
-        <p id="accuracyRate">Accuracy rate: N/A</p>
-        <p id="botStatus">Status: running</p>
-        <table id="predictionTable" border="1">
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <th>Predicted Value</th>
-                    <th>Actual Value</th>
-                    <th>Correct</th>
-                </tr>
-            </thead>
-            <tbody id="predictionTableBody"></tbody>
-        </table>
+    <div id="container">
+        <h1>Aviator Bot — BetPawa.ug</h1>
+
+        <div class="cards">
+            <div class="card"><div class="label">Bot state</div><div class="value" id="botState">starting…</div></div>
+            <div class="card"><div class="label">Balance</div><div class="value" id="balance">—</div></div>
+            <div class="card"><div class="label">Session P/L</div><div class="value" id="netProfit">0.00</div></div>
+            <div class="card"><div class="label">Win rate</div><div class="value" id="winRate">—</div></div>
+            <div class="card"><div class="label">Rounds (session)</div><div class="value" id="roundCount">0</div></div>
+            <div class="card"><div class="label">Regime</div><div class="value" id="regime">—</div></div>
+            <div class="card"><div class="label">Model P(win)</div><div class="value" id="modelProb">—</div></div>
+            <div class="card"><div class="label">Entry threshold</div><div class="value" id="entryThreshold">—</div></div>
+            <div class="card"><div class="label">Rounds studied</div><div class="value" id="roundsStudied">0</div></div>
+        </div>
+
+        <div id="chartContainer">
+            <canvas id="lineChart" height="110"></canvas>
+            <p id="predictedValue">Predicted value: N/A</p>
+            <p id="accuracyRate">Accuracy rate: N/A</p>
+            <table id="predictionTable" border="1">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Predicted Value</th>
+                        <th>Actual Value</th>
+                        <th>Correct</th>
+                    </tr>
+                </thead>
+                <tbody id="predictionTableBody"></tbody>
+            </table>
+        </div>
     </div>
     <script src="script.js"></script>
 </body>

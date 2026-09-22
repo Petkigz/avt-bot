@@ -3,6 +3,9 @@ node_modules
 logs/
 *.log
 
+# runtime data: round history, model state, browser profile
+data/
+
 # legacy/local secrets
 betika
 betika.js
