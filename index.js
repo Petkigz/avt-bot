@@ -491,9 +491,34 @@ async function logPageDiagnostics(page, site) {
         const frames = page.frames().map((f) => f.url()).filter(Boolean);
         logger.warn(`${site.name} diagnosis — page URL: ${url}`);
         logger.warn(`${site.name} diagnosis — ${frames.length} frame(s): ${frames.slice(0, 6).join(' | ')}`);
-        const spribe = frames.find((u) => /spribe|aviator/i.test(u));
-        if (spribe) {
-            logger.warn(`${site.name}: the Spribe/Aviator frame IS loaded (${spribe}) but the round-history strip was not detected — the layout may need a selector update, please report this log.`);
+        const spribeFrames = page.frames().filter((f) => /spribe|aviator/i.test(f.url() || ''));
+        if (spribeFrames.length > 0) {
+            logger.warn(`${site.name}: Spribe/Aviator frame IS loaded — dumping its internal structure so the layout can be mapped:`);
+            for (const frame of spribeFrames.slice(0, 2)) {
+                try {
+                    const summary = await frame.evaluate(() => {
+                        const counts = new Map();
+                        const all = document.querySelectorAll('*');
+                        const limit = Math.min(all.length, 20000);
+                        for (let i = 0; i < limit; i++) {
+                            const cls = (all[i].getAttribute('class') || '').trim();
+                            if (cls) {
+                                const key = all[i].tagName.toLowerCase() + '.' + cls.split(/\s+/).slice(0, 2).join('.');
+                                counts.set(key, (counts.get(key) || 0) + 1);
+                            }
+                        }
+                        const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25);
+                        const text = ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').slice(0, 300);
+                        return { elements: all.length, top, text };
+                    });
+                    logger.warn(`${site.name} frame structure (${summary.elements} elements) — most common classes: ` +
+                        summary.top.map(([k, v]) => `${k}(${v})`).join(', '));
+                    logger.warn(`${site.name} frame visible text: "${summary.text}"`);
+                } catch (error) {
+                    logger.warn(`${site.name}: could not inspect frame ${frame.url()}: ${error.message}`);
+                }
+            }
+            logger.warn(`${site.name}: paste the "frame structure" lines above into the chat — they reveal the layout classes.`);
         } else {
             logger.warn(`${site.name}: no Spribe/Aviator frame loaded yet — the page may need a click (PLAY / real-money prompt) or a manual open of Aviator from the menu.`);
         }
