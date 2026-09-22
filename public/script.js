@@ -88,12 +88,102 @@ socket.on('status', (s) => {
     if (b.lastReasons && b.lastReasons.length) {
       document.getElementById('lastReasons').textContent = 'Last decision: ' + b.lastReasons.join('; ');
     }
+
+    renderLearning(b);
   }
 });
 
 socket.on('tradingStopped', () => {
   setText('botState', 'HALTED', 'neg');
 });
+
+// ---------------------------------------------------------------------------
+// Live learning panel: all-time memory (REST) + patterns & decisions (socket)
+// ---------------------------------------------------------------------------
+fetch('/api/history')
+  .then((r) => r.json())
+  .then((data) => {
+    const s = data.stats || {};
+    setText('memCount', String(s.count ?? 0));
+    setText('memAvg', Number.isFinite(s.avg) ? s.avg.toFixed(2) + 'x' : '—');
+    setText('memLow', Number.isFinite(s.pctBelow15) ? s.pctBelow15.toFixed(1) : '—');
+  })
+  .catch(() => setText('memCount', 'unavailable'));
+
+function renderLearning(b) {
+  if (!b) return;
+
+  // Entry threshold trend (baseline 0.60 family -> learned value)
+  const m = b.model;
+  if (m) {
+    const learned = m.entryProbability;
+    const base = 0.55; // family default; learning only moves it up or down a little
+    const trend = learned > base + 0.005 ? '↑ tightened (losses taught caution)'
+      : learned < base - 0.005 ? '↓ loosened (wins earned trust)'
+        : '→ baseline';
+    setText('thresholdTrend', `${fmt(learned)} ${trend}`);
+    const bt = m.bestTarget;
+    setText('bestTarget', bt ? `${bt.target}x (hist. EV ${fmt(bt.ev, 3)})` : 'not enough data');
+  }
+
+  // Strongest pattern families
+  const p = b.patterns;
+  const pBody = document.getElementById('patternTableBody');
+  if (pBody && p && p.topPatterns) {
+    pBody.innerHTML = '';
+    if (p.topPatterns.length === 0) {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 5;
+      cell.textContent = 'no pattern has enough support yet';
+      cell.className = 'small';
+      row.appendChild(cell);
+      pBody.appendChild(row);
+    }
+    for (const tp of p.topPatterns) {
+      const row = document.createElement('tr');
+      const cells = [
+        tp.pattern, String(tp.length), String(tp.seen), String(tp.used),
+        (tp.probability * 100).toFixed(1) + '%' + (tp.benched ? ' (benched)' : '')
+      ];
+      for (const value of cells) {
+        const cell = document.createElement('td');
+        cell.textContent = value;
+        row.appendChild(cell);
+      }
+      pBody.appendChild(row);
+    }
+  }
+
+  // Decision feed (newest first)
+  const dBody = document.getElementById('decisionTableBody');
+  if (dBody && b.decisionFeed) {
+    dBody.innerHTML = '';
+    const items = [...b.decisionFeed].reverse().slice(0, 8);
+    if (items.length === 0) {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 5;
+      cell.textContent = 'waiting for decisions…';
+      cell.className = 'small';
+      row.appendChild(cell);
+      dBody.appendChild(row);
+    }
+    for (const d of items) {
+      const row = document.createElement('tr');
+      const time = new Date(d.ts).toLocaleTimeString();
+      const action = d.bet ? `BET` : 'skip';
+      const cells = [time, action, d.bet ? String(d.stake) : '', d.tier, d.reason];
+      cells.forEach((value, idx) => {
+        const cell = document.createElement('td');
+        cell.textContent = value;
+        if (idx === 1) cell.className = d.bet ? 'pos' : 'small';
+        row.appendChild(cell);
+      });
+      dBody.appendChild(row);
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Crash chart + prediction accuracy (driven by 'newData' events)

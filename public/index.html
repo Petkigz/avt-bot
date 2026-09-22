@@ -27,6 +27,11 @@
         th, td { padding: 5px 8px; text-align: center; }
         th { color: #8a97a3; }
         .small { font-size: 0.75em; color: #8a97a3; }
+        #learningPanel { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+        .panel { background-color: #2a2f35; border-radius: 15px; padding: 14px 16px; }
+        .panel h2 { font-size: 0.95em; color: rgba(75,192,192,1); margin: 0 0 8px; }
+        .panel h3 { font-size: 0.8em; color: #8a97a3; margin: 10px 0 4px; }
+        @media (max-width: 800px) { #learningPanel { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
@@ -53,6 +58,28 @@
                 <div class="barWrap"><div class="bar" id="sessionBar"></div></div></div>
             <div class="card"><div class="label">Daily loss limit</div><div class="value small" id="dailyLimit">—</div>
                 <div class="barWrap"><div class="bar" id="dailyBar"></div></div></div>
+        </div>
+
+        <div id="learningPanel">
+            <div class="panel">
+                <h2>Learning — memory &amp; model</h2>
+                <p class="small">All-time memory: <span id="memCount">…</span> rounds
+                    (avg <span id="memAvg">…</span>, <span id="memLow">…</span>% below 1.5x)</p>
+                <p class="small">Entry threshold: <span id="thresholdTrend">…</span> ·
+                    Best historical target: <span id="bestTarget">…</span></p>
+                <h3>Strongest pattern families</h3>
+                <table id="patternTable" border="1">
+                    <thead><tr><th>Pattern</th><th>Len</th><th>Seen</th><th>Used</th><th>P(next ≥ target)</th></tr></thead>
+                    <tbody id="patternTableBody"></tbody>
+                </table>
+            </div>
+            <div class="panel">
+                <h2>Decision feed (live)</h2>
+                <table id="decisionTable" border="1">
+                    <thead><tr><th>Time</th><th>Action</th><th>Stake</th><th>Tier</th><th>Reason</th></tr></thead>
+                    <tbody id="decisionTableBody"></tbody>
+                </table>
+            </div>
         </div>
 
         <div id="chartContainer">

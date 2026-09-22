@@ -75,3 +75,28 @@ test('bankroll guard trips in a simulated worst case', () => {
 test('unknown strategy is rejected', () => {
     assert.throws(() => runSimulation({ rounds: 10, strategy: 'NOPE', outDir: os.tmpdir() }), /Unknown strategy/);
 });
+
+test('batch mode aggregates multiple runs for large-sample analysis', () => {
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'batch-'));
+    const { summary, runs } = require('../sim/simulate').runBatch({
+        batch: 3,
+        rounds: 400,
+        source: 'synthetic',
+        strategy: 'MICRO',
+        startingBankroll: 50000,
+        outDir
+    });
+
+    assert.strictEqual(summary.batchRuns, 3);
+    assert.strictEqual(runs.length, 3);
+    assert.ok(Number.isFinite(summary.avgPnl));
+    assert.ok(Number.isFinite(summary.medianPnl));
+    assert.ok(summary.worstPnl <= summary.medianPnl);
+    assert.ok(summary.medianPnl <= summary.bestPnl);
+    assert.ok(summary.profitableRuns >= 0 && summary.profitableRuns <= 3);
+    assert.ok(summary.bankrollGuardTrips >= 0 && summary.bankrollGuardTrips <= 3);
+    assert.ok(fs.existsSync(summary.aggregateCsv));
+    const rows = fs.readFileSync(summary.aggregateCsv, 'utf8').trim().split('\n');
+    assert.strictEqual(rows.length, 4); // header + 3 runs
+    fs.rmSync(outDir, { recursive: true, force: true });
+});

@@ -65,7 +65,7 @@ const config = {
         // settle the round after this grace period.
         FLIGHT_END_GRACE_MS: num(process.env.FLIGHT_END_GRACE_MS, 10000),
         // Rounds to sit out after a strategy/progression reset.
-        RESET_COOLDOWN_ROUNDS: num(process.env.RESET_COOLDOWN_ROUNDS, 1),
+        RESET_COOLDOWN_ROUNDS: num(process.env.RESET_COOLDOWN_ROUNDS, 2),
         // Never let a bet drop the balance below this reserve.
         MIN_BALANCE_RESERVE: num(process.env.MIN_BALANCE_RESERVE, 0)
     },
@@ -74,7 +74,7 @@ const config = {
     MODEL: {
         ENABLED: bool(process.env.MODEL_ENABLED, true),
         MIN_SAMPLE_SIZE: num(process.env.MODEL_MIN_SAMPLE_SIZE, 30),
-        MIN_ENTRY_PROBABILITY: num(process.env.MODEL_MIN_ENTRY_PROBABILITY, 0.55),
+        MIN_ENTRY_PROBABILITY: num(process.env.MODEL_MIN_ENTRY_PROBABILITY, 0.60),
         MAX_ENTRY_PROBABILITY: num(process.env.MODEL_MAX_ENTRY_PROBABILITY, 0.85),
         COLD_STREAK_LIMIT: num(process.env.MODEL_COLD_STREAK_LIMIT, 3),
         COLD_RECOVERY_COUNT: num(process.env.MODEL_COLD_RECOVERY_COUNT, 1)
@@ -85,7 +85,7 @@ const config = {
         ENABLED: bool(process.env.PATTERN_ENABLED, true),
         LENGTHS: (process.env.PATTERN_LENGTHS || '10,5,3')
             .split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n) && n >= 2),
-        MIN_SUPPORT: num(process.env.PATTERN_MIN_SUPPORT, 5),
+        MIN_SUPPORT: num(process.env.PATTERN_MIN_SUPPORT, 8),
         BINS: (process.env.PATTERN_BINS || '1.5,2.5')
             .split(',').map((s) => parseFloat(s.trim())).filter(Number.isFinite),
         // Confidence multiplier when NO known pattern matches (unconfirmed round).
@@ -95,23 +95,23 @@ const config = {
     // Bankroll & confidence-tier policy. See game/bankroll.js and game/brain.js.
     RISK: {
         // Hard loss limits (site currency — UGX on BetPawa.ug)
-        SESSION_LOSS_LIMIT: num(process.env.SESSION_LOSS_LIMIT, 5000),
-        DAILY_LOSS_LIMIT: num(process.env.DAILY_LOSS_LIMIT, 10000),
+        SESSION_LOSS_LIMIT: num(process.env.SESSION_LOSS_LIMIT, 3000),
+        DAILY_LOSS_LIMIT: num(process.env.DAILY_LOSS_LIMIT, 6000),
         // A stake can never exceed this fraction of the bankroll
-        MAX_STAKE_FRACTION: num(process.env.MAX_STAKE_FRACTION, 0.02),
+        MAX_STAKE_FRACTION: num(process.env.MAX_STAKE_FRACTION, 0.015),
         // While unproven (MICRO tier), stakes are capped at this fraction
-        MICRO_STAKE_FRACTION: num(process.env.MICRO_STAKE_FRACTION, 0.005),
+        MICRO_STAKE_FRACTION: num(process.env.MICRO_STAKE_FRACTION, 0.004),
         // Warm-up: rounds to study before ANY bet is allowed
-        MIN_ROUNDS_OBSERVE: num(process.env.MIN_ROUNDS_OBSERVE, 100),
+        MIN_ROUNDS_OBSERVE: num(process.env.MIN_ROUNDS_OBSERVE, 150),
         // Promotion MICRO -> ARMED
-        PROMOTION_MIN_DECISIONS: num(process.env.PROMOTION_MIN_DECISIONS, 20),
-        PROMOTION_HIT_RATE: num(process.env.PROMOTION_HIT_RATE, 0.55),
+        PROMOTION_MIN_DECISIONS: num(process.env.PROMOTION_MIN_DECISIONS, 25),
+        PROMOTION_HIT_RATE: num(process.env.PROMOTION_HIT_RATE, 0.58),
         // Demotion ARMED -> MICRO
-        DEMOTION_HIT_RATE: num(process.env.DEMOTION_HIT_RATE, 0.45),
+        DEMOTION_HIT_RATE: num(process.env.DEMOTION_HIT_RATE, 0.48),
         DECISION_WINDOW: num(process.env.DECISION_WINDOW, 30),
         // Volatility risk evaluation
         HIGH_VOLATILITY_THRESHOLD: num(process.env.HIGH_VOLATILITY_THRESHOLD, 2.0),
-        VOLATILITY_CONFIDENCE_PENALTY: num(process.env.VOLATILITY_CONFIDENCE_PENALTY, 0.05)
+        VOLATILITY_CONFIDENCE_PENALTY: num(process.env.VOLATILITY_CONFIDENCE_PENALTY, 0.07)
     },
 
     MODE: {
@@ -164,12 +164,12 @@ const config = {
         MICRO: {
             name: 'MICRO',
             initialBet: 100,
-            maxBet: 1000,
+            maxBet: 800,
             minBet: 100,
             targetMultiplier: 1.30,
-            stopLoss: 2000,
-            takeProfit: 3000,
-            martingaleMultiplier: 1.4,
+            stopLoss: 1500,
+            takeProfit: 2000,
+            martingaleMultiplier: 1.3,
             averageMultiplierThreshold: 1.80,
             maxConsecutiveLosses: 4
         },

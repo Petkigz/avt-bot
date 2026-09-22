@@ -35,6 +35,8 @@ class Brain {
         this.lastDecision = null;    // for dashboard/CSV
         this.lastConfidence = null;
         this.lastPattern = null;
+        this.decisionFeed = [];      // rolling feed for the live learning dashboard
+        this._lastDecisionSig = null;
         this.mode = config.MODE && config.MODE.PAPER ? 'paper' : 'live';
     }
 
@@ -185,6 +187,21 @@ class Brain {
         this.lastDecision = decision;
         this.lastConfidence = decision.confidence;
         this.lastPattern = decision.pattern;
+
+        // Feed the dashboard only when the decision situation actually changes.
+        const sig = `${decision.shouldBet}|${decision.reasons[0] || ''}`;
+        if (sig !== this._lastDecisionSig) {
+            this._lastDecisionSig = sig;
+            this.decisionFeed.push({
+                ts: Date.now(),
+                bet: decision.shouldBet,
+                stake: decision.stake,
+                tier: this.tier,
+                confidence: decision.confidence,
+                reason: decision.reasons[0] || ''
+            });
+            if (this.decisionFeed.length > 12) this.decisionFeed.shift();
+        }
         return decision;
     }
 
@@ -237,6 +254,7 @@ class Brain {
             recentDecisions: this.recentDecisions.length,
             lastConfidence: this.lastConfidence,
             lastReasons: this.lastDecision ? this.lastDecision.reasons : [],
+            decisionFeed: [...this.decisionFeed],
             model: this.predictor ? this.predictor.snapshot() : null,
             patterns: this.patterns ? this.patterns.snapshot() : null,
             bankroll: this.bankroll ? this.bankroll.snapshot() : null

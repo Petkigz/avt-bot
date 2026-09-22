@@ -101,6 +101,22 @@ test('pattern state persists to disk', () => {
     fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('snapshot exposes the strongest pattern families for the dashboard', () => {
+    const d = makeDetector({ minSupport: 2 });
+    for (let i = 0; i < 5; i++) {
+        d.observe(1.1); d.observe(1.2); d.observe(1.3); d.observe(3.0);
+    }
+    const snap = d.snapshot();
+    assert.ok(snap.knownPatterns > 0);
+    assert.ok(snap.supportedPatterns > 0);
+    assert.ok(Array.isArray(snap.topPatterns));
+    assert.ok(snap.topPatterns.length > 0);
+    const top = snap.topPatterns[0];
+    assert.ok(Number.isFinite(top.seen) && top.seen >= 2);
+    assert.ok(top.probability > 0 && top.probability <= 1);
+    assert.ok([3, 5, 10].includes(top.length) || top.length >= 2);
+});
+
 test('rebuildStream restores detection ability from raw history', () => {
     const d = makeDetector({ minSupport: 2 });
     for (let i = 0; i < 4; i++) {

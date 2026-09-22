@@ -134,9 +134,28 @@ class PatternDetector {
     // ------------------------------------------------------------------
     snapshot() {
         const current = this.detect();
+        // Strongest known pattern families (enough support), most-seen first —
+        // this is what the live learning dashboard displays.
+        const topPatterns = [...this.patterns.entries()]
+            .filter(([, v]) => v.seen >= this.minSupport)
+            .sort((a, b) => b[1].seen - a[1].seen)
+            .slice(0, 8)
+            .map(([key, v]) => {
+                const sep = key.indexOf(':');
+                return {
+                    length: parseInt(key.slice(0, sep), 10),
+                    pattern: key.slice(sep + 1),
+                    seen: v.seen,
+                    used: v.used,
+                    probability: (v.success + 1) / (v.seen + 2),
+                    benched: this.roundIndex < v.staleUntilRound
+                };
+            });
         return {
             roundsObserved: this.roundIndex,
             knownPatterns: this.patterns.size,
+            supportedPatterns: topPatterns.length,
+            topPatterns,
             current: current.found ? {
                 pattern: current.pattern,
                 length: current.length,

@@ -206,10 +206,15 @@ Full list (promotion thresholds, volatility penalties, pattern bins, ...) is in
 
 | Preset | Initial | Max | Target | Martingale | Stop-loss | Take-profit |
 |---|---|---|---|---|---|---|
-| **MICRO** (default) | UGX 100 | UGX 1,000 | 1.30x | ×1.4 | UGX 2,000 | UGX 3,000 |
+| **MICRO** (default) | UGX 100 | UGX 800 | 1.30x | ×1.3 | UGX 1,500 | UGX 2,000 |
 | CONSERVATIVE | UGX 500 | UGX 25,000 | 1.20x | ×1.5 | UGX 10,000 | UGX 20,000 |
 | MODERATE | UGX 1,000 | UGX 50,000 | 1.50x | ×2 | UGX 25,000 | UGX 50,000 |
 | AGGRESSIVE | UGX 2,500 | UGX 100,000 | 2.00x | ×2.5 | UGX 50,000 | UGX 150,000 |
+
+> **Caution-tuned for BetPawa by default:** 150-round warm-up, 0.60 entry
+> confidence, 1.5% max stake fraction, UGX 3,000 session / UGX 6,000 daily loss
+> caps, pattern families need 8+ observations before they're trusted, and
+> promotions require a 58%+ hit-rate over 25+ decisions. Loosen only with data.
 
 ```bash
 STRATEGY=CONSERVATIVE npm start       # env override, no prompt
@@ -255,10 +260,18 @@ The bot keeps **memory across restarts** and refines its entry decisions:
 
 ## Live dashboard
 
-When `DASHBOARD_ENABLED=true`, open `http://localhost:3000` to see the crash history
-chart, the model state (regime, probability, threshold), session P/L, win rate,
-the current prediction and a running accuracy table. The server pushes each
-completed round over Socket.IO.
+When `DASHBOARD_ENABLED=true`, open `http://localhost:3000`:
+
+- **Live learning panel** — all-time stored memory (via `GET /api/history`),
+  entry-threshold trend (what the learning has done), strongest pattern
+  families with their probabilities, and a live decision feed with reasons
+- **Risk panel** — bankroll, session/daily P/L, loss-limit usage bars, tier,
+  hit-rate, regime, model probability and the active strategy profile
+- **Crash chart** with prediction accuracy table
+
+The stored history is also available as JSON: `GET /api/history` returns
+all-time round count, averages, %-below-1.5x and the last 50 rounds — useful
+for external analysis tools.
 
 ## Database
 
@@ -296,6 +309,9 @@ bankroll, confidence tiers, round detection, recovery ladder and the simulator.
    ```bash
    npm run simulate                                            # realistic session
    node sim/simulate.js --rounds 20000 --source mixed --long-run  # long-term behavior
+   node sim/simulate.js --batch 10 --rounds 5000 --long-run       # large-sample analysis:
+   #   10 independent runs aggregated: avg/median/worst P/L, drawdowns,
+   #   how often the bankroll guard trips, tier outcomes + aggregate CSV
    ```
    Prints P/L, max drawdown, win rate, tier progression and skip-reason
    breakdown; writes a round-by-round CSV to `data/simulations/`.

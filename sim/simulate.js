@@ -216,6 +216,65 @@ function runSimulation(options = {}) {
     return { summary, csvFile };
 }
 
+/**
+ * Large-sample analysis: run the simulation N times (each with a different
+ * RNG path) and aggregate the outcomes — mean/median/worst P/L, drawdowns,
+ * how often each gate fired, tier distribution. Writes one aggregate CSV.
+ */
+function runBatch(options = {}) {
+    const batch = Math.max(2, options.batch | 0);
+    const outDir = options.outDir ?? path.join(config.DATA_DIR, 'simulations');
+    fs.mkdirSync(outDir, { recursive: true });
+
+    const runs = [];
+    for (let i = 0; i < batch; i++) {
+        const { summary } = runSimulation({ ...options, batch: 1 });
+        runs.push(summary);
+    }
+
+    const pnls = runs.map((r) => r.pnl).sort((a, b) => a - b);
+    const median = pnls.length % 2 === 0
+        ? (pnls[pnls.length / 2 - 1] + pnls[pnls.length / 2]) / 2
+        : pnls[Math.floor(pnls.length / 2)];
+    const avg = (arr) => arr.reduce((a, v) => a + v, 0) / arr.length;
+
+    const aggregate = {
+        batchRuns: batch,
+        roundsPerRun: runs[0].requestedRounds,
+        source: runs[0].source,
+        strategy: runs[0].strategy,
+        avgPnl: Math.round(avg(runs.map((r) => r.pnl)) * 100) / 100,
+        medianPnl: Math.round(median * 100) / 100,
+        bestPnl: pnls[pnls.length - 1],
+        worstPnl: pnls[0],
+        profitableRuns: runs.filter((r) => r.pnl > 0).length,
+        avgMaxDrawdown: Math.round(avg(runs.map((r) => r.maxDrawdown)) * 100) / 100,
+        avgWinRate: Math.round(avg(runs.map((r) => r.winRate)) * 10) / 10,
+        avgBets: Math.round(avg(runs.map((r) => r.bets)) * 10) / 10,
+        bankrollGuardTrips: runs.filter((r) => r.bankrollGuard !== 'never tripped').length,
+        completedAllRounds: runs.filter((r) => r.endedBy === 'completed all rounds').length,
+        finalTiers: runs.reduce((acc, r) => { acc[r.finalTier] = (acc[r.finalTier] || 0) + 1; return acc; }, {})
+    };
+
+    const csvFile = path.join(outDir, `batch-${Date.now()}.csv`);
+    const csv = new CsvLog(csvFile, [
+        'run', 'rounds', 'bets', 'winRate', 'pnl', 'maxDrawdown', 'finalTier', 'endedBy'
+    ]);
+    runs.forEach((r, i) => csv.write({
+        run: i + 1,
+        rounds: r.rounds,
+        bets: r.bets,
+        winRate: r.winRate,
+        pnl: r.pnl,
+        maxDrawdown: r.maxDrawdown,
+        finalTier: r.finalTier,
+        endedBy: r.endedBy
+    }));
+    aggregate.aggregateCsv = csvFile;
+
+    return { summary: aggregate, runs };
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -245,6 +304,8 @@ Options:
   --strategy NAME   ${strategies}   (default MICRO)
   --bankroll X      starting bankroll in site currency (default 50000)
   --long-run        ignore strategy session limits to measure long-term behavior
+  --batch N         large-sample analysis: run the simulation N times and
+                    aggregate P/L, drawdowns, guard trips and tier outcomes
   --out DIR         CSV output directory (default data/simulations)
   --help            this help
 
@@ -260,6 +321,33 @@ if (require.main === module) {
     }
     const args = parseArgs(process.argv);
     try {
+        if (args.batch && parseInt(args.batch, 10) > 1) {
+            const { summary } = runBatch({
+                batch: parseInt(args.batch, 10),
+                rounds: parseInt(args.rounds || '5000', 10),
+                source: args.source || 'mixed',
+                strategy: (args.strategy || 'MICRO').toUpperCase(),
+                startingBankroll: parseFloat(args.bankroll || '50000'),
+                longRun: process.argv.includes('--long-run'),
+                outDir: args.out
+            });
+            console.log('\n============= LARGE-SAMPLE BATCH SUMMARY =============');
+            console.log(`Runs:               ${summary.batchRuns} x ${summary.roundsPerRun} rounds (${summary.source}, ${summary.strategy})`);
+            console.log(`Avg P/L:            ${summary.avgPnl >= 0 ? '+' : ''}${summary.avgPnl}`);
+            console.log(`Median P/L:         ${summary.medianPnl >= 0 ? '+' : ''}${summary.medianPnl}`);
+            console.log(`Best / worst:       ${summary.bestPnl >= 0 ? '+' : ''}${summary.bestPnl} / ${summary.worstPnl >= 0 ? '+' : ''}${summary.worstPnl}`);
+            console.log(`Profitable runs:    ${summary.profitableRuns}/${summary.batchRuns}`);
+            console.log(`Avg max drawdown:   ${summary.avgMaxDrawdown}`);
+            console.log(`Avg win rate:       ${summary.avgWinRate}%`);
+            console.log(`Avg bets per run:   ${summary.avgBets}`);
+            console.log(`Bankroll guard hit: ${summary.bankrollGuardTrips}/${summary.batchRuns} runs`);
+            console.log(`Full-length runs:   ${summary.completedAllRounds}/${summary.batchRuns}`);
+            console.log(`Final tiers:        ${JSON.stringify(summary.finalTiers)}`);
+            console.log(`Aggregate CSV:      ${summary.aggregateCsv}`);
+            console.log('=======================================================\n');
+            process.exit(0);
+        }
+
         const { summary } = runSimulation({
             rounds: parseInt(args.rounds || '5000', 10),
             source: args.source || 'mixed',
@@ -292,4 +380,4 @@ if (require.main === module) {
     }
 }
 
-module.exports = { runSimulation, syntheticCrash };
+module.exports = { runSimulation, runBatch, syntheticCrash };
