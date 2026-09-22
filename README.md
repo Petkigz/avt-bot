@@ -257,9 +257,19 @@ you pick site, account and strategy in **Mission Control** and press
 **Login verification:** the bot never touches your credentials — you log in
 yourself on the real site page, and a wrong PIN is rejected by the site
 itself. On top of that the bot VERIFIES the login: it polls the page for the
-site's logged-in indicators and auto-detects success (no click needed); if you
-confirm but the page still looks logged out, it warns you and gives you 3
-attempts before falling through to watch-only mode.
+site's logged-in indicators (balance/user-menu/logout markers, with a
+page-text fallback) and auto-detects success (no click needed). If you
+confirm but the page still looks logged out, it warns once — and if you
+confirm again it trusts you and proceeds (it never deadlocks on an
+unrecognized site layout).
+
+**Finding the game page:** after login the bot checks whether Aviator is
+already open (then it stays put), otherwise it uses the site's deep link and
+verifies the game widget actually appears. If the deep link is stale/wrong
+for that site, it tells you to open Aviator from the menu — the watcher finds
+the game page automatically. The dashboard's **👁 live view** is a delayed,
+view-only screenshot; the bot always acts on the real page at DOM speed, so
+mirror lag never affects monitoring or bets.
 
 **Switching sites/accounts live:** use the *Site & Account* card on the
 dashboard — pick a site, pick (or create) an account, click **Switch site**.

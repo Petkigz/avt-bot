@@ -43,7 +43,12 @@ const BETPAWA_LOGIN = {
     usernameInput: 'input[name="username"], input[type="tel"]',
     passwordInput: 'input[name="password"], input[type="password"]',
     submitButton: 'button[type="submit"]',
-    loggedInIndicator: '.balance, [class*="user-menu"], [class*="avatar"]'
+    // Broad on purpose: bookmaker class names vary by region/build. If none
+    // of these match, isLoggedIn() falls back to a page-text check for
+    // "log out"/"sign out" markers.
+    loggedInIndicator: '.balance, [class*="balance"], [class*="user-menu"], [class*="user-info"], ' +
+        '[class*="userinfo"], [class*="avatar"], [class*="account-menu"], [class*="logout"], ' +
+        'a[href*="logout"], button[class*="logout"]'
 };
 
 const SITES = {

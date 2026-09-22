@@ -338,9 +338,20 @@ async function isLoggedIn(page, site) {
     if (candidates.length === 0) return null;
     try {
         if (page.isClosed()) return null;
-        return await page.evaluate((list) => list.some((s) => {
-            try { return !!document.querySelector(s); } catch (e) { return false; }
-        }), candidates);
+        // Selector match first; if the site's class names differ, fall back
+        // to a text heuristic ("log out" / "sign out" only appears when
+        // a session exists).
+        return await page.evaluate((list) => {
+            try {
+                if (list.some((s) => {
+                    try { return !!document.querySelector(s); } catch (e) { return false; }
+                })) return true;
+                const text = (document.body && document.body.innerText || '').slice(0, 30000);
+                return /\blog\s*out\b|\bsign\s*out\b/i.test(text);
+            } catch (e) {
+                return false;
+            }
+        }, candidates);
     } catch (error) {
         return null; // navigating or busy — unknown
     }
@@ -420,6 +431,17 @@ async function waitForLogin(session) {
             logger.warn(`${site.name}: no login indicator available — continuing on your confirmation`);
             return;
         }
+        // state === false: page still looks logged out.
+        if (attempt >= 2) {
+            // The user insists they logged in — trust them rather than
+            // deadlock; monitoring works either way, betting needs the site.
+            accounts.touchLogin(session.account.id);
+            logger.warn(
+                `${site.name}: logged-in state not detected, but trusting your confirmation ` +
+                `(the site may use a layout the bot does not recognize)`
+            );
+            return;
+        }
         logger.warn(
             `Login NOT detected on ${site.name} (attempt ${attempt}/3) — the page still looks ` +
             'logged out. Check the browser window (wrong PIN? expired code?) and confirm again.'
@@ -430,6 +452,21 @@ async function waitForLogin(session) {
         `Proceeding without a confirmed login on ${site.name} — the watcher keeps running; ` +
         'betting cannot work until the site shows a logged-in state.'
     );
+}
+
+/**
+ * Polls the page (all frames) for the game widget, up to timeoutMs.
+ */
+async function waitForGameWidget(page, site, timeoutMs = 12000) {
+    const selectors = selectorsFor(site);
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+        try {
+            if (!page.isClosed() && await FrameHelper.hasSelector(page, selectors.BUBBLE_MULTIPLIER)) return true;
+        } catch (error) { /* page busy */ }
+        await sleep(1500);
+    }
+    return false;
 }
 
 async function navigateSessionToGame(session) {
@@ -447,11 +484,31 @@ async function navigateSessionToGame(session) {
         return;
     }
 
+    // Already on the game page (you opened Aviator yourself)? Don't
+    // re-navigate — that would throw away the working page.
+    if (await FrameHelper.hasSelector(page, selectorsFor(site).BUBBLE_MULTIPLIER).catch(() => false)) {
+        logger.info(`${site.name}: Aviator is already open — staying on this page`);
+        setSessionPhase(session, 'active');
+        emitSiteStatus('active', { accountLabel: session.account.label });
+        return;
+    }
+
     if (site.gameUrl) {
         setSessionPhase(session, 'navigating');
         await gotoSafe(page, site.gameUrl, `${site.name} Aviator`);
-        setSessionPhase(session, 'active');
-        emitSiteStatus('active', { accountLabel: session.account.label });
+        // Verify the deep link actually produced the game widget — some sites
+        // change paths or need a different entry after login.
+        if (await waitForGameWidget(page, site, 12000)) {
+            setSessionPhase(session, 'active');
+            emitSiteStatus('active', { accountLabel: session.account.label });
+        } else {
+            logger.warn(
+                `${site.name}: the Aviator deep link did not show the game widget ` +
+                `(${site.gameUrl}). Open Aviator from the site menu — the watcher will find it.`
+            );
+            setSessionPhase(session, 'findGame');
+            emitSiteStatus('findGame', { accountLabel: session.account.label });
+        }
     } else {
         logger.warn(`${site.name}: no deep link configured — open Aviator from the site menu; the watcher will find it`);
         setSessionPhase(session, 'findGame');
@@ -626,14 +683,29 @@ async function main() {
                 socket.on('renavigate', ({ accountId } = {}) => {
                     const s = accountId ? sessions.get(accountId) : sessions.values().next().value;
                     if (!s) return;
-                    if (!s.site.gameUrl) {
-                        logger.warn(`${s.site.name}: no deep link — open Aviator from the menu; the watcher will find it`);
-                        return;
-                    }
-                    logger.info(`Re-navigating "${s.account.label}" to ${s.site.name} Aviator page (dashboard request)`);
-                    gotoSafe(s.page, s.site.gameUrl, `${s.site.name} Aviator`).then((ok) => {
-                        if (ok) emitSiteStatus('active', { accountLabel: s.account.label });
-                    });
+                    const selectors = selectorsFor(s.site);
+                    FrameHelper.hasSelector(s.page, selectors.BUBBLE_MULTIPLIER)
+                        .catch(() => false)
+                        .then(async (alreadyOpen) => {
+                            if (alreadyOpen) {
+                                logger.info(`${s.site.name}: Aviator is already open — nothing to do`);
+                                emitSiteStatus('active', { accountLabel: s.account.label });
+                                return;
+                            }
+                            if (!s.site.gameUrl) {
+                                logger.warn(`${s.site.name}: no deep link — open Aviator from the menu; the watcher will find it`);
+                                emitSiteStatus('findGame', { accountLabel: s.account.label });
+                                return;
+                            }
+                            logger.info(`Re-navigating "${s.account.label}" to ${s.site.name} Aviator page (dashboard request)`);
+                            await gotoSafe(s.page, s.site.gameUrl, `${s.site.name} Aviator`);
+                            if (await waitForGameWidget(s.page, s.site, 12000)) {
+                                emitSiteStatus('active', { accountLabel: s.account.label });
+                            } else {
+                                logger.warn(`${s.site.name}: deep link did not show the game — open Aviator from the menu; the watcher will find it`);
+                                emitSiteStatus('findGame', { accountLabel: s.account.label });
+                            }
+                        });
                 });
             });
             dashboard.io.on('disconnect', stopAllMirrors);

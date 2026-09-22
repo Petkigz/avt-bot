@@ -88,3 +88,11 @@ test('user sites persist through a save/load round-trip', () => {
     assert.equal(getSite('saved-site').name, 'Saved');
     unregisterSite('saved-site');
 });
+
+test('login detection indicators are broad enough for regional builds', () => {
+    for (const id of ['betpawa.ug', 'betpawa.co.zm', 'betpawa.co.mw']) {
+        const ind = getSite(id).loginSelectors.loggedInIndicator;
+        assert.ok(ind.includes('balance'), `${id} checks balance`);
+        assert.ok(ind.includes('logout'), `${id} checks logout marker`);
+    }
+});
