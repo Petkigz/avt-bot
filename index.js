@@ -658,6 +658,16 @@ async function main() {
                 getActiveSite: () => ({ id: activeSite.id, name: activeSite.name, currency: activeSite.currency }),
                 getSessions: sessionsSnapshot,
                 getControlState: controlState,
+                getGameDebug: async (accountId) => {
+                    const s = (accountId && sessions.get(accountId)) || sessions.values().next().value;
+                    if (!s) return { error: 'no session' };
+                    if (s.monitor) return s.monitor.dumpState();
+                    return {
+                        error: 'monitor not attached yet',
+                        phase: s.phase,
+                        url: s.page.isClosed() ? null : s.page.url()
+                    };
+                },
                 addSite: (site) => {
                     const s = registerSite(site);
                     saveUserSites(USER_SITES_FILE);

@@ -705,6 +705,26 @@ el('renavigateBtn').addEventListener('click', () => {
   el('controlStatus').textContent = 'Navigating to the Aviator page…';
 });
 
+el('debugGameBtn').addEventListener('click', async () => {
+  const btn = el('debugGameBtn');
+  btn.disabled = true;
+  btn.textContent = '🩺 Diagnosing…';
+  try {
+    const res = await fetch(`/api/debug/game?accountId=${encodeURIComponent(el('accountSelect').value || '')}`);
+    const data = await res.json();
+    const pre = el('debugOut');
+    pre.textContent = JSON.stringify(data, null, 2);
+    pre.classList.remove('hidden');
+    pre.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (e) {
+    el('debugOut').textContent = `Diagnose failed: ${e.message}`;
+    el('debugOut').classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🩺 Diagnose game frame';
+  }
+});
+
 el('strategyApplyBtn').addEventListener('click', async () => {
   const name = el('strategySelect').value;
   const status = el('controlStatus');

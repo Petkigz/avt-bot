@@ -64,6 +64,12 @@ class GameMonitor extends EventEmitter {
         this.seedEmitted = false;   // history-strip seed sent once per attach
         this.stripPath = null;      // content-discovered history strip (new Spribe layouts)
         this.stripAnnounced = false;
+        this.stripLogged = false;
+        this.prevBubbles = null;    // for auto-detecting which end of the strip is newest
+        this.newestEnd = null;      // 'head' | 'tail' once detected
+        this.emptyStripCycles = 0;
+        this.stuckLatest = null;
+        this.stuckCycles = 0;
         this.roundBetMeta = null; // {stake, confidence, pattern, tier} of this round's bet
 
         // Every settled trade feeds the Brain (model, patterns, bankroll,
@@ -148,14 +154,67 @@ class GameMonitor extends EventEmitter {
         if (!state) return;
         if (!this.attachedUrl) this.attachedUrl = this.page.url();
 
-        // One-shot: hand the visible history strip (newest-first) to the
-        // orchestrator so long-term memory seeds from what's already on screen.
-        if (!this.seedEmitted && state.bubbles && state.bubbles.length > 0) {
-            this.seedEmitted = true;
-            this.emit('seedHistory', [...state.bubbles].reverse());
+        // ---- Auto-detect which END of the strip carries the newest round
+        // (layouts differ; classic = newest first, some clients append). ----
+        if (this.newestEnd === null && this.prevBubbles &&
+            state.bubbles.length >= 2 && this.prevBubbles.length >= 2) {
+            const headChanged = state.bubbles[0] !== this.prevBubbles[0];
+            const tailChanged = state.bubbles[state.bubbles.length - 1] !==
+                this.prevBubbles[this.prevBubbles.length - 1];
+            if (headChanged && !tailChanged) this.newestEnd = 'head';
+            else if (tailChanged && !headChanged) {
+                this.newestEnd = 'tail';
+                logger.info('Round-history strip appends new rounds at the END — reading order adapted automatically');
+            }
+        }
+        this.prevBubbles = state.bubbles;
+        const bubblesNorm = this.newestEnd === 'tail' ? [...state.bubbles].reverse() : state.bubbles;
+
+        // ---- Fallback-mode telemetry (explains a silent strip) ----
+        if (marker.stripPath) {
+            if (state.bubbles.length > 0) {
+                this.emptyStripCycles = 0;
+                if (!this.stripLogged) {
+                    this.stripLogged = true;
+                    logger.info(`History strip found at "${marker.stripPath}" — ${state.bubbles.length} rounds visible, latest ${bubblesNorm[0]}x`);
+                }
+                if (bubblesNorm[0] === this.stuckLatest) {
+                    this.stuckCycles++;
+                    if (this.stuckCycles === 90) {
+                        logger.warn(
+                            'History strip has not changed for ~90 polling cycles. If rounds ARE crashing on ' +
+                            'screen, the detected panel is probably the wrong one — use "Diagnose game frame" ' +
+                            'in the dashboard and share the output.'
+                        );
+                    }
+                } else {
+                    this.stuckLatest = bubblesNorm[0];
+                    this.stuckCycles = 0;
+                }
+            } else {
+                this.emptyStripCycles++;
+                if (this.emptyStripCycles === 15) {
+                    try {
+                        const raw = await marker.frame.evaluate((p) => {
+                            const c = document.querySelector(p);
+                            if (!c) return '(container vanished)';
+                            return Array.from(c.children).slice(0, 12)
+                                .map((el) => JSON.stringify((el.textContent || '').trim())).join(', ');
+                        }, marker.stripPath);
+                        logger.warn(`History strip container has no parseable rounds. Raw children: ${raw || '(none)'}`);
+                    } catch (error) { /* frame busy */ }
+                }
+            }
         }
 
-        const latest = state.bubbles.length > 0 ? state.bubbles[0] : null;
+        // One-shot: hand the visible history strip (newest-first) to the
+        // orchestrator so long-term memory seeds from what's already on screen.
+        if (!this.seedEmitted && bubblesNorm.length > 0) {
+            this.seedEmitted = true;
+            this.emit('seedHistory', [...bubblesNorm].reverse());
+        }
+
+        const latest = bubblesNorm.length > 0 ? bubblesNorm[0] : null;
         if (latest === null) {
             logger.debug('No crash bubbles rendered yet');
             return;
@@ -165,7 +224,7 @@ class GameMonitor extends EventEmitter {
         if (this.lastBubble === null) {
             this.lastBubble = latest;
             if (this.multiplierHistory.length === 0) {
-                this.multiplierHistory = state.bubbles.slice(0, this.historySize);
+                this.multiplierHistory = bubblesNorm.slice(0, this.historySize);
                 logger.info(`Seeded session history from payouts strip: [${this.multiplierHistory.join(', ')}]`);
             }
             logger.info(`Baseline crash value: ${latest}x`);
@@ -524,6 +583,53 @@ class GameMonitor extends EventEmitter {
             logger.error(`Error reading game state: ${error.message}`);
             return null;
         }
+    }
+
+    /**
+     * Live diagnostic snapshot for the dashboard "Diagnose game frame" button.
+     * Reports which marker matched, what bubbles parse to, and a raw sample of
+     * the discovered strip so layout issues are visible without DevTools.
+     */
+    async dumpState() {
+        const sel = this.selectors;
+        const out = {
+            site: this.site,
+            account: this.account,
+            mode: this.mode(),
+            roundId: this.roundId,
+            lastBubble: this.lastBubble,
+            newestEnd: this.newestEnd,
+            stripPath: this.stripPath,
+            recentHistory: this.multiplierHistory.slice(0, 12),
+            frames: []
+        };
+        try {
+            out.frames = this.page.frames().map((f) => f.url()).filter(Boolean);
+            let marker = null;
+            try {
+                const f = await FrameHelper.findFrameWithSelector(this.page, sel.BUBBLE_MULTIPLIER);
+                if (f) marker = { frame: f, stripPath: null };
+            } catch (error) { /* busy */ }
+            if (!marker) marker = await FrameHelper.findMultiplierStrip(this.page);
+            if (!marker) {
+                out.marker = 'none — neither classic selectors nor content scan found the round history';
+                return out;
+            }
+            out.marker = marker.stripPath ? `content scan: ${marker.stripPath}` : 'classic selectors';
+            const state = await this.readState(marker.frame, marker.stripPath);
+            out.parsedBubbles = state ? state.bubbles : null;
+            out.betButton = state ? state.betButton : null;
+            out.cashoutButton = state ? state.cashoutButton : null;
+            if (marker.stripPath) {
+                out.rawStripSample = await marker.frame.evaluate((p) => {
+                    const c = document.querySelector(p);
+                    return c ? Array.from(c.children).slice(0, 12).map((el) => (el.textContent || '').trim()) : null;
+                }, marker.stripPath);
+            }
+        } catch (error) {
+            out.error = error.message;
+        }
+        return out;
     }
 
     /**

@@ -226,3 +226,19 @@ test('PUT /api/strategies/:id hot-swaps or 400s on unknown', async () => {
         assert.equal(bad.status, 400);
     });
 });
+
+test('GET /api/debug/game returns the monitor diagnostic', async () => {
+    await withServer({
+        getGameDebug: async () => ({ marker: 'content scan: div > ul', parsedBubbles: [1.23, 2.5] })
+    }, async (port) => {
+        const res = await fetch(`http://127.0.0.1:${port}/api/debug/game`);
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.equal(body.marker, 'content scan: div > ul');
+        assert.deepEqual(body.parsedBubbles, [1.23, 2.5]);
+    });
+    await withServer({}, async (port) => {
+        const res = await fetch(`http://127.0.0.1:${port}/api/debug/game`);
+        assert.equal(res.status, 503);
+    });
+});

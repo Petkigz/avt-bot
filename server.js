@@ -165,6 +165,16 @@ async function startDashboard(port, logger, deps = {}) {
             }
         });
 
+        // Live diagnostic: what the monitor actually sees in the game frame.
+        app.get('/api/debug/game', async (req, res) => {
+            if (!deps.getGameDebug) return res.status(503).json({ error: 'debug unavailable' });
+            try {
+                res.json(await deps.getGameDebug(req.query.accountId));
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
         app.post('/api/accounts/new', (req, res) => {
             if (!deps.accounts) return res.status(503).json({ error: 'accounts unavailable' });
             const { site, label, notes } = req.body || {};

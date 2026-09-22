@@ -115,6 +115,7 @@
                     <button id="launchBtn" class="primary hidden">🚀 Launch session</button>
                     <button id="switchBtn" class="primary">⇄ Switch site / account</button>
                     <button id="renavigateBtn" title="Navigate the session to the Aviator page">🎯 Go to Aviator page</button>
+                    <button id="debugGameBtn" title="Show what the monitor sees inside the game frame">🩺 Diagnose game frame</button>
                     <button id="loginConfirmBtn" class="warn hidden">I'm logged in — continue ➜</button>
                     <button id="pauseBtn" class="hidden">⏸ Pause betting</button>
                     <button id="resumeBtn" class="danger hidden">▶ Resume betting</button>
@@ -153,6 +154,10 @@
                 </table>
                 <p class="small" id="sessionsNote"></p>
                 <p class="small hidden" id="sessionsHint" style="color:var(--amber);"></p>
+            </div>
+            <div class="panel" id="debugPanel">
+                <h2>Game frame diagnosis <span class="small">— what the monitor sees</span></h2>
+                <pre id="debugOut" class="hidden" style="white-space:pre-wrap;word-break:break-all;font-size:11px;max-height:340px;overflow:auto;background:var(--panel-2,#111a);padding:10px;border-radius:8px;"></pre>
             </div>
             <div class="panel" id="accountsPanel">
                 <h2>Saved login profiles</h2>
