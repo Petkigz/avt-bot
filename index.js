@@ -24,7 +24,28 @@ const { startDashboard } = require('./server');
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const askQuestion = (query) => new Promise((resolve) => rl.question(query, resolve));
 
+function listStrategyCatalog() {
+    return Object.values(config.BETTING_STRATEGIES)
+        .map((s) => `${s.name}: initial ${s.initialBet}, min ${s.minBet}, max ${s.maxBet}, ` +
+            `target ${s.targetMultiplier}x, martingale x${s.martingaleMultiplier}, ` +
+            `stop-loss ${s.stopLoss}, take-profit ${s.takeProfit}`)
+        .join('\n  ');
+}
+
 async function selectStrategy() {
+    // ALL presets are always available — env override, interactive menu, or default.
+    if (config.STRATEGY) {
+        const preset = config.BETTING_STRATEGIES[config.STRATEGY];
+        if (preset) {
+            logger.info(`Strategy selected via STRATEGY env: ${preset.name}`);
+            return { ...preset };
+        }
+        logger.warn(
+            `Unknown STRATEGY "${config.STRATEGY}" — valid options: ` +
+            `${Object.keys(config.BETTING_STRATEGIES).join(', ')}`
+        );
+    }
+
     if (!process.stdin.isTTY) {
         logger.warn('No interactive terminal detected — defaulting to MICRO strategy');
         return { ...config.BETTING_STRATEGIES.MICRO };
@@ -32,10 +53,12 @@ async function selectStrategy() {
 
     console.log('\nAvailable Strategies (amounts are in SITE CURRENCY — UGX on BetPawa.ug):');
     console.log('1. MICRO — tiny stakes, recommended default (UGX 100 initial)');
-    console.log('2. Conservative (Lower risk, smaller profits)');
-    console.log('3. Moderate (Balanced risk and reward)');
-    console.log('4. Aggressive (Higher risk, larger potential profits)');
-    console.log('5. Custom (Define your own parameters)\n');
+    console.log('2. CONSERVATIVE — lower risk, smaller profits (UGX 500 initial)');
+    console.log('3. MODERATE — balanced risk and reward (UGX 1,000 initial)');
+    console.log('4. AGGRESSIVE — higher risk, larger potential profits (UGX 2,500 initial)');
+    console.log('5. CUSTOM — define your own parameters\n');
+    console.log('Full parameter catalog:');
+    console.log('  ' + listStrategyCatalog() + '\n');
 
     const choice = await askQuestion('Select strategy (1-5): ');
     switch (choice) {
@@ -161,9 +184,13 @@ async function main() {
     const strategyConfig = await selectStrategy();
     logger.info(
         `Strategy: ${strategyConfig.name} | initial bet ${strategyConfig.initialBet} | ` +
-        `target ${strategyConfig.targetMultiplier}x | stop-loss ${strategyConfig.stopLoss} | ` +
-        `take-profit ${strategyConfig.takeProfit}`
+        `min ${strategyConfig.minBet} | max ${strategyConfig.maxBet} | ` +
+        `target ${strategyConfig.targetMultiplier}x | martingale x${strategyConfig.martingaleMultiplier} | ` +
+        `stop-loss ${strategyConfig.stopLoss} | take-profit ${strategyConfig.takeProfit}`
     );
+    if (config.MICRO_ONLY) {
+        logger.warn('MICRO_ONLY safety profile: stakes stay capped at micro size (no promotion to full stakes)');
+    }
 
     // ---- Memory: history, model, patterns, bankroll ----
     const historyStore = new HistoryStore(path.join(config.DATA_DIR, 'history.json'));

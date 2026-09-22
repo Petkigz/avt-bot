@@ -201,14 +201,22 @@ Full list (promotion thresholds, volatility penalties, pattern bins, ...) is in
 
 ## Strategies
 
-Choose interactively at startup:
+**All four presets are always available** — via the interactive menu, the
+`STRATEGY` env var (for headless runs), or `--strategy` in the simulator.
 
-1. **Conservative** — low risk, small target multiplier
-2. **Moderate** — balanced
-3. **Aggressive** — higher stakes, higher target
-4. **Custom** — set every parameter yourself
+| Preset | Initial | Max | Target | Martingale | Stop-loss | Take-profit |
+|---|---|---|---|---|---|---|
+| **MICRO** (default) | UGX 100 | UGX 1,000 | 1.30x | ×1.4 | UGX 2,000 | UGX 3,000 |
+| CONSERVATIVE | UGX 500 | UGX 25,000 | 1.20x | ×1.5 | UGX 10,000 | UGX 20,000 |
+| MODERATE | UGX 1,000 | UGX 50,000 | 1.50x | ×2 | UGX 25,000 | UGX 50,000 |
+| AGGRESSIVE | UGX 2,500 | UGX 100,000 | 2.00x | ×2.5 | UGX 50,000 | UGX 150,000 |
 
-Strategy fields:
+```bash
+STRATEGY=CONSERVATIVE npm start       # env override, no prompt
+node sim/simulate.js --strategy MODERATE --rounds 10000   # simulate any preset
+```
+
+A **CUSTOM** strategy (menu option 5) lets you set every parameter yourself:
 
 - `initialBet`, `minBet`, `maxBet` — stake bounds
 - `targetMultiplier` — cash out when the live multiplier reaches this
@@ -216,6 +224,10 @@ Strategy fields:
 - `stopLoss` / `takeProfit` — halt betting when net result crosses these
 - `averageMultiplierThreshold` — only bet when recent average crash is at/below this
 - `maxConsecutiveLosses` — halt betting after this many losses in a row (default 5)
+
+**`MICRO_ONLY=true`** — strict safety profile: the bot stays in the MICRO tier
+forever (micro-sized bets, never promoted to full strategy stakes), regardless
+of which preset you pick.
 
 ## How the model learns
 

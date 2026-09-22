@@ -248,7 +248,13 @@ class GameMonitor extends EventEmitter {
             strategy: {
                 name: this.strategy.name,
                 nextStake: this.strategy.getNextBetAmount(),
+                initialBet: this.strategy.initialBet,
+                minBet: this.strategy.minBet,
+                maxBet: this.strategy.maxBet,
                 targetMultiplier: this.strategy.targetMultiplier,
+                martingaleMultiplier: this.strategy.martingaleMultiplier,
+                stopLoss: this.strategy.stopLoss,
+                takeProfit: this.strategy.takeProfit,
                 consecutiveLosses: this.strategy.consecutiveLosses
             }
         });

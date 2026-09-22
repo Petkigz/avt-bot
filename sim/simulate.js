@@ -228,7 +228,36 @@ function parseArgs(argv) {
     return args;
 }
 
+function printHelp() {
+    const strategies = Object.keys(config.BETTING_STRATEGIES).join(' | ');
+    console.log(`
+Aviator Bot — paper-mode simulator (no browser, no money)
+
+Usage:
+  npm run simulate
+  node sim/simulate.js --rounds 10000 --source mixed --strategy MICRO --bankroll 50000 [--long-run]
+
+Options:
+  --rounds N        rounds to simulate (default 5000)
+  --source X        replay | synthetic | mixed (default mixed)
+                      replay    = your recorded history (data/history.json), looped
+                      synthetic = theoretical Aviator distribution P(crash >= x) = 0.99/x
+  --strategy NAME   ${strategies}   (default MICRO)
+  --bankroll X      starting bankroll in site currency (default 50000)
+  --long-run        ignore strategy session limits to measure long-term behavior
+  --out DIR         CSV output directory (default data/simulations)
+  --help            this help
+
+The simulator runs the bot's REAL decision stack (model, patterns, tiers,
+bankroll guard) — what you measure here is what would run live.
+`);
+}
+
 if (require.main === module) {
+    if (process.argv.includes('--help') || process.argv.includes('-h')) {
+        printHelp();
+        process.exit(0);
+    }
     const args = parseArgs(process.argv);
     try {
         const { summary } = runSimulation({

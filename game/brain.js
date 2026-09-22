@@ -19,12 +19,14 @@ const logger = require('../util/logger');
  *   (with volatility penalty), pattern check OK, bankroll policy OK.
  */
 class Brain {
-    constructor({ config, strategy, predictor, patterns, bankroll }) {
+    constructor({ config, strategy, predictor, patterns, bankroll, microOnly }) {
         this.config = config;
         this.strategy = strategy;
         this.predictor = predictor;       // may be null (model disabled)
         this.patterns = patterns;         // may be null (patterns disabled)
         this.bankroll = bankroll;
+        // Strict safety profile: never promote beyond the MICRO tier.
+        this.microOnly = microOnly ?? !!(config.MICRO_ONLY);
 
         this.tier = 'OBSERVING';
         this.pendingResult = null;   // outcome of the last settled trade
@@ -203,11 +205,15 @@ class Brain {
         } else if (this.tier === 'MICRO') {
             if (paused) {
                 // cold regime: keep tier, the model gate blocks bets anyway
+            } else if (this.microOnly) {
+                // strict safety profile: never promote past micro-bets
             } else if (decisions >= risk.PROMOTION_MIN_DECISIONS && hr !== null && hr >= risk.PROMOTION_HIT_RATE) {
                 this.setTier('ARMED', `sustained hit-rate ${(hr * 100).toFixed(1)}% over ${decisions} bets — full stakes enabled (bankroll-capped)`);
             }
         } else if (this.tier === 'ARMED') {
-            if (decisions >= risk.DECISION_WINDOW / 2 && hr !== null && hr <= risk.DEMOTION_HIT_RATE) {
+            if (this.microOnly) {
+                this.setTier('MICRO', 'MICRO_ONLY safety profile enabled — capped at micro-bets');
+            } else if (decisions >= risk.DECISION_WINDOW / 2 && hr !== null && hr <= risk.DEMOTION_HIT_RATE) {
                 this.setTier('MICRO', `hit-rate dropped to ${(hr * 100).toFixed(1)}% — demoted back to micro-bets`);
             }
         }
@@ -226,6 +232,7 @@ class Brain {
         return {
             tier: this.tier,
             mode: this.mode,
+            microOnly: this.microOnly,
             hitRate: this.hitRate(),
             recentDecisions: this.recentDecisions.length,
             lastConfidence: this.lastConfidence,

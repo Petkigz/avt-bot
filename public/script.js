@@ -40,15 +40,25 @@ socket.on('status', (s) => {
   setText('winRate', s.stats && s.stats.totalTrades > 0 ? fmt(s.stats.winRate, 1) + '%' : '—');
   setText('roundsStudied', String(s.roundId ?? 0));
 
+  // Strategy profile (all configs are first-class — show which one is active)
+  if (s.strategy) {
+    const st = s.strategy;
+    document.getElementById('strategyProfile').textContent =
+      `Strategy: ${st.name} — next stake ${fmt(st.nextStake, 0)} (min ${fmt(st.minBet, 0)} / max ${fmt(st.maxBet, 0)}) · ` +
+      `target ${st.targetMultiplier}x · martingale ×${st.martingaleMultiplier} · ` +
+      `stop-loss ${fmt(st.stopLoss, 0)} · take-profit ${fmt(st.takeProfit, 0)}`;
+  }
+
   const b = s.brain;
   if (b) {
     const tierEl = document.getElementById('tier');
     tierEl.textContent = b.tier;
     tierEl.className = 'value ' + (b.tier === 'ARMED' ? 'pos' : b.tier === 'MICRO' ? 'warn' : '');
     document.getElementById('tierNote').textContent =
-      b.tier === 'OBSERVING' ? '— warm-up: no bets until enough rounds are studied'
-        : b.tier === 'MICRO' ? '— unproven: micro-bets only'
-          : '— proven hit-rate: strategy stakes (bankroll-capped)';
+      b.microOnly ? '— MICRO_ONLY safety profile: stakes capped at micro size'
+        : b.tier === 'OBSERVING' ? '— warm-up: no bets until enough rounds are studied'
+          : b.tier === 'MICRO' ? '— unproven: micro-bets only'
+            : '— proven hit-rate: strategy stakes (bankroll-capped)';
 
     setText('hitRate', b.hitRate !== null && b.hitRate !== undefined ? fmt(b.hitRate * 100, 1) + '%' : '—');
 

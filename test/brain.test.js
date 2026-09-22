@@ -141,3 +141,30 @@ test('closed window / cooldown / halted all refuse bets', () => {
     assert.strictEqual(brain.decide({ bettingWindow: true, balance: 50000, cooldownRounds: 2 }).shouldBet, false);
     assert.strictEqual(brain.decide({ bettingWindow: true, balance: 50000, halted: true }).shouldBet, false);
 });
+
+test('MICRO_ONLY safety profile never promotes past micro-bets', () => {
+    const strategyConfig = { ...config.BETTING_STRATEGIES.MICRO };
+    const strategy = new BettingStrategy(strategyConfig);
+    const predictor = new Predictor({
+        targetMultiplier: strategyConfig.targetMultiplier,
+        minSampleSize: 5, minEntryProbability: 0.55, maxEntryProbability: 0.85,
+        coldStreakLimit: 3, coldRecoveryCount: 1
+    });
+    const patterns = new PatternDetector({ lengths: [3], minSupport: 3, targetMultiplier: strategyConfig.targetMultiplier });
+    const bankroll = new Bankroll({
+        sessionLossLimit: 1000000, dailyLossLimit: 1000000,
+        maxStakeFraction: 0.5, microStakeFraction: 0.1, minStake: strategyConfig.minBet
+    });
+    bankroll.setBalance(50000);
+    const brain = new Brain({ config, strategy, predictor, patterns, bankroll, microOnly: true });
+
+    for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE; i++) brain.onRoundEnded(2.0);
+    assert.strictEqual(brain.tier, 'MICRO');
+
+    // A perfect hit-rate that would normally promote to ARMED...
+    brain.recentDecisions = Array(config.RISK.PROMOTION_MIN_DECISIONS + 10).fill(true);
+    brain.updateTier();
+    // ...must NOT promote under MICRO_ONLY
+    assert.strictEqual(brain.tier, 'MICRO');
+    assert.strictEqual(brain.snapshot().microOnly, true);
+});

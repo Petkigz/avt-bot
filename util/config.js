@@ -120,6 +120,15 @@ const config = {
         PAPER: bool(process.env.PAPER_MODE, true)
     },
 
+    // Optional preset override — MICRO, CONSERVATIVE, MODERATE or AGGRESSIVE.
+    // When set, the bot uses it without prompting (useful for headless runs).
+    // Leave empty for the interactive menu (all presets + custom available).
+    STRATEGY: (process.env.STRATEGY || '').toUpperCase(),
+
+    // Strict safety profile: stay in the MICRO tier forever (micro-sized bets
+    // only, never promoted to full strategy stakes).
+    MICRO_ONLY: bool(process.env.MICRO_ONLY, false),
+
     // NOTE: BetPawa renders the Spribe Aviator widget, so the selectors below
     // are Spribe's. If BetPawa serves a different build, adjust these.
     SELECTORS: {
