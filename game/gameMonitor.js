@@ -31,6 +31,9 @@ class GameMonitor extends EventEmitter {
         this.brain = brain;
         this.historyStore = deps.historyStore || null;
         this.csvRounds = deps.csvRounds || null;
+        this.selectors = deps.selectors || config.SELECTORS.GAME; // per-site widget selectors
+        this.site = deps.site || '';      // which site this monitor watches
+        this.account = deps.account || ''; // which account label it belongs to
 
         this.strategy = brain.strategy;
         this.statsTracker = new StatsTracker();
@@ -111,7 +114,7 @@ class GameMonitor extends EventEmitter {
     }
 
     async monitorCycle() {
-        const sel = this.config.SELECTORS.GAME;
+        const sel = this.selectors;
         const frameTimeout = Math.min(this.config.GAME.POLLING_INTERVAL * 2, 10000);
         const frame = await FrameHelper.waitForSelectorInFrames(this.page, sel.BUBBLE_MULTIPLIER, frameTimeout);
 
@@ -315,7 +318,7 @@ class GameMonitor extends EventEmitter {
         this.roundId++;
         this.roundInFlight = false;
         this.flightEndedAt = null;
-        logger.info(`Round #${this.roundId} ended at ${crashValue}x`);
+        logger.info(`Round #${this.roundId} ended at ${crashValue}x [${this.site}${this.account ? ' / ' + this.account : ''}]`);
 
         // ---- Feed memory + model BEFORE settling the bet ----
         if (this.historyStore) this.historyStore.append(crashValue);
@@ -360,6 +363,8 @@ class GameMonitor extends EventEmitter {
             this.csvRounds.write({
                 ts: new Date().toISOString(),
                 mode: this.mode(),
+                site: this.site,
+                account: this.account,
                 roundId: this.roundId,
                 crash: crashValue,
                 betPlaced: betWasThisRound ? 'yes' : 'no',
@@ -409,7 +414,7 @@ class GameMonitor extends EventEmitter {
      */
     async readState(frame) {
         try {
-            const sel = this.config.SELECTORS.GAME;
+            const sel = this.selectors;
             return await frame.evaluate((s) => {
                 const q = (selector) => document.querySelector(selector);
                 const visible = (el) => {

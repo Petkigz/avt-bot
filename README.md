@@ -19,6 +19,7 @@ and streams live stats to a browser dashboard.
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Strategies](#strategies)
+- [Multi-site & multi-account](#multi-site--multi-account)
 - [Live dashboard](#live-dashboard)
 - [Database](#database)
 - [How it works](#how-it-works)
@@ -34,12 +35,12 @@ The bot is now built as a **risk-controlled trading system**, not a simple
 "bet when average is low" script:
 
 - **Bankroll guard** — hard session + daily loss limits (persisted across
-  restarts), a max-stake fraction of the bankroll (default 2%), and a balance
+  restarts), a max-stake fraction of the bankroll (default 1.5%), and a balance
   reserve. When a limit trips, betting is blocked — no override in code paths.
 - **Confidence tiers** — `OBSERVING → MICRO → ARMED`. Warm-up is mandatory:
   zero bets for the first `MIN_ROUNDS_OBSERVE` rounds. Then only micro-bets
-  (default 0.5% of bankroll) until the bot sustains a 55%+ hit-rate over 20+
-  decisions; sagging performance demotes it back to micro.
+  (default 0.4% of bankroll) until the bot sustains a 58%+ hit-rate over 25+
+  decisions; dropping below 48% demotes it back to micro.
 - **Pattern detector** — mines recent round clusters of length **10, 5 and 3**
   (L/M/H symbols), carries a smoothed prediction for the next round, refuses
   risky patterns, and benches patterns that keep failing live until they
@@ -185,19 +186,56 @@ All settings live in `.env` (see [.env.example](.env.example)). Highlights:
 | `DATABASE_ENABLED` | `false` | Enable MySQL persistence |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
 | `PAPER_MODE` | `true` | Observe + log without betting (SAFE default) |
-| `SESSION_LOSS_LIMIT` | `5000` | Hard session loss cap (UGX) |
-| `DAILY_LOSS_LIMIT` | `10000` | Hard daily loss cap (UGX, persists) |
-| `MAX_STAKE_FRACTION` | `0.02` | Max stake as fraction of bankroll |
-| `MIN_ROUNDS_OBSERVE` | `100` | Mandatory warm-up rounds before any bet |
+| `SITE` | `betpawa.ug` | Starting site profile (`betpawa.ug` \| `betpawa.co.zm` \| `betpawa.co.mw` \| `custom`) |
+| `MAX_SESSIONS` | `1` | Max concurrent browser sessions (one per account) |
+| `CUSTOM_BASE_URL` / `CUSTOM_GAME_URL` | *(empty)* | For `SITE=custom`: any Spribe-Aviator bookmaker |
+| `CUSTOM_CURRENCY` / `CUSTOM_MIN_STAKE` | `UNITS` / `0` | Currency + min stake for the custom site |
+| `SESSION_LOSS_LIMIT` | `3000` | Hard session loss cap (site currency) |
+| `DAILY_LOSS_LIMIT` | `6000` | Hard daily loss cap (site currency, persists) |
+| `MAX_STAKE_FRACTION` | `0.015` | Max stake as fraction of bankroll |
+| `MICRO_STAKE_FRACTION` | `0.004` | Micro-tier stake as fraction of bankroll |
+| `MIN_ROUNDS_OBSERVE` | `150` | Mandatory warm-up rounds before any bet |
 | `PATTERN_LENGTHS` | `10,5,3` | Cluster lengths the pattern miner tracks |
 
 Full list (promotion thresholds, volatility penalties, pattern bins, ...) is in
 [.env.example](.env.example).
 
 > **Note:** Automating a real bookmaker may violate its terms of service — know the
-> rules and the risks before pointing this at a funded account. If BetPawa serves a
-> different Aviator build, the selectors in `util/config.js` are the only values to
-> adjust (they target the standard Spribe widget).
+> rules and the risks before pointing this at a funded account. If a site serves a
+> different Aviator build, the selectors in `util/sites.js` (`SELECTOR_SETS.spribe`)
+> are the only values to adjust (they target the standard Spribe widget).
+
+## Multi-site & multi-account
+
+The bot is **not BetPawa-only**. Aviator is ONE global Spribe game — every
+bookmaker shows the same rounds at the same time — so data gathered on any
+site feeds the same memory, model and pattern miner.
+
+**Built-in site profiles** (`util/sites.js`):
+
+| Site id | Currency | Notes |
+|---|---|---|
+| `betpawa.ug` | UGX | Deep link `/virtual/aviator`, min stake UGX 100 |
+| `betpawa.co.zm` | ZMW | Deep link `/aviator-crash-game` |
+| `betpawa.co.mw` | MWK | No verified deep link — open Aviator from the site menu; the watcher finds the game page |
+| `custom` | env | Point `CUSTOM_BASE_URL` / `CUSTOM_GAME_URL` at any Spribe-Aviator site |
+
+**Switching sites live:** use the *Site & Account* card on the dashboard —
+pick a site, pick (or create) an account, click **Switch site**. The bot closes
+excess sessions (`MAX_SESSIONS`), opens a browser with that account's own
+persistent profile, waits for you to log in, then navigates to the game. You
+can also press ENTER in the terminal instead of clicking continue.
+
+**Accounts:** each account is a persistent browser profile under
+`data/profiles/<id>` — log in once per account and the session survives
+restarts. Only metadata (id/site/label) is stored in `data/accounts.json`;
+**passwords are never stored anywhere**. Multiple accounts per site are
+supported; concurrent sessions are capped by `MAX_SESSIONS` (oldest over the
+cap is closed).
+
+**Cross-site data:** every row in `data/rounds.csv` and `data/trades.csv` is
+tagged with `site` and `account`, so you can always see which site/account
+produced which data — while the shared model learns from all of it.
 
 ## Strategies
 
@@ -262,16 +300,30 @@ The bot keeps **memory across restarts** and refines its entry decisions:
 
 When `DASHBOARD_ENABLED=true`, open `http://localhost:3000`:
 
+- **Site & Account card** — switch sites/accounts live, add accounts, and the
+  "I'm logged in — continue" button for the manual-login step
 - **Live learning panel** — all-time stored memory (via `GET /api/history`),
   entry-threshold trend (what the learning has done), strongest pattern
   families with their probabilities, and a live decision feed with reasons
+- **Log history viewer** — browse the stored `data/rounds.csv` /
+  `data/trades.csv` rows (site/account tagged) right in the dashboard
 - **Risk panel** — bankroll, session/daily P/L, loss-limit usage bars, tier,
   hit-rate, regime, model probability and the active strategy profile
 - **Crash chart** with prediction accuracy table
 
-The stored history is also available as JSON: `GET /api/history` returns
-all-time round count, averages, %-below-1.5x and the last 50 rounds — useful
-for external analysis tools.
+REST endpoints:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/history` | All-time round count, averages, %-below-1.5x, last 50 rounds |
+| `GET /api/sites` | Registered site profiles + the active one |
+| `GET /api/accounts` | Account metadata (never credentials) |
+| `POST /api/accounts/new` | Create an account `{site, label}` |
+| `GET /api/logs?type=rounds\|trades&limit=N` | Stored log rows as JSON (newest first) |
+
+Socket.IO: the server emits `siteStatus` (`switching` / `loginRequired` /
+`findGame` / `active` / `error`); the client sends `switchSite
+{siteId, accountId}` and `confirmLogin`.
 
 ## Database
 

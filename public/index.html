@@ -28,18 +28,42 @@
         th { color: #8a97a3; }
         .small { font-size: 0.75em; color: #8a97a3; }
         #learningPanel { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-        .panel { background-color: #2a2f35; border-radius: 15px; padding: 14px 16px; }
+        .panel { background-color: #2a2f35; border-radius: 15px; padding: 14px 16px; margin-bottom: 14px; }
         .panel h2 { font-size: 0.95em; color: rgba(75,192,192,1); margin: 0 0 8px; }
         .panel h3 { font-size: 0.8em; color: #8a97a3; margin: 10px 0 4px; }
+        .siteRow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+        select, button { background: #1a1d21; color: #ddd; border: 1px solid #444; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+        button.primary { background: rgba(75,192,192,0.25); border-color: rgba(75,192,192,0.6); }
+        button.warn { background: #7a5c2e; border-color: #ffc46b; }
+        .hidden { display: none; }
+        #sitePanel, #logPanel { border: 1px solid #3a4048; }
+        #logTable { font-size: 0.75em; }
         @media (max-width: 800px) { #learningPanel { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
     <div id="container">
-        <h1>Aviator Bot — BetPawa.ug</h1>
+        <h1>Aviator Bot <span class="small" id="siteHeader">— BetPawa.ug</span></h1>
         <span id="modeBadge" class="paper">PAPER MODE</span>
         <span class="small" id="tierNote"></span>
         <p class="small" id="strategyProfile"></p>
+
+        <div class="panel" id="sitePanel">
+            <h2>Site &amp; Account (switchable live)</h2>
+            <div class="siteRow">
+                <label class="small">Site
+                    <select id="siteSelect"></select>
+                </label>
+                <label class="small">Account
+                    <select id="accountSelect"></select>
+                </label>
+                <button id="newAccountBtn" title="Add a new account for this site">+ account</button>
+                <button id="switchBtn" class="primary">Switch site</button>
+                <button id="loginConfirmBtn" class="warn hidden">I'm logged in — continue ➜</button>
+            </div>
+            <p class="small" id="siteStatus">Current: —</p>
+            <p class="small" id="multiSiteNote">Rounds from every site feed the SAME memory (Aviator is one global game feed).</p>
+        </div>
 
         <div class="cards">
             <div class="card"><div class="label">Bot state</div><div class="value" id="botState">starting…</div></div>
@@ -63,7 +87,7 @@
         <div id="learningPanel">
             <div class="panel">
                 <h2>Learning — memory &amp; model</h2>
-                <p class="small">All-time memory: <span id="memCount">…</span> rounds
+                <p class="small">All-time memory: <span id="memCount">…</span> rounds (cross-site)
                     (avg <span id="memAvg">…</span>, <span id="memLow">…</span>% below 1.5x)</p>
                 <p class="small">Entry threshold: <span id="thresholdTrend">…</span> ·
                     Best historical target: <span id="bestTarget">…</span></p>
@@ -78,6 +102,22 @@
                 <table id="decisionTable" border="1">
                     <thead><tr><th>Time</th><th>Action</th><th>Stake</th><th>Tier</th><th>Reason</th></tr></thead>
                     <tbody id="decisionTableBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="panel" id="logPanel">
+            <h2>Log history storage <span class="small">(data/rounds.csv · data/trades.csv)</span></h2>
+            <div class="siteRow">
+                <button id="logRoundsBtn" class="primary">Rounds</button>
+                <button id="logTradesBtn">Trades</button>
+                <button id="logRefreshBtn">↻ refresh</button>
+                <span class="small" id="logInfo"></span>
+            </div>
+            <div style="overflow-x:auto;">
+                <table id="logTable" border="1">
+                    <thead><tr id="logTableHead"></tr></thead>
+                    <tbody id="logTableBody"></tbody>
                 </table>
             </div>
         </div>

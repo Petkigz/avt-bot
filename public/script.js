@@ -291,3 +291,153 @@ socket.on('newData', (dataPoint) => {
   lineChart.update();
   lastValue = value;
 });
+
+// ---------------------------------------------------------------------------
+// Site & account switching
+// ---------------------------------------------------------------------------
+let sitesCache = [];
+let accountsCache = [];
+
+function el(id) { return document.getElementById(id); }
+
+async function loadSiteControls() {
+  try {
+    const [sitesRes, accountsRes] = await Promise.all([fetch('/api/sites'), fetch('/api/accounts')]);
+    const sitesData = await sitesRes.json();
+    accountsCache = await accountsRes.json();
+    sitesCache = sitesData.sites || [];
+
+    const siteSelect = el('siteSelect');
+    siteSelect.innerHTML = '';
+    for (const s of sitesCache) {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = `${s.name} (${s.currency})`;
+      siteSelect.appendChild(opt);
+    }
+    if (sitesData.active) {
+      siteSelect.value = sitesData.active.id;
+      el('siteHeader').textContent = `— ${sitesData.active.name}`;
+      el('siteStatus').textContent = `Current: ${sitesData.active.name}`;
+    }
+    refreshAccountSelect();
+  } catch (e) { /* server not ready */ }
+}
+
+function refreshAccountSelect() {
+  const siteId = el('siteSelect').value;
+  const select = el('accountSelect');
+  select.innerHTML = '';
+  const forSite = accountsCache.filter((a) => a.site === siteId);
+  if (forSite.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'default (auto-created)';
+    select.appendChild(opt);
+  }
+  for (const a of forSite) {
+    const opt = document.createElement('option');
+    opt.value = a.id;
+    opt.textContent = a.label;
+    select.appendChild(opt);
+  }
+}
+
+el('siteSelect').addEventListener('change', refreshAccountSelect);
+
+el('switchBtn').addEventListener('click', () => {
+  const siteId = el('siteSelect').value;
+  const accountId = el('accountSelect').value || null;
+  el('siteStatus').textContent = 'Switching…';
+  socket.emit('switchSite', { siteId, accountId });
+});
+
+el('newAccountBtn').addEventListener('click', async () => {
+  const siteId = el('siteSelect').value;
+  const label = prompt('Label for the new account on ' + siteId + ':', siteId + ' account 2');
+  if (!label) return;
+  try {
+    await fetch('/api/accounts/new', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ site: siteId, label })
+    });
+    const res = await fetch('/api/accounts');
+    accountsCache = await res.json();
+    refreshAccountSelect();
+  } catch (e) { alert('Could not create account: ' + e.message); }
+});
+
+el('loginConfirmBtn').addEventListener('click', () => {
+  socket.emit('confirmLogin');
+  el('loginConfirmBtn').classList.add('hidden');
+  el('siteStatus').textContent = 'Continuing to the game…';
+});
+
+socket.on('siteStatus', (s) => {
+  if (!s) return;
+  const label = s.siteName || s.siteId || '';
+  const account = s.accountLabel ? ` / "${s.accountLabel}"` : '';
+  if (s.phase === 'loginRequired') {
+    el('siteStatus').textContent = `Log in to ${label}${account} in the browser window, then click continue.`;
+    el('loginConfirmBtn').classList.remove('hidden');
+  } else if (s.phase === 'switching') {
+    el('siteStatus').textContent = `Switching to ${label}${account}…`;
+    el('loginConfirmBtn').classList.add('hidden');
+  } else if (s.phase === 'findGame') {
+    el('siteStatus').textContent = `${label}: open Aviator from the site menu — the bot will find it automatically.`;
+    el('loginConfirmBtn').classList.add('hidden');
+  } else if (s.phase === 'active') {
+    el('siteStatus').textContent = `Current: ${label}${account}`;
+    el('siteHeader').textContent = `— ${label}`;
+    el('loginConfirmBtn').classList.add('hidden');
+  } else if (s.phase === 'error') {
+    el('siteStatus').textContent = `Switch failed: ${s.message || 'unknown error'}`;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Log history viewer (rounds.csv / trades.csv via REST)
+// ---------------------------------------------------------------------------
+let logType = 'rounds';
+
+async function loadLogs() {
+  try {
+    const res = await fetch(`/api/logs?type=${logType}&limit=40`);
+    const data = await res.json();
+    const head = el('logTableHead');
+    const body = el('logTableBody');
+    head.innerHTML = '';
+    body.innerHTML = '';
+    const rows = data.rows || [];
+    el('logInfo').textContent = `${rows.length} most recent ${logType} rows (newest first)`;
+    if (rows.length === 0) {
+      const th = document.createElement('th');
+      th.textContent = 'no stored logs yet';
+      head.appendChild(th);
+      return;
+    }
+    for (const key of Object.keys(rows[0])) {
+      const th = document.createElement('th');
+      th.textContent = key;
+      head.appendChild(th);
+    }
+    for (const row of rows) {
+      const tr = document.createElement('tr');
+      for (const key of Object.keys(rows[0])) {
+        const td = document.createElement('td');
+        td.textContent = row[key];
+        tr.appendChild(td);
+      }
+      body.appendChild(tr);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+el('logRoundsBtn').addEventListener('click', () => { logType = 'rounds'; loadLogs(); });
+el('logTradesBtn').addEventListener('click', () => { logType = 'trades'; loadLogs(); });
+el('logRefreshBtn').addEventListener('click', loadLogs);
+
+loadSiteControls();
+loadLogs();
+setInterval(loadLogs, 15000);

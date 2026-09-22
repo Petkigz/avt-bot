@@ -120,6 +120,18 @@ const config = {
         PAPER: bool(process.env.PAPER_MODE, true)
     },
 
+    // Multi-site / multi-account
+    SESSIONS: {
+        // Max concurrent browser sessions (one per account). Raise to run
+        // several accounts at once; each costs RAM.
+        MAX: num(process.env.MAX_SESSIONS, 1)
+    },
+
+    // Which site to start on. Registered sites live in util/sites.js
+    // (betpawa.ug, betpawa.co.zm, betpawa.co.mw, custom). Switch anytime
+    // from the dashboard.
+    SITE_ID: process.env.SITE || 'betpawa.ug',
+
     // Optional preset override — MICRO, CONSERVATIVE, MODERATE or AGGRESSIVE.
     // When set, the bot uses it without prompting (useful for headless runs).
     // Leave empty for the interactive menu (all presets + custom available).
