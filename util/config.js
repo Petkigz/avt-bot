@@ -77,7 +77,13 @@ const config = {
         MIN_ENTRY_PROBABILITY: num(process.env.MODEL_MIN_ENTRY_PROBABILITY, 0.60),
         MAX_ENTRY_PROBABILITY: num(process.env.MODEL_MAX_ENTRY_PROBABILITY, 0.85),
         COLD_STREAK_LIMIT: num(process.env.MODEL_COLD_STREAK_LIMIT, 3),
-        COLD_RECOVERY_COUNT: num(process.env.MODEL_COLD_RECOVERY_COUNT, 1)
+        COLD_RECOVERY_COUNT: num(process.env.MODEL_COLD_RECOVERY_COUNT, 1),
+        // Recency weighting: how fast old rounds stop counting (in rounds).
+        RECENCY_HALF_LIFE: num(process.env.MODEL_RECENCY_HALF_LIFE, 250),
+        // Window (rounds) for the recent estimate + Wilson uncertainty bound.
+        RECENT_WINDOW: num(process.env.MODEL_RECENT_WINDOW, 100),
+        // How far below the entry threshold the Wilson floor may sit.
+        WILSON_CUSHION: num(process.env.MODEL_WILSON_CUSHION, 0.05)
     },
 
     // Pattern mining over recent round clusters. See game/patternDetector.js.
@@ -103,6 +109,8 @@ const config = {
         MICRO_STAKE_FRACTION: num(process.env.MICRO_STAKE_FRACTION, 0.004),
         // Warm-up: rounds to study before ANY bet is allowed
         MIN_ROUNDS_OBSERVE: num(process.env.MIN_ROUNDS_OBSERVE, 150),
+        // Scale stakes with model confidence (50%-100% of the approved stake)
+        CONFIDENCE_SCALING: bool(process.env.CONFIDENCE_SCALING, true),
         // Promotion MICRO -> ARMED
         PROMOTION_MIN_DECISIONS: num(process.env.PROMOTION_MIN_DECISIONS, 25),
         PROMOTION_HIT_RATE: num(process.env.PROMOTION_HIT_RATE, 0.58),

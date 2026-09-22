@@ -855,7 +855,10 @@ async function main() {
             minEntryProbability: config.MODEL.MIN_ENTRY_PROBABILITY,
             maxEntryProbability: config.MODEL.MAX_ENTRY_PROBABILITY,
             coldStreakLimit: config.MODEL.COLD_STREAK_LIMIT,
-            coldRecoveryCount: config.MODEL.COLD_RECOVERY_COUNT
+            coldRecoveryCount: config.MODEL.COLD_RECOVERY_COUNT,
+            recencyHalfLife: config.MODEL.RECENCY_HALF_LIFE,
+            recentWindow: config.MODEL.RECENT_WINDOW,
+            wilsonCushion: config.MODEL.WILSON_CUSHION
         });
         predictor.setHistory(historyStore.values);
     }

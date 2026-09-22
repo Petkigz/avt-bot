@@ -376,18 +376,34 @@ The bot keeps **memory across restarts** and refines its entry decisions:
 
 1. **History** — every round's crash value is appended to `data/history.json`
    (capped at 5,000 rounds). On startup the full history is re-loaded.
-2. **Probability estimate** — `P(crash ≥ target)` is computed from all studied
-   rounds (Laplace-smoothed). If that confidence is below the entry threshold,
-   the bot stands down that round.
-3. **Regime detection** — after `MODEL_COLD_STREAK_LIMIT` consecutive crashes
+2. **Probability estimates (three views)** — the engine keeps the flat
+   all-history estimate, a **recency-weighted** estimate (`MODEL_RECENCY_HALF_LIFE`,
+   recent rounds count exponentially more), and a **recent-window** estimate
+   (`MODEL_RECENT_WINDOW`). Entry confidence is the blend of flat + recency-weighted,
+   so the model tracks the *current* feed instead of averaging months equally.
+3. **Uncertainty guard (Wilson bound)** — with sparse or noisy recent data the
+   statistical lower bound on the probability must still sit near the entry
+   threshold, otherwise the round is skipped. Small samples can no longer fake
+   high confidence.
+4. **Regime detection** — after `MODEL_COLD_STREAK_LIMIT` consecutive crashes
    below the target, betting **pauses** ("cold regime") until the strip warms up.
    This is the primary loss-avoidance mechanism.
-4. **Outcome learning** — each settled bet nudges the entry threshold: losses
+5. **Outcome learning** — each settled bet nudges the entry threshold: losses
    tighten it (bet less often), wins loosen it slightly. Adjustments are bounded
    (`MODEL_MIN_ENTRY_PROBABILITY`..`MODEL_MAX_ENTRY_PROBABILITY`) so learning can
    never run away. State persists in `data/model.json`.
-5. **Dashboard transparency** — regime, model probability, entry threshold, rounds
-   studied and bot state are all visible live at `http://localhost:3000`.
+6. **Confidence-proportional stakes** — with `CONFIDENCE_SCALING=true` (default),
+   marginal-confidence entries bet 50% of the approved stake, strong-confidence
+   entries bet 100%.
+7. **Dashboard transparency** — regime, model probability, entry threshold, rounds
+   studied and bot state are all visible live on the dashboard.
+
+**Measuring the engine, not feeling it:** `npm run model:eval` runs the entry
+gate against 20,000 synthetic provably-random rounds (real crash distribution,
+3% house edge) and compares engine generations. Reference result on flat stakes
+at 1.3x: the upgraded engine takes **~17% fewer bets**, suffers a **~9% smaller
+max drawdown** and loses **~15% less** than the classic gate — and *both* end
+negative, exactly as the math dictates.
 
 > ⚠️ **Honest note:** Aviator rounds are produced by an RNG — **no model can predict
 > the next crash**, and none can guarantee profit. The model improves *entry

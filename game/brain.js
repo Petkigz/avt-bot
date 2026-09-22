@@ -154,6 +154,16 @@ class Brain {
         const rawStake = this.stakeCache ?? this.strategy.getNextBetAmount();
         let stake = this.bankroll ? this.bankroll.approveStake(rawStake, this.tier) : rawStake;
 
+        // Confidence-proportional sizing: marginal-confidence entries bet
+        // smaller, strong-confidence entries bet full — never below 50% of
+        // the approved stake. Only applies when a confidence exists.
+        if (this.config.RISK.CONFIDENCE_SCALING && this.predictor && Number.isFinite(confidence)) {
+            const base = this.predictor.baseEntryProbability;
+            const span = Math.max(0.01, this.predictor.maxEntryProbability - base);
+            const f = Math.min(1, Math.max(0, (confidence - base) / span));
+            stake = Math.round(stake * (0.5 + 0.5 * f) * 100) / 100;
+        }
+
         if (stake < this.strategy.minBet) {
             // Floor at the strategy minimum IF the bankroll policy still allows it.
             const capCheck = this.bankroll ? this.bankroll.approveStake(this.strategy.minBet, this.tier) : this.strategy.minBet;

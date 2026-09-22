@@ -104,3 +104,40 @@ test('snapshot exposes model state for the dashboard', () => {
     assert.ok(['neutral', 'hot', 'cooling', 'cold'].includes(snap.regime));
     assert.ok(snap.probability > 0 && snap.probability <= 1);
 });
+
+test('recency weighting tracks the recent feed better than the flat average', () => {
+    const p = makePredictor({ targetMultiplier: 2.0 });
+    // 400 cold rounds, then 100 hot rounds
+    for (let i = 0; i < 400; i++) p.addRound(1.1);
+    for (let i = 0; i < 100; i++) p.addRound(3.0);
+    const flat = p.probCrashAtLeast(2.0);
+    const weighted = p.weightedProbCrashAtLeast(2.0);
+    const recent = p.recentProbCrashAtLeast(2.0);
+    assert.ok(recent > weighted, 'recent window sees the hot streak');
+    assert.ok(weighted > flat, 'weighting moves toward the recent regime');
+});
+
+test('wilson lower bound is conservative on small samples', () => {
+    const p = makePredictor({ targetMultiplier: 2.0 });
+    for (let i = 0; i < 10; i++) p.addRound(3.0);
+    const lb = p.wilsonLower(2.0);
+    const point = p.recentProbCrashAtLeast(2.0);
+    assert.ok(lb !== null && lb < point, 'lower bound below the point estimate');
+});
+
+test('uncertainty guard blocks when the recent floor is too low', () => {
+    const p = makePredictor({ targetMultiplier: 2.0, minSampleSize: 10 });
+    // Mixed feed: blended point estimate can look fine, but the recent
+    // Wilson floor is weak -> the gate must refuse.
+    const values = [];
+    for (let i = 0; i < 60; i++) values.push(i % 2 === 0 ? 3.0 : 1.1);
+    p.setHistory(values);
+    const decision = p.shouldAllowBet();
+    assert.equal(decision.allowed, false);
+});
+
+test('blended probability falls back to plain estimate on short history', () => {
+    const p = makePredictor();
+    p.setHistory([1.2, 2.2, 3.3]);
+    assert.equal(p.blendedProbability(2.0), p.probCrashAtLeast(2.0));
+});

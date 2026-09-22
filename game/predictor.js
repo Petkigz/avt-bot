@@ -33,6 +33,9 @@ class Predictor {
         this.loosenStep = options.loosenStep ?? 0.01;
 
         this.entryProbability = this.baseEntryProbability;
+        this.recencyHalfLife = options.recencyHalfLife ?? 250; // rounds until a result counts half
+        this.recentWindow = options.recentWindow ?? 100;      // window for recency stats + Wilson bound
+        this.wilsonCushion = options.wilsonCushion ?? 0.05;   // uncertainty tolerance on the lower bound
         this.history = [];
         this.consecutiveCold = 0;
         this.consecutiveWarm = 0;
@@ -167,6 +170,67 @@ class Predictor {
         return (hits + 1) / (n + 2); // Laplace smoothing
     }
 
+    /**
+     * Recency-weighted estimate: rounds decay exponentially with age
+     * (half-life `recencyHalfLife`), so the model tracks the CURRENT feed
+     * instead of averaging months of data equally.
+     */
+    weightedProbCrashAtLeast(x) {
+        const n = this.history.length;
+        if (n === 0) return null;
+        const halfLife = Math.max(10, this.recencyHalfLife);
+        let weightSum = 0;
+        let hitWeight = 0;
+        for (let i = 0; i < n; i++) {
+            const age = n - 1 - i;
+            const w = Math.pow(0.5, age / halfLife);
+            weightSum += w;
+            if (this.history[i] >= x) hitWeight += w;
+        }
+        return (hitWeight + 1) / (weightSum + 2);
+    }
+
+    /**
+     * Uniform estimate over only the last `window` rounds.
+     */
+    recentProbCrashAtLeast(x, window = this.recentWindow) {
+        const recent = this.history.slice(-window);
+        if (recent.length === 0) return null;
+        const hits = recent.reduce((acc, v) => acc + (v >= x ? 1 : 0), 0);
+        return (hits + 1) / (recent.length + 2);
+    }
+
+    /**
+     * Wilson score lower bound (z=1.96) over the recent window — the honest
+     * "worst case given this little data" estimate. Small samples get wide
+     * bounds, which the gate uses to refuse uncertain entries.
+     */
+    wilsonLower(x, window = this.recentWindow) {
+        const recent = this.history.slice(-window);
+        const n = recent.length;
+        if (n === 0) return null;
+        const p = recent.reduce((acc, v) => acc + (v >= x ? 1 : 0), 0) / n;
+        const z = 1.96;
+        const z2 = z * z;
+        const denom = 1 + z2 / n;
+        const center = p + z2 / (2 * n);
+        const spread = z * Math.sqrt((p * (1 - p) + z2 / (4 * n)) / n);
+        return Math.max(0, (center - spread) / denom);
+    }
+
+    /**
+     * Working confidence: blend of the whole-history estimate and the
+     * recency-weighted one. Falls back to the plain estimate while history
+     * is still shorter than the recent window.
+     */
+    blendedProbability(x) {
+        const all = this.probCrashAtLeast(x);
+        if (this.history.length < this.recentWindow) return all;
+        const weighted = this.weightedProbCrashAtLeast(x);
+        if (all === null || weighted === null) return all ?? weighted;
+        return 0.5 * all + 0.5 * weighted;
+    }
+
     average() {
         if (this.history.length === 0) return null;
         return this.history.reduce((a, v) => a + v, 0) / this.history.length;
@@ -207,7 +271,7 @@ class Predictor {
     // ------------------------------------------------------------------
     shouldAllowBet() {
         const n = this.history.length;
-        const probability = this.probCrashAtLeast(this.targetMultiplier);
+        const probability = this.blendedProbability(this.targetMultiplier);
 
         if (this.paused) {
             return {
@@ -234,6 +298,17 @@ class Predictor {
                 regime: this.regime()
             };
         }
+        // Uncertainty guard: with sparse/noisy recent data the Wilson lower
+        // bound must still sit near the threshold — otherwise skip the round.
+        const lower = this.wilsonLower(this.targetMultiplier);
+        if (lower !== null && lower + this.wilsonCushion < this.entryProbability) {
+            return {
+                allowed: false,
+                reason: `confidence floor ${lower.toFixed(2)} too uncertain (needs ≥ ${(this.entryProbability - this.wilsonCushion).toFixed(2)})`,
+                probability,
+                regime: this.regime()
+            };
+        }
         return { allowed: true, probability, regime: this.regime(), reason: 'model OK' };
     }
 
@@ -241,6 +316,9 @@ class Predictor {
         return {
             roundsStudied: this.history.length,
             probability: this.probCrashAtLeast(this.targetMultiplier),
+            blendedProbability: this.blendedProbability(this.targetMultiplier),
+            recentProbability: this.recentProbCrashAtLeast(this.targetMultiplier),
+            probabilityLowerBound: this.wilsonLower(this.targetMultiplier),
             entryProbability: this.entryProbability,
             regime: this.regime(),
             paused: this.paused,
