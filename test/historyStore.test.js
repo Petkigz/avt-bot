@@ -80,3 +80,11 @@ test('identical crashes a full round apart are still recorded', async () => {
     assert.equal(store.append(1.5), true);
     assert.deepEqual(store.values, [1.5, 1.5]);
 });
+
+test('force bypasses the dedupe window (batch seeds)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'avt-hs-'));
+    const store = new HistoryStore(path.join(dir, 'h.json'));
+    store.append(1.5);
+    assert.equal(store.append(1.5, { force: true }), true);
+    assert.deepEqual(store.values, [1.5, 1.5]);
+});

@@ -886,6 +886,21 @@ async function main() {
     const historyStore = new HistoryStore(path.join(config.DATA_DIR, 'history.json'));
     const roundsLoaded = historyStore.load();
 
+    // Per-site persistent memories (data/history-<site>.json): every site's
+    // observed rounds survive restarts and can be compared or (later) used
+    // for site-specific modeling. Same dedupe rules as the global memory.
+    const siteHistoryStores = new Map();
+    const siteHistoryFor = (siteId) => {
+        const key = String(siteId || 'unknown');
+        if (!siteHistoryStores.has(key)) {
+            const safe = key.replace(/[^a-z0-9.-]/gi, '-');
+            const store = new HistoryStore(path.join(config.DATA_DIR, `history-${safe}.json`));
+            store.load();
+            siteHistoryStores.set(key, store);
+        }
+        return siteHistoryStores.get(key);
+    };
+
     let predictor = null;
     if (config.MODEL.ENABLED) {
         predictor = Predictor.load(path.join(config.DATA_DIR, 'model.json'), {
@@ -971,6 +986,10 @@ async function main() {
         // (the payout bubbles the game page already shows).
         monitor.on('seedHistory', (values) => {
             if (!Array.isArray(values) || values.length === 0) return;
+            // Per-site memory always takes the strip (force: seeds arrive as a
+            // batch where adjacent identical values are legitimate).
+            const siteStore = siteHistoryFor(monitor.site);
+            values.forEach((v) => siteStore.append(v, { force: true }));
             if (historyStore.size() >= 50) return; // memory already has its own rounds
             values.forEach((v) => historyStore.append(v));
             if (predictor) predictor.setHistory(historyStore.values);
@@ -983,6 +1002,7 @@ async function main() {
 
         monitor.on('roundEnded', (d) => {
             database.saveRound(d.crash);
+            siteHistoryFor(monitor.site).append(d.crash);
             if (dashboard) {
                 dashboard.io.emit('newData', {
                     value: d.crash,

@@ -45,10 +45,10 @@ class HistoryStore {
      * (Genuine consecutive identical crashes are always a full round apart,
      * ~10s+ minimum, so a 4s window is safe.)
      */
-    append(value) {
+    append(value, { force = false } = {}) {
         if (!Number.isFinite(value) || value <= 0) return false;
         const now = Date.now();
-        if (this.lastAppendedValue === value &&
+        if (!force && this.lastAppendedValue === value &&
             this.lastAppendedAt !== null &&
             now - this.lastAppendedAt < this.dedupeSameValueMs) {
             return false; // same global round, second monitor reporting it
