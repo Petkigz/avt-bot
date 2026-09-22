@@ -1,2 +1,0 @@
-# avt-bot
-mulla
