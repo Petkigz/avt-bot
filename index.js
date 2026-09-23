@@ -1346,6 +1346,18 @@ async function main() {
             `Engine [${key}]: ready — ${store.size()} rounds in memory | ` +
             `${sitePatterns ? sitePatterns.patterns.size : 0} patterns | tier: ${siteBrain.tier}`
         );
+        if (engine.predictor) {
+            const p = engine.predictor;
+            const prob = p.blendedProbability(p.targetMultiplier);
+            logger.info(
+                `Engine [${key}] entry gate: confidence ${prob === null ? 'n/a' : prob.toFixed(2)} vs ` +
+                `required ${p.entryProbability.toFixed(2)} (baseline ${p.baseEntryProbability.toFixed(2)}) | ` +
+                `volatility recent ${p.recentVolatility()?.toFixed(1)} vs long-run ${p.volatility()?.toFixed(1)}` +
+                (p.entryProbability > p.baseEntryProbability
+                    ? ' — entry gate is TIGHTENED by past losses; it auto-relaxes if the engine stays silent'
+                    : '')
+            );
+        }
         return engine;
     };
 

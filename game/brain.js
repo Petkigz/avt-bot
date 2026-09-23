@@ -118,6 +118,23 @@ class Brain {
         }
     }
 
+    /**
+     * Extra entry confidence demanded while the stream is unusually wild.
+     * Measured RELATIVE to the stream's own long-run volatility — crash
+     * series carry huge absolute std-dev (heavy tails) at ALL times, so an
+     * absolute threshold would be permanently "on" and silently lock the
+     * entry gate. Only a genuine recent spike (recent window clearly wilder
+     * than the stream's norm) tightens the gate. Returns 0 in normal times.
+     */
+    volatilityPenalty() {
+        if (!this.predictor) return 0;
+        const recentVol = this.predictor.recentVolatility();
+        const longVol = this.predictor.volatility();
+        const spike = Number.isFinite(recentVol) && Number.isFinite(longVol) && longVol > 0 &&
+            recentVol > longVol * this.config.RISK.VOLATILITY_SPIKE_RATIO;
+        return spike ? this.config.RISK.VOLATILITY_CONFIDENCE_PENALTY : 0;
+    }
+
     // ------------------------------------------------------------------
     // Decision
     // ------------------------------------------------------------------
@@ -219,9 +236,7 @@ class Brain {
             }
 
             // Volatility risk evaluation: wild recent rounds demand MORE confidence.
-            const vol = this.predictor.volatility();
-            const volPenalty = Number.isFinite(vol) && vol > this.config.RISK.HIGH_VOLATILITY_THRESHOLD
-                ? this.config.RISK.VOLATILITY_CONFIDENCE_PENALTY : 0;
+            const volPenalty = this.volatilityPenalty();
             const required = this.predictor.entryProbability + volPenalty;
             if (confidence !== null && confidence < required) {
                 reasons.push(

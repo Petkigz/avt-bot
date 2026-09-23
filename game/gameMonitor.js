@@ -74,9 +74,10 @@ class GameMonitor extends EventEmitter {
         this.stuckLatest = null;
         this.stuckCycles = 0;
         this.roundBetMeta = null; // {stake, confidence, pattern, tier} of this round's bet
-
-        // Every settled trade feeds the Brain (model, patterns, bankroll,
-        // tier promotion) plus the dashboard/DB/CSV.
+        // Stand-down visibility: when gates block betting, say so (and why)
+        // instead of failing silently — a quiet engine must be explainable.
+        this.lastStanddownKey = null;
+        this.standdownCount = 0;
         this.betManager.onTrade = (trade, meta) => {
             this.brain.recordOutcome(trade, meta);
             this.emit('trade', trade);
@@ -359,6 +360,7 @@ class GameMonitor extends EventEmitter {
                 targetMultiplier: decision.targetMultiplier // ADAPTIVE: per-round target
             });
             if (ok) {
+                this.lastStanddownKey = null; // a bet happened — next block is news again
                 this.roundBetMeta = {
                     stake: decision.stake,
                     confidence: decision.confidence,
@@ -368,7 +370,7 @@ class GameMonitor extends EventEmitter {
             }
         } else if (bettingWindow && this.cooldownRounds === 0 && !this.tradingHalted &&
                    !this.betManager.isWaitingForResult && decision.reasons.length) {
-            logger.debug(`Standing down: ${decision.reasons.join('; ')}`);
+            this._logStanddown(this.mode().toUpperCase(), decision.reasons, 0);
         }
 
         this.emit('status', {
@@ -452,6 +454,27 @@ class GameMonitor extends EventEmitter {
      * The newest bubble changed -> the round that just ended crashed at
      * `crashValue` (the NEW value, not the previous one).
      */
+    /**
+     * A blocked decision must explain itself. Logs the stand-down reason at
+     * info level whenever it CHANGES, then repeats every `repeatEvery`
+     * occurrences so a permanently-quiet engine is always diagnosable
+     * without flooding the log (repeatEvery=0 → log on change only).
+     */
+    _logStanddown(scope, reasons, repeatEvery = 0) {
+        if (!Array.isArray(reasons) || reasons.length === 0) return;
+        const key = reasons.join('; ');
+        if (key === this.lastStanddownKey) {
+            this.standdownCount++;
+            if (repeatEvery > 0 && this.standdownCount % repeatEvery === 0) {
+                logger.info(`[${scope}] still standing down (${this.standdownCount} rounds): ${key}`);
+            }
+            return;
+        }
+        this.lastStanddownKey = key;
+        this.standdownCount = 1;
+        logger.info(`[${scope}] standing down this round: ${key}`);
+    }
+
     onRoundEnded(crashValue, state) {
         this.roundId++;
         this.roundInFlight = false;
@@ -510,6 +533,7 @@ class GameMonitor extends EventEmitter {
                     `tier ${decision.tier} | confidence ${(decision.confidence ?? 0).toFixed(2)} | ` +
                     `pattern ${decision.pattern ? decision.pattern.pattern : 'none'}`
                 );
+                this.lastStanddownKey = null; // a bet happened — next block is news again
                 this.betManager.placeBet(null, null, decision.stake, {
                     confidence: decision.confidence,
                     pattern: decision.pattern,
@@ -517,7 +541,7 @@ class GameMonitor extends EventEmitter {
                     targetMultiplier: decision.targetMultiplier // ADAPTIVE: per-round target
                 }).catch((error) => logger.error(`Paper bet placement failed: ${error.message}`));
             } else if (decision.reasons.length) {
-                logger.debug(`[PAPER] Standing down round #${this.roundId + 1}: ${decision.reasons.join('; ')}`);
+                this._logStanddown('PAPER', decision.reasons, 25);
             }
         }
 

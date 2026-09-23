@@ -128,7 +128,10 @@ const config = {
         DEMOTION_HIT_RATE: num(process.env.DEMOTION_HIT_RATE, 0.48),
         DECISION_WINDOW: num(process.env.DECISION_WINDOW, 30),
         // Volatility risk evaluation
-        HIGH_VOLATILITY_THRESHOLD: num(process.env.HIGH_VOLATILITY_THRESHOLD, 2.0),
+        // Volatility gate is RELATIVE: crash streams always have huge absolute
+        // std-dev (heavy tails), so only a recent-window spike well above the
+        // stream's own long-run norm demands extra entry confidence.
+        VOLATILITY_SPIKE_RATIO: num(process.env.VOLATILITY_SPIKE_RATIO, 1.5),
         VOLATILITY_CONFIDENCE_PENALTY: num(process.env.VOLATILITY_CONFIDENCE_PENALTY, 0.07)
     },
 

@@ -368,3 +368,36 @@ test('ADAPTIVE mode: loss-streak guard still blocks betting', () => {
     assert.strictEqual(d.shouldBet, false);
     assert.match(d.reasons.join(' '), /loss-streak guard/);
 });
+
+test('volatility gate is relative: heavy-tailed history alone never penalizes entry', () => {
+    const { brain, predictor } = makeBrain();
+    // A normal crash stream: mostly calm rounds with occasional huge crashes.
+    // Absolute volatility is enormous (old code compared against a flat 2.0
+    // and was therefore permanently "on"), but the recent window is no
+    // wilder than the long-run norm — so no penalty may apply.
+    const history = [];
+    for (let i = 0; i < 1000; i++) history.push(i % 25 === 0 ? 30 + (i % 7) : 1.5 + (i % 3) * 0.2);
+    brain.predictor.setHistory(history);
+    for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE; i++) brain.onRoundEnded(1.8);
+
+    assert.ok(predictor.volatility() > 2.0, 'absolute volatility must be huge on a normal crash stream');
+    assert.strictEqual(brain.volatilityPenalty(), 0,
+        'heavy tails are the norm for crash streams — they must not tighten the entry gate');
+});
+
+test('volatility gate fires only on a genuine recent spike above the long-run norm', () => {
+    const { brain, predictor } = makeBrain();
+    const calm = [];
+    for (let i = 0; i < 1000; i++) calm.push(1.5 + (i % 3) * 0.2);
+    brain.predictor.setHistory(calm);
+    for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE; i++) brain.onRoundEnded(1.8);
+    assert.strictEqual(brain.volatilityPenalty(), 0);
+
+    // Now the tail goes genuinely wild — huge swings far beyond this
+    // stream's norm (the cold rounds are isolated, never 3 in a row, so the
+    // loss-streak guard stays out of it).
+    for (let i = 0; i < 150; i++) brain.onRoundEnded(i % 2 === 0 ? 1.05 : 90);
+    assert.ok(predictor.recentVolatility() > predictor.volatility() * config.RISK.VOLATILITY_SPIKE_RATIO,
+        'test setup: recent window must register as a spike');
+    assert.strictEqual(brain.volatilityPenalty(), config.RISK.VOLATILITY_CONFIDENCE_PENALTY);
+});

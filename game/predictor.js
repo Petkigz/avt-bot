@@ -34,6 +34,11 @@ class Predictor {
         this.coldRecoveryCount = options.coldRecoveryCount ?? 1;
         this.tightenStep = options.tightenStep ?? 0.02;
         this.loosenStep = options.loosenStep ?? 0.01;
+        // Silence breaker: after this many rounds without a SETTLED bet the
+        // entry gate decays back toward baseline, one loosen-step per round.
+        this.silenceLimit = options.silenceLimit ?? 40;
+        this.silentRounds = 0;
+        this._silenceNoted = false;
 
         this.entryProbability = this.baseEntryProbability;
         this.recencyHalfLife = options.recencyHalfLife ?? 250; // rounds until a result counts half
@@ -114,6 +119,7 @@ class Predictor {
                 predictor.consecutiveCold = saved.consecutiveCold | 0;
                 predictor.consecutiveWarm = saved.consecutiveWarm | 0;
                 predictor.paused = !!saved.paused;
+                predictor.silentRounds = saved.silentRounds | 0;
                 if (saved.settledBets) {
                     predictor.settledBets = {
                         wins: saved.settledBets.wins | 0,
@@ -136,6 +142,7 @@ class Predictor {
                 consecutiveCold: this.consecutiveCold,
                 consecutiveWarm: this.consecutiveWarm,
                 paused: this.paused,
+                silentRounds: this.silentRounds,
                 settledBets: this.settledBets
             }, null, 2));
         } catch (error) {
@@ -183,6 +190,27 @@ class Predictor {
                 logger.info('Model: strip warmed up — bets allowed again');
             }
         }
+
+        // Silence breaker: an entry gate that only tightens can ratchet itself
+        // into permanent shutdown — losses raise the bar, and without bets no
+        // wins can ever loosen it again. After `silenceLimit` rounds with no
+        // settled bet the gate decays back to baseline so the engine can never
+        // fall permanently silent (discipline returns as soon as bets settle).
+        this.silentRounds++;
+        if (this.silentRounds > this.silenceLimit && this.entryProbability > this.baseEntryProbability) {
+            if (!this._silenceNoted) {
+                this._silenceNoted = true;
+                logger.warn(
+                    `Model: ${this.silentRounds} rounds without a settled bet — entry gate ` +
+                    `${this.entryProbability.toFixed(2)} auto-relaxing back to baseline ` +
+                    `${this.baseEntryProbability.toFixed(2)} so the engine cannot go permanently silent`
+                );
+            }
+            this.entryProbability = Math.max(
+                this.baseEntryProbability,
+                this.entryProbability - this.loosenStep
+            );
+        }
         this.save();
     }
 
@@ -190,6 +218,9 @@ class Predictor {
      * Outcome feedback after every settled bet (bounded adjustment).
      */
     recordOutcome(won) {
+        // A bet settled — the engine is not silent; stop the decay countdown.
+        this.silentRounds = 0;
+        this._silenceNoted = false;
         if (won) {
             this.settledBets.wins++;
             this.entryProbability = Math.max(
@@ -330,11 +361,31 @@ class Predictor {
         return this.history.reduce((a, v) => a + v, 0) / this.history.length;
     }
 
+    /**
+     * Volatility over the WHOLE stored history. Heavy-tailed crash streams
+     * carry enormous all-time standard deviations (tens of x), so this is a
+     * descriptive statistic — it must never be compared against an absolute
+     * gate. Use recentVolatility() vs volatility() as a RATIO to detect
+     * "recent rounds are wilder than this stream's normal" (see Brain).
+     */
     volatility() {
         const n = this.history.length;
         if (n < 2) return null;
         const mean = this.average();
         const variance = this.history.reduce((acc, v) => acc + (v - mean) ** 2, 0) / n;
+        return Math.sqrt(variance);
+    }
+
+    /**
+     * Volatility of the recent window only — the "is the stream wild RIGHT
+     * NOW" read that gates entry risk.
+     */
+    recentVolatility(window = this.recentWindow) {
+        const recent = this.history.slice(-Math.max(2, window));
+        const n = recent.length;
+        if (n < 2) return null;
+        const mean = recent.reduce((a, v) => a + v, 0) / n;
+        const variance = recent.reduce((acc, v) => acc + (v - mean) ** 2, 0) / n;
         return Math.sqrt(variance);
     }
 

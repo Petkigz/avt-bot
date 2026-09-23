@@ -221,3 +221,55 @@ test('adaptiveTarget falls back to the nominal target before enough history', ()
     assert.strictEqual(pick.adaptive, false);
     assert.strictEqual(pick.target, 1.5);
 });
+
+test('recentVolatility reflects the recent window, not the whole history', () => {
+    const p = makePredictor();
+    // 200 calm rounds, then 20 wild rounds — full-history vol stays dominated
+    // by the wild tail only in the RECENT read.
+    const history = [];
+    for (let i = 0; i < 200; i++) history.push(1.5 + (i % 2) * 0.1);
+    for (let i = 0; i < 20; i++) history.push(40);
+    p.setHistory(history);
+    const recent = p.recentVolatility(50); // last 50: 30 calm + 20 wild
+    const long = p.volatility();
+    assert.ok(Number.isFinite(recent) && Number.isFinite(long));
+    assert.ok(recent > long, `recent ${recent} should exceed long-run ${long} on a wild tail`);
+    // A purely calm stream has near-zero recent volatility.
+    const calm = makePredictor();
+    calm.setHistory(new Array(120).fill(1.6));
+    assert.ok(calm.recentVolatility() < 1e-9);
+});
+
+test('silence breaker: a loss-ratcheted entry gate decays back to baseline when no bets settle', () => {
+    const p = makePredictor({ minEntryProbability: 0.60, silenceLimit: 10 });
+    // Past losses tighten the gate to the ceiling...
+    for (let i = 0; i < 20; i++) p.recordOutcome(false);
+    assert.strictEqual(p.entryProbability, p.maxEntryProbability);
+    // ...and under the old code it stayed there forever (no bets -> no wins ->
+    // no loosening). Now: after silenceLimit rounds with no settled bet the
+    // gate decays one loosen-step per round back to baseline.
+    const loosen = p.loosenStep;
+    const stepsNeeded = Math.ceil((p.entryProbability - p.baseEntryProbability) / loosen);
+    for (let i = 0; i < p.silenceLimit + stepsNeeded + 2; i++) p.addRound(1.6);
+    assert.strictEqual(p.entryProbability, p.baseEntryProbability,
+        'entry gate must relax fully back to baseline after prolonged silence');
+    // A settled bet resets the silence countdown.
+    for (let i = 0; i < 20; i++) p.recordOutcome(false);
+    p.recordOutcome(true);
+    assert.strictEqual(p.silentRounds, 0);
+});
+
+test('silence breaker does not decay while bets keep settling', () => {
+    const p = makePredictor({ minEntryProbability: 0.60, silenceLimit: 5 });
+    for (let i = 0; i < 10; i++) p.recordOutcome(false);
+    const tightened = p.entryProbability;
+    assert.ok(tightened > p.baseEntryProbability);
+    // Rounds keep passing, but a bet settles every round -> never silent.
+    for (let i = 0; i < 30; i++) {
+        p.addRound(1.6);
+        p.recordOutcome(true);
+        p.recordOutcome(false);
+    }
+    assert.ok(p.entryProbability > p.baseEntryProbability,
+        'an actively-betting engine keeps its tightened gate');
+});
