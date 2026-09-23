@@ -109,10 +109,10 @@ const SITES = {
         id: 'fortebet.ug',
         name: 'Fortebet Uganda',
         currency: 'UGX',
-        baseUrl: 'https://mobile.fortebet.ug',
-        loginUrl: 'https://mobile.fortebet.ug',
-        // User-verified Aviator deep link
-        gameUrl: 'https://mobile.fortebet.ug/aviator/game/real',
+        baseUrl: 'https://www.fortebet.ug',
+        loginUrl: 'https://www.fortebet.ug',
+        // User-verified Aviator deep link (www site, 2026-09-23)
+        gameUrl: 'https://www.fortebet.ug/aviator/game/real',
         loginFlow: 'manual', // bot waits for you to log in (once per profile)
         loginSelectors: BETPAWA_LOGIN, // generic hints; login is manual anyway
         balanceSelector: '[class*="balance"]', // generic guess; refines once observed
