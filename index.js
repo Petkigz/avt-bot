@@ -16,6 +16,7 @@ const PatternDetector = require('./game/patternDetector');
 const CalibrationTracker = require('./game/calibration');
 const PredictionLogger = require('./game/predictionLogger');
 const { extractFeatures } = require('./game/features');
+const PaperLedger = require('./game/paperLedger');
 const Bankroll = require('./game/bankroll');
 const Brain = require('./game/brain');
 const CsvLog = require('./util/csvLog');
@@ -646,6 +647,9 @@ async function main() {
     let strategyConfig = null;
     let pendingStrategyName = null; // strategy picked in the UI before launch
     let paperMode = config.MODE.PAPER; // live-switchable from the dashboard
+    // Reassigned once the per-site engines exist; early dashboard requests
+    // simply see an empty snapshot instead of crashing.
+    let profitsSnapshot = () => ({ paperMode: null, sites: [] });
     let controlState = () => ({
         awaitingLaunch: awaitingUiLaunch,
         paused: brain ? brain.paused : false,
@@ -661,6 +665,7 @@ async function main() {
                 getActiveSite: () => ({ id: activeSite.id, name: activeSite.name, currency: activeSite.currency }),
                 getSessions: sessionsSnapshot,
                 getControlState: controlState,
+                profits: () => profitsSnapshot(),
                 getGameDebug: async (accountId) => {
                     const s = (accountId && sessions.get(accountId)) || sessions.values().next().value;
                     if (!s) return { error: 'no session' };
@@ -695,6 +700,10 @@ async function main() {
                         : (brain ? [brain] : []);
                     if (targets.length > 0) {
                         targets.forEach((b) => { b.strategy = new BettingStrategy({ ...preset }); });
+                        // The paper simulation restarts on the NEW strategy's
+                        // capital and stake ("assume the capital from the
+                        // selected strategy").
+                        try { resetPaperLedgers(); } catch (error) { /* engines not up yet */ }
                         logger.warn(`Strategy switched to ${preset.name} from the dashboard (progression reset)`);
                     } else {
                         pendingStrategyName = preset.name;
@@ -716,6 +725,10 @@ async function main() {
                 };
                 socket.on('switchSite', doSwitch);
                 socket.on('switchAccount', doSwitch); // same flow: {siteId, accountId}
+                // Profits panel: current snapshot now, updates flow on every
+                // round/trade; the reset button restarts the paper simulation.
+                socket.emit('profits', profitsSnapshot());
+                socket.on('resetPaperLedgers', ({ siteId } = {}) => resetPaperLedgers(siteId || null));
                 // Open an ADDITIONAL session side by side (multi-account
                 // observation), limited by MAX_SESSIONS.
                 const openExtraSession = async (account, site) => {
@@ -1016,8 +1029,26 @@ async function main() {
             // calibration and walk-forward validation have real data.
             predictionLog: new PredictionLogger(path.join(config.DATA_DIR, `predictions-${safe}.jsonl`)),
             calibration: new CalibrationTracker(),
-            pendingPrediction: null
+            pendingPrediction: null,
+            // Profit/loss books (Profits panel), all persistent:
+            //  baseline  — paper sim betting EVERY round at the strategy stake
+            //  paperEng  — paper trades the engine's gates actually approved
+            //  live      — real-money trades once LIVE mode is on
+            paperBaseline: null,
+            paperEngine: null,
+            liveLedger: null
         };
+        engine.paperBaseline = new PaperLedger(path.join(config.DATA_DIR, `paper-baseline-${safe}.json`), {
+            kind: 'sim',
+            capital: config.MODE.PAPER_BANKROLL > 0 ? config.MODE.PAPER_BANKROLL : strategyConfig.initialBet * 100,
+            stake: strategyConfig.initialBet,
+            target: strategyConfig.targetMultiplier
+        });
+        engine.paperBaseline.load();
+        engine.paperEngine = new PaperLedger(path.join(config.DATA_DIR, `paper-engine-${safe}.json`), { kind: 'log' });
+        engine.paperEngine.load();
+        engine.liveLedger = new PaperLedger(path.join(config.DATA_DIR, `live-${safe}.json`), { kind: 'log' });
+        engine.liveLedger.load();
         engines.set(key, engine);
 
         if (!primaryEngine) {
@@ -1070,6 +1101,30 @@ async function main() {
         } catch (error) {
             logger.debug(`prediction log skipped: ${error.message}`);
         }
+    };
+
+    // ---- Profits & losses (paper simulation + live trades) ----
+    profitsSnapshot = () => ({
+        paperMode,
+        sites: [...engines.values()].map((e) => ({
+            site: e.siteId,
+            baseline: e.paperBaseline ? e.paperBaseline.stats() : null,
+            engine: e.paperEngine ? e.paperEngine.stats() : null,
+            live: e.liveLedger ? e.liveLedger.stats() : null
+        }))
+    });
+    const emitProfits = () => {
+        if (dashboard) dashboard.io.emit('profits', profitsSnapshot());
+    };
+    const resetPaperBaseline = (siteId = null) => {
+        for (const e of engines.values()) {
+            if (siteId && e.siteId !== siteId) continue;
+            if (!e.paperBaseline) continue;
+            const capital = config.MODE.PAPER_BANKROLL > 0 ? config.MODE.PAPER_BANKROLL : strategyConfig.initialBet * 100;
+            e.paperBaseline.reset(capital, strategyConfig.initialBet, strategyConfig.targetMultiplier);
+            logger.info(`Paper baseline [${e.siteId}] reset to ${capital} (stake ${strategyConfig.initialBet} @ ${strategyConfig.targetMultiplier}x)`);
+        }
+        emitProfits();
     };
 
     // Round-by-round + trade CSV logs (site/account tagged per row)
@@ -1130,7 +1185,15 @@ async function main() {
             database.saveRound(d.crash);
             // The monitor already appended the round to this site's own store;
             // never feed other sites' streams into it.
-            settleAndPredict(engineFor(monitor.site), d.crash);
+            const engine = engineFor(monitor.site);
+            settleAndPredict(engine, d.crash);
+            if (paperMode && engine.paperBaseline) {
+                const r = engine.paperBaseline.playRound(d.crash);
+                if (r && r.skipped && engine.paperBaseline.skipped === 1) {
+                    logger.warn(`Paper baseline [${monitor.site}]: simulated bankroll exhausted — press Reset on the Profits panel to restart the simulation`);
+                }
+            }
+            emitProfits();
             if (d.brain) d.brain.site = monitor.site;
             if (dashboard) {
                 dashboard.io.emit('newData', {
@@ -1143,6 +1206,12 @@ async function main() {
         });
         monitor.on('trade', (t) => {
             database.saveTrade(t);
+            // P&L books: paper trades feed the engine ledger, LIVE trades the
+            // real-money ledger (both shown on the Profits panel).
+            const engine = engineFor(monitor.site);
+            const ledger = monitor.mode() === 'paper' ? engine.paperEngine : engine.liveLedger;
+            if (ledger) ledger.recordTrade({ stake: t.betAmount, pnl: t.won ? t.profit : t.loss, won: t.won });
+            emitProfits();
             csvTrades.write({
                 ts: new Date().toISOString(),
                 mode: monitor.mode(),

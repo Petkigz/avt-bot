@@ -442,6 +442,31 @@ The same layer is deliberately market-agnostic (values in, verdicts out), so
 it can later be pointed at any numeric stream to test whether that stream
 contains a measurable edge before a trading layer ever touches it.
 
+## Profits & losses panel
+
+The dashboard has a dedicated **Profits & losses** panel with persistent,
+per-site ledgers (`data/paper-baseline-<site>.json`, `paper-engine-<site>.json`,
+`live-<site>.json`):
+
+- **Paper mode — full simulation.** *Every* round is simulated as if the bet
+  really happened: the baseline ledger bets the strategy's initial stake at
+  the strategy's target on every single crash. It starts from the selected
+  strategy's assumed capital — 100 × initial bet, or `PAPER_BANKROLL` if
+  set — and resets automatically when you switch strategy.
+- **Engine ledger (paper).** Alongside the every-round baseline, the trades
+  the engine's gates actually approve are logged separately, so you can see
+  whether discipline beats blind betting on real rounds.
+- **Live mode — real P&L.** Once `PAPER_MODE=false`, actual settled trades
+  feed the live ledger instead; the baseline stays frozen as the
+  counterfactual.
+- **Learning.** Every simulated/real round also settles that round's logged
+  prediction (calibration layer), so the model's accuracy statistics learn
+  from every number — while the entry-threshold feedback stays tied to
+  gated decisions (feeding blind-bet losses into it would teach the gates
+  the wrong lesson, since blind betting is negative-EV by construction).
+- Balance curve, win rate, max drawdown and net P/L are shown per site; the
+  ↺ button restarts the paper simulation at full capital.
+
 ## Live dashboard
 
 When `DASHBOARD_ENABLED=true`, open `http://localhost:3000`:

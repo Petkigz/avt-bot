@@ -84,6 +84,14 @@ async function startDashboard(port, logger, deps = {}) {
             }
         });
 
+        app.get('/api/profits', (req, res) => {
+            try {
+                res.json(deps.profits ? deps.profits() : { paperMode: null, sites: [] });
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
         app.get('/api/sites', (req, res) => {
             res.json({
                 sites: listSites(),

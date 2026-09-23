@@ -535,6 +535,91 @@ socket.on('sessions', renderSessions);
 fetch('/api/sessions').then((r) => r.json()).then(renderSessions).catch(() => {});
 
 // ---------------------------------------------------------------------------
+// Profits & losses panel (paper simulation + live trades)
+// ---------------------------------------------------------------------------
+function pnlHtml(v) {
+  if (v === null || v === undefined || !Number.isFinite(v)) return '—';
+  const color = v > 0 ? '#38c172' : v < 0 ? '#e05561' : 'inherit';
+  return `<span style="color:${color};font-weight:600;">${v > 0 ? '+' : ''}${fmt(v)}</span>`;
+}
+
+function sparkline(curve, capital, w = 640, h = 90) {
+  if (!Array.isArray(curve) || curve.length < 2) {
+    return '<p class="small">The balance curve appears after the first rounds.</p>';
+  }
+  const min = Math.min(...curve);
+  const max = Math.max(...curve);
+  const span = (max - min) || 1;
+  const y = (v) => (h - 5 - ((v - min) / span) * (h - 10)).toFixed(1);
+  const pts = curve.map((v, i) => `${((i / (curve.length - 1)) * w).toFixed(1)},${y(v)}`).join(' ');
+  const rising = curve[curve.length - 1] >= capital;
+  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px;" preserveAspectRatio="none">` +
+    `<line x1="0" y1="${y(capital)}" x2="${w}" y2="${y(capital)}" stroke="#5a6b7f" stroke-dasharray="4 4" stroke-width="1"/>` +
+    `<polyline points="${pts}" fill="none" stroke="${rising ? '#38c172' : '#e05561'}" stroke-width="1.8"/></svg>`;
+}
+
+function statCards(st) {
+  const rows = [
+    ['Capital', fmt(st.capital, 0)],
+    ['Balance', fmt(st.balance, 0)],
+    ['Net P/L', pnlHtml(st.pnl)],
+    ['Win rate', st.winRate === null || st.winRate === undefined ? '—' : `${fmt(st.winRate, 1)}%`],
+    ['Bets', `${st.bets}${st.skipped ? ` (+${st.skipped} skipped)` : ''}`],
+    ['Max drawdown', fmt(st.maxDrawdown, 0)]
+  ];
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:8px;margin:8px 0;">` +
+    rows.map(([k, v]) =>
+      `<div style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:6px 8px;">` +
+      `<div class="small" style="color:var(--muted);">${k}</div>` +
+      `<div style="font-weight:600;">${v}</div></div>`).join('') +
+    '</div>';
+}
+
+function renderProfits(data) {
+  const badge = el('profitsModeBadge');
+  const wrap = el('profitsSites');
+  const note = el('profitsNote');
+  if (!badge || !wrap) return;
+  if (!data || !Array.isArray(data.sites) || data.sites.length === 0) {
+    badge.textContent = '—';
+    if (note) note.textContent = '';
+    wrap.innerHTML = '<p class="small">Launch a session and the profit/loss simulation starts here automatically.</p>';
+    return;
+  }
+  badge.textContent = data.paperMode ? 'PAPER SIMULATION' : 'LIVE';
+  badge.style.color = data.paperMode ? '#4ea1ff' : '#e05561';
+  if (note) note.textContent = data.paperMode
+    ? 'Paper mode: EVERY round is simulated as if the bet really happened, using the selected strategy\'s stake and its assumed capital (100× initial bet, or PAPER_BANKROLL). The dashed line is the starting capital. Nothing real is wagered.'
+    : 'Live mode: the figures below are REAL trades placed by the bot. The paper baseline stays frozen as your counterfactual.';
+  let html = '';
+  for (const s of data.sites) {
+    html += `<div class="card" style="margin-bottom:10px;"><h3>${esc(s.site)}</h3>`;
+    if (data.paperMode && s.baseline) {
+      html += statCards(s.baseline);
+      html += sparkline(s.baseline.curve, s.baseline.capital);
+      const e = s.engine;
+      html += `<p class="small">🎯 Engine-approved paper trades: ${e && e.bets > 0
+        ? `${e.bets} bets — net ${pnlHtml(e.pnl)} (win rate ${fmt(e.winRate, 1)}%)`
+        : 'none yet — the engine only bets when its gates approve.'}</p>`;
+      html += `<p class="small" style="color:var(--muted);">Baseline sim = blind betting every round at ${fmt(s.baseline.stake, 0)} @ ${s.baseline.target}x — the house edge makes it drift down; the engine's job is to beat this line.</p>`;
+    } else if (s.live && s.live.bets > 0) {
+      html += statCards(s.live);
+      html += sparkline(s.live.curve, s.live.capital);
+    } else {
+      html += '<p class="small">No live trades recorded for this site yet.</p>';
+    }
+    html += '</div>';
+  }
+  wrap.innerHTML = html;
+}
+
+socket.on('profits', renderProfits);
+fetch('/api/profits').then((r) => r.json()).then(renderProfits).catch(() => {});
+onEvent('profitsResetBtn', 'click', () => {
+  socket.emit('resetPaperLedgers', {});
+});
+
+// ---------------------------------------------------------------------------
 // Saved login profiles (multi-account) — with per-account switch buttons
 // ---------------------------------------------------------------------------
 async function loadAccountsPanel() {

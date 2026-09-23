@@ -125,7 +125,10 @@ const config = {
     MODE: {
         // SAFE DEFAULT: paper mode observes the real site and logs hypothetical
         // trades but never clicks. Set PAPER_MODE=false to bet real funds.
-        PAPER: bool(process.env.PAPER_MODE, true)
+        PAPER: bool(process.env.PAPER_MODE, true),
+        // Hypothetical bankroll for the paper simulation (Profits panel).
+        // 0 = derive from the selected strategy: 100 x its initial bet.
+        PAPER_BANKROLL: num(process.env.PAPER_BANKROLL, 0)
     },
 
     // Multi-site / multi-account
