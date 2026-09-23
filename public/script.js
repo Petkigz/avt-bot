@@ -92,7 +92,7 @@ socket.on('status', (s) => {
     document.getElementById('tierNote').textContent =
       b.microOnly ? '— MICRO_ONLY safety profile: stakes capped at micro size'
         : b.tier === 'OBSERVING' ? '— warm-up: no bets until enough rounds are studied'
-          : b.tier === 'MICRO' ? '— unproven: micro-bets only'
+          : b.tier === 'MICRO' ? '— sizing tier (not the strategy): unproven hit-rate record, micro-bets only until 25+ bets sustain ≥58% wins'
             : '— proven hit-rate: strategy stakes (bankroll-capped)';
 
     setText('hitRate', b.hitRate !== null && b.hitRate !== undefined ? fmt(b.hitRate * 100, 1) + '%' : '—');

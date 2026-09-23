@@ -350,7 +350,8 @@ class GameMonitor extends EventEmitter {
         if (bettingWindow && decision.shouldBet && !this.betManager.paperMode) {
             logger.info(
                 `[${this.mode().toUpperCase()}] BET round #${this.roundId + 1}: stake ${decision.stake} | ` +
-                `tier ${decision.tier} | confidence ${(decision.confidence ?? 0).toFixed(2)} | ` +
+                `strategy ${this.strategy.name} | sizing tier ${decision.tier} | ` +
+                `confidence ${(decision.confidence ?? 0).toFixed(2)} | ` +
                 `pattern ${decision.pattern ? decision.pattern.pattern : 'none'}`
             );
             const ok = await this.betManager.placeBet(marker.frame, balance, decision.stake, {
@@ -530,7 +531,8 @@ class GameMonitor extends EventEmitter {
                 logger.info(
                     `[PAPER] BET round #${this.roundId + 1}: stake ${decision.stake} | ` +
                     `target ${decision.targetMultiplier}x${isAdaptive ? ' (model-chosen)' : ''} | ` +
-                    `tier ${decision.tier} | confidence ${(decision.confidence ?? 0).toFixed(2)} | ` +
+                    `strategy ${this.strategy.name} | sizing tier ${decision.tier} | ` +
+                    `confidence ${(decision.confidence ?? 0).toFixed(2)} | ` +
                     `pattern ${decision.pattern ? decision.pattern.pattern : 'none'}`
                 );
                 this.lastStanddownKey = null; // a bet happened — next block is news again
