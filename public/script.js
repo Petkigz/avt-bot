@@ -165,9 +165,13 @@ function renderLearning(b) {
     if (sv && sv.verdict) {
       const v = sv.verdict;
       svEl.textContent = v.signalDetected
-        ? `SIGNAL CANDIDATE (${v.rounds} rds @${v.target}x)`
+        ? `🔓 SIGNAL DETECTED (${v.rounds} rds @${v.target}x) — feature-model research unlocked`
         : `no OOS signal (${v.rounds} rds @${v.target}x) — discipline-only`;
       svEl.className = 'value small ' + (v.signalDetected ? 'pos' : '');
+      if (v.signalDetected) {
+        svEl.style.color = '#38c172';
+        svEl.style.fontWeight = '700';
+      }
     } else if (sv) {
       svEl.textContent = `awaiting 400+ rounds (${sv.policy})`;
       svEl.className = 'value small';
@@ -581,6 +585,7 @@ function statCards(st) {
     ['Capital', fmt(st.capital, 0)],
     ['Balance', fmt(st.balance, 0)],
     ['Net P/L', pnlHtml(st.pnl)],
+    ['Wins / Losses', st.bets > 0 ? `<span style="color:#38c172">${st.wins}</span> / <span style="color:#e05561">${st.losses}</span>` : '—'],
     ['Win rate', st.winRate === null || st.winRate === undefined ? '—' : `${fmt(st.winRate, 1)}%`],
     ['Bets', `${st.bets}${st.skipped ? ` (+${st.skipped} skipped)` : ''}`],
     ['Max drawdown', fmt(st.maxDrawdown, 0)]
@@ -613,13 +618,22 @@ function renderProfits(data) {
   for (const s of data.sites) {
     html += `<div class="card" style="margin-bottom:10px;"><h3>${esc(s.site)}</h3>`;
     if (data.paperMode && s.baseline) {
+      html += `<h4 style="margin:4px 0 0;color:var(--muted);">🎲 BLIND BASELINE — bets every round, no thinking (the counterfactual)</h4>`;
       html += statCards(s.baseline);
       html += sparkline(s.baseline.curve, s.baseline.capital);
       const e = s.engine;
-      html += `<p class="small">🎯 Engine-approved paper trades: ${e && e.bets > 0
-        ? `${e.bets} bets — net ${pnlHtml(e.pnl)} (win rate ${fmt(e.winRate, 1)}%)`
-        : 'none yet — the engine only bets when its gates approve.'}</p>`;
-      html += `<p class="small" style="color:var(--muted);">Baseline sim = blind betting every round at ${fmt(s.baseline.stake, 0)} @ ${s.baseline.target}x — the house edge makes it drift down; the engine's job is to beat this line.</p>`;
+      html += `<h4 style="margin:10px 0 0;color:var(--muted);">🧠 ENGINE — only bets when its gates approve</h4>`;
+      if (e && e.bets > 0) {
+        html += statCards(e);
+        // The aim, made measurable: loss per bet vs blind betting.
+        const blindPerBet = s.baseline.pnl / s.baseline.bets;
+        const engPerBet = e.pnl / e.bets;
+        const edge = engPerBet - blindPerBet;
+        html += `<p class="small">🎯 <b>The aim:</b> lose less than blind betting (or win). Blind loses ${fmt(blindPerBet)} per bet; engine is at ${fmt(engPerBet)} per bet → discipline is <b style="color:${edge > 0 ? '#38c172' : '#e05561'}">${edge > 0 ? 'beating' : 'behind'} blind by ${fmt(Math.abs(edge))}/bet</b>.</p>`;
+      } else {
+        html += `<p class="small">No gated bets yet — the engine only bets after warm-up, when its confidence + regime gates approve.</p>`;
+      }
+      html += `<p class="small" style="color:var(--muted);">The red baseline line is EXPECTED to fall: flat betting at ${fmt(s.baseline.stake, 0)} @ ${s.baseline.target}x loses ~3% per bet to the house edge — that is the math of the game, not a bot failure. It exists so you can see exactly what discipline saves.</p>`;
     } else if (s.live && s.live.bets > 0) {
       html += statCards(s.live);
       html += sparkline(s.live.curve, s.live.capital);
