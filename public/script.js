@@ -180,6 +180,27 @@ function renderLearning(b) {
     }
   }
 
+  // Research phase ladder (round-gated roadmap, per site)
+  const rpEl = document.getElementById('researchPhase');
+  if (rpEl) {
+    const studied = (b.model && Number.isFinite(b.model.roundsStudied)) ? b.model.roundsStudied : null;
+    let phase;
+    if (sv && sv.verdict && sv.verdict.signalDetected) {
+      phase = { txt: '3 · SIGNAL — feature-model research unlocked', color: '#38c172' };
+    } else if (sv && sv.verdict) {
+      phase = { txt: `2 · VALIDATED on ${sv.verdict.rounds} rds — discipline-only betting`, color: '#4ea1ff' };
+    } else if (studied !== null && studied < 150) {
+      phase = { txt: `0 · WARM-UP (${studied}/150 rds) — observing, no bets`, color: 'var(--muted)' };
+    } else if (sv) {
+      const extra = studied !== null ? ` (${studied} rds recorded)` : '';
+      phase = { txt: `1 · COLLECTING DATA${extra} — validation unlocks at 400+ rounds`, color: '#f0ad4e' };
+    } else {
+      phase = { txt: '—', color: '' };
+    }
+    rpEl.textContent = phase.txt;
+    rpEl.style.color = phase.color;
+  }
+
   // Strongest pattern families
   const p = b.patterns;
   const pBody = document.getElementById('patternTableBody');
