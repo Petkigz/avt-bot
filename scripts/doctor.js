@@ -42,9 +42,9 @@ if (process.env.PUPPETEER_EXECUTABLE_PATH) {
         const exe = puppeteer.executablePath();
         fs.existsSync(exe)
             ? pass('Puppeteer Chrome binary', exe)
-            : fail('Puppeteer Chrome binary', `not found — run: npx puppeteer browsers install chrome`);
+            : fail('Puppeteer Chrome binary', `not found — run: node node_modules/puppeteer/install.js`);
     } catch (error) {
-        fail('Puppeteer Chrome binary', `not downloaded (${String(error.message).split('\n')[0]}) — run: npx puppeteer browsers install chrome`);
+        fail('Puppeteer Chrome binary', `not downloaded (${String(error.message).split('\n')[0]}) — run: node node_modules/puppeteer/install.js`);
     }
 }
 
