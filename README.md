@@ -402,11 +402,21 @@ and brain — so one game's rounds can never pollute another's:
    (`MODEL_MIN_ENTRY_PROBABILITY`..`MODEL_MAX_ENTRY_PROBABILITY`) so it can
    never run away. State persists in `data/model.json`. This tunes *risk
    discipline*; it makes no claim to predict outcomes.
-6. **Confidence-proportional stakes** — with `CONFIDENCE_SCALING=true` (default),
+6. **Self-calibration (the engine learning its own honesty)** — every settled
+   prediction is fed to a recalibrator (`game/recalibrator.js`, persisted in
+   `data/recalibration-<site>.json`). After 100 settled predictions it builds
+   a shrinkage-corrected map of "model says X → reality settles at Y" and
+   corrects the confidence BEFORE it is compared against the entry threshold.
+   It can only remove false confidence, never manufacture signal: on a random
+   stream it converges to the base rate and the gates bet less. The dashboard
+   shows the state (`learning → active`) and an audit of raw vs corrected
+   Brier score, so you can see whether the correction is actually helping.
+7. **Confidence-proportional stakes** — with `CONFIDENCE_SCALING=true` (default),
    marginal-confidence entries bet 50% of the approved stake, strong-confidence
    entries bet 100%.
-7. **Dashboard transparency** — regime, model probability, entry threshold, rounds
-   studied and bot state are all visible live on the dashboard.
+8. **Dashboard transparency** — streak-guard state, model probability, entry
+   threshold, self-calibration state, research phase, rounds studied and bot
+   state are all visible live on the dashboard.
 
 **Measuring the engine, not feeling it:** `npm run model:eval` runs the entry
 gate against 20,000 synthetic provably-random rounds (real crash distribution,

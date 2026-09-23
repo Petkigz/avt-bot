@@ -19,12 +19,16 @@ const logger = require('../util/logger');
  *   (with volatility penalty), pattern check OK, bankroll policy OK.
  */
 class Brain {
-    constructor({ config, strategy, predictor, patterns, bankroll, microOnly, signal }) {
+    constructor({ config, strategy, predictor, patterns, bankroll, microOnly, signal, recalibrator }) {
         this.config = config;
         this.strategy = strategy;
         this.predictor = predictor;       // may be null (model disabled)
         this.patterns = patterns;         // may be null (patterns disabled)
         this.bankroll = bankroll;
+        // Adaptive probability self-repair: studies how the engine's own
+        // predictions settled and corrects systematic mis-calibration.
+        // Pass-through until enough predictions have settled.
+        this.recalibrator = recalibrator || null;
         // Walk-forward validation hookup: { policy, getVerdict() }. Policy
         // 'strict' refuses bets until this site has a positive OUT-OF-SAMPLE
         // signal verdict; 'advisory' (default) only reports it.
@@ -126,6 +130,13 @@ class Brain {
                 return this.finish(decision);
             }
             confidence = gate.probability;
+
+            // Intelligence upgrade #1: recalibrated confidence — the engine's
+            // own settled track record corrects systematic over/under-
+            // confidence before it is compared against the entry threshold.
+            if (this.recalibrator && confidence !== null) {
+                confidence = this.recalibrator.adjust(confidence);
+            }
 
             // Volatility risk evaluation: wild recent rounds demand MORE confidence.
             const vol = this.predictor.volatility();
@@ -300,6 +311,7 @@ class Brain {
             model: this.predictor ? this.predictor.snapshot() : null,
             patterns: this.patterns ? this.patterns.snapshot() : null,
             bankroll: this.bankroll ? this.bankroll.snapshot() : null,
+            recalibration: this.recalibrator ? this.recalibrator.snapshot() : null,
             signal: this.signal ? {
                 policy: this.signal.policy || 'advisory',
                 verdict: (() => {

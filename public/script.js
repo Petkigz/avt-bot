@@ -180,6 +180,21 @@ function renderLearning(b) {
     }
   }
 
+  // Intelligence upgrade #1: adaptive self-calibration state
+  const rc = b.recalibration;
+  const rcEl = document.getElementById('recalState');
+  if (rcEl) {
+    if (!rc) rcEl.textContent = '—';
+    else if (!rc.ready) rcEl.textContent = `learning (${rc.settled}/${rc.minSettled} settled)`;
+    else {
+      const verdict = rc.brierRaw !== null
+        ? (rc.helping ? '· correcting ✓' : '· no gain yet')
+        : '';
+      rcEl.textContent = `active ${verdict}`;
+      rcEl.style.color = rc.helping ? '#38c172' : '';
+    }
+  }
+
   // Research phase ladder (round-gated roadmap, per site)
   const rpEl = document.getElementById('researchPhase');
   if (rpEl) {

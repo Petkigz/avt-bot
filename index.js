@@ -18,6 +18,7 @@ const CalibrationTracker = require('./game/calibration');
 const PredictionLogger = require('./game/predictionLogger');
 const { extractFeatures } = require('./game/features');
 const PaperLedger = require('./game/paperLedger');
+const Recalibrator = require('./game/recalibrator');
 const {
     runWalkForward: runSignalValidation,
     writeVerdict: writeSignalVerdict,
@@ -1152,9 +1153,19 @@ async function main() {
             sitePatterns.rebuildStream(store.values);
         }
 
+        // Intelligence upgrade #1: adaptive probability self-repair. Studies
+        // how this site's predictions actually settle and corrects the model's
+        // confidence; persists across restarts in data/recalibration-<site>.json.
+        const siteRecalibrator = new Recalibrator({
+            file: path.join(config.DATA_DIR, `recalibration-${safe}.json`),
+            minSettled: 100
+        });
+        siteRecalibrator.load();
+
         let engineRef = null; // lets the brain read this engine's live verdict
         const siteBrain = new Brain({
             config, strategy, predictor: sitePredictor, patterns: sitePatterns, bankroll,
+            recalibrator: siteRecalibrator,
             signal: {
                 policy: config.MODEL.SIGNAL_POLICY,
                 getVerdict: () => (engineRef ? engineRef.signalVerdict : null)
@@ -1170,6 +1181,7 @@ async function main() {
             // calibration and walk-forward validation have real data.
             predictionLog: new PredictionLogger(path.join(config.DATA_DIR, `predictions-${safe}.jsonl`)),
             calibration: new CalibrationTracker(),
+            recalibrator: siteRecalibrator,
             pendingPrediction: null,
             // Profit/loss books (Profits panel), all persistent:
             //  baseline  — paper sim betting EVERY round at the strategy stake
@@ -1236,6 +1248,12 @@ async function main() {
             if (pending && Number.isFinite(pending.prob)) {
                 const won = crash >= pending.target;
                 engine.calibration.record(pending.prob, won ? 1 : 0);
+                // The engine learning from its own track record: every settled
+                // prediction refines the confidence-correction map.
+                if (engine.recalibrator) {
+                    engine.recalibrator.update(pending.prob, won ? 1 : 0);
+                    if (engine.recalibrator.total % 25 === 0) engine.recalibrator.save();
+                }
                 engine.predictionLog.logOutcome({
                     site: engine.siteId, target: pending.target,
                     prob: pending.prob, crash, won
@@ -1253,6 +1271,9 @@ async function main() {
                 regime = typeof engine.predictor.regime === 'function' ? engine.predictor.regime() : '';
             }
             engine.pendingPrediction = { target, prob, threshold, allowed, tier: engine.brain.tier, regime };
+            // Snapshot the correction map in force NOW, so the audit scores
+            // the probability that was actually used for this round.
+            if (engine.recalibrator && Number.isFinite(prob)) engine.recalibrator.notePending(prob);
             engine.predictionLog.logPrediction({
                 site: engine.siteId, target, prob, threshold, allowed,
                 tier: engine.brain.tier, regime,
@@ -1494,6 +1515,16 @@ async function main() {
             if (engine.predictor) engine.predictor.save();
             if (engine.patterns) engine.patterns.save();
             logger.info(`Calibration [${engine.siteId}]: ${engine.calibration.summary()} (see predictions-${safeSiteId(engine.siteId)}.jsonl)`);
+            if (engine.recalibrator) {
+                engine.recalibrator.save();
+                const r = engine.recalibrator.snapshot();
+                logger.info(
+                    `Self-calibration [${engine.siteId}]: ${r.settled}/${r.minSettled} settled — ` +
+                    (r.ready
+                        ? `active${r.brierRaw !== null ? ` (Brier raw ${r.brierRaw} vs corrected ${r.brierAdjusted}${r.helping ? ', correction is helping' : ''})` : ''}`
+                        : 'learning (pass-through until enough evidence)')
+                );
+            }
         }
         if (!primaryEngine) {
             if (predictor) predictor.save();
