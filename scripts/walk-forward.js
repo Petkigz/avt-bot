@@ -106,6 +106,24 @@ function normCdf(z) {
     return p;
 }
 
+/** Holm-Bonferroni step-down correction. Returns a boolean array: which
+ *  hypotheses stay significant after controlling the family-wise error
+ *  rate across ALL of them. Null p-values (insufficient data) stay false. */
+function holmBonferroni(pValues, alpha = 0.05) {
+    const m = pValues.filter((p) => p !== null && Number.isFinite(p)).length;
+    const keep = pValues.map(() => false);
+    const order = pValues
+        .map((p, i) => ({ p, i }))
+        .filter((e) => e.p !== null && Number.isFinite(e.p))
+        .sort((a, b) => a.p - b.p);
+    for (let rank = 0; rank < order.length; rank++) {
+        const threshold = alpha / (m - rank);
+        if (order[rank].p <= threshold) keep[order[rank].i] = true;
+        else break; // step-down: once one fails, all weaker ones fail too
+    }
+    return keep;
+}
+
 // ---------------------------------------------------------------------------
 // Walk-forward engine
 // ---------------------------------------------------------------------------
@@ -167,9 +185,12 @@ function runWalkForward(values, opts = {}) {
     }
 
     const oosBaseRate = testHits / totalTest;
-    const results = {};
-    let signalDetected = false;
-    for (const name of names) {
+
+    // ---- Multiple-testing correction (Holm-Bonferroni) ----
+    // We compare SEVERAL variants against the same base rate; testing k
+    // hypotheses at p<0.05 means ~1-(0.95^k) chance of a false positive.
+    // Holm's step-down procedure controls the family-wise error rate.
+    const raw = names.map((name) => {
         const a = acc[name];
         const hitRate = a.bets > 0 ? a.wins / a.bets : null;
         let z = null;
@@ -178,27 +199,34 @@ function runWalkForward(values, opts = {}) {
             z = (hitRate - oosBaseRate) / Math.sqrt((oosBaseRate * (1 - oosBaseRate)) / a.bets);
             pValue = 2 * (1 - normCdf(Math.abs(z)));
         }
-        const lift = hitRate !== null ? hitRate - oosBaseRate : null;
-        const significant = pValue !== null && pValue < 0.05 && lift > 0;
+        return { name, a, hitRate, z, pValue, lift: hitRate !== null ? hitRate - oosBaseRate : null };
+    });
+    const corrected = holmBonferroni(raw.map((r) => r.pValue), 0.05);
+
+    const results = {};
+    let signalDetected = false;
+    raw.forEach((r, i) => {
+        const significant = r.pValue !== null && corrected[i] && r.lift > 0;
         if (significant) signalDetected = true;
-        results[name] = {
-            bets: a.bets,
-            wins: a.wins,
-            hitRate: hitRate !== null ? Number(hitRate.toFixed(4)) : null,
-            lift: lift !== null ? Number(lift.toFixed(4)) : null,
-            pValue: pValue !== null ? Number(pValue.toFixed(4)) : null,
+        results[r.name] = {
+            bets: r.a.bets,
+            wins: r.a.wins,
+            hitRate: r.hitRate !== null ? Number(r.hitRate.toFixed(4)) : null,
+            lift: r.lift !== null ? Number(r.lift.toFixed(4)) : null,
+            pValue: r.pValue !== null ? Number(r.pValue.toFixed(4)) : null,
             significant,
-            brier: Number((a.brierSum / totalTest).toFixed(5)),
-            pnl: Number(a.pnl.toFixed(2)),
-            maxDD: Number(a.maxDD.toFixed(2))
+            brier: Number((r.a.brierSum / totalTest).toFixed(5)),
+            pnl: Number(r.a.pnl.toFixed(2)),
+            maxDD: Number(r.a.maxDD.toFixed(2))
         };
-    }
+    });
 
     return {
         rounds: values.length,
         folds,
         target,
         oosBaseRate: Number(oosBaseRate.toFixed(4)),
+        correction: `holm-bonferroni over ${raw.filter((r) => r.pValue !== null).length} tested variants`,
         results,
         signalDetected,
         verdict: signalDetected
@@ -341,4 +369,4 @@ if (require.main === module) {
     }
 }
 
-module.exports = { runWalkForward, generateSynthetic, loadRecordedHistory, listSiteHistories, writeVerdict, readVerdict, VARIANTS };
+module.exports = { runWalkForward, generateSynthetic, loadRecordedHistory, listSiteHistories, writeVerdict, readVerdict, holmBonferroni, normCdf, VARIANTS };

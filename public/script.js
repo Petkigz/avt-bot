@@ -150,12 +150,12 @@ function renderLearning(b) {
   if (m) {
     const learned = m.entryProbability;
     const base = 0.55; // family default; learning only moves it up or down a little
-    const trend = learned > base + 0.005 ? '↑ tightened (losses taught caution)'
-      : learned < base - 0.005 ? '↓ loosened (wins earned trust)'
+    const trend = learned > base + 0.005 ? '↑ tightened (losses raised the bar)'
+      : learned < base - 0.005 ? '↓ loosened (wins eased the bar)'
         : '→ baseline';
-    setText('thresholdTrend', `${fmt(learned)} ${trend}`);
+    setText('thresholdTrend', `${fmt(learned)} ${trend} — adaptive risk gating, not predictive learning`);
     const bt = m.bestTarget;
-    setText('bestTarget', bt ? `${bt.target}x (in-sample hist. EV ${fmt(bt.ev, 3)} — curiosity metric, not a bet input)` : 'not enough data');
+    setText('bestTarget', bt ? `${bt.target}x (in-sample hist. EV ${fmt(bt.ev, 3)} — descriptive curve-fit only, NEVER a bet input)` : 'not enough data');
   }
 
   // Walk-forward signal verdict (does this stream show OOS predictive signal?)

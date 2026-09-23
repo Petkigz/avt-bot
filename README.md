@@ -391,13 +391,17 @@ and brain — so one game's rounds can never pollute another's:
    statistical lower bound on the probability must still sit near the entry
    threshold, otherwise the round is skipped. Small samples can no longer fake
    high confidence.
-4. **Regime detection** — after `MODEL_COLD_STREAK_LIMIT` consecutive crashes
-   below the target, betting **pauses** ("cold regime") until the strip warms up.
-   This is the primary loss-avoidance mechanism.
-5. **Outcome learning** — each settled bet nudges the entry threshold: losses
-   tighten it (bet less often), wins loosen it slightly. Adjustments are bounded
-   (`MODEL_MIN_ENTRY_PROBABILITY`..`MODEL_MAX_ENTRY_PROBABILITY`) so learning can
-   never run away. State persists in `data/model.json`.
+4. **Loss-streak guard** — after `MODEL_COLD_STREAK_LIMIT` consecutive crashes
+   below the target, betting **pauses** until a warm round appears. Named
+   honestly: this is a RISK RULE for bad runs, not a statistical regime
+   detector — k low crashes in an independent stream are not evidence the
+   distribution changed. It remains the primary loss-avoidance mechanism.
+5. **Adaptive risk gating (not predictive learning)** — each settled bet
+   nudges the entry threshold: losses tighten it (bet less often), wins
+   loosen it slightly. Adjustments are bounded
+   (`MODEL_MIN_ENTRY_PROBABILITY`..`MODEL_MAX_ENTRY_PROBABILITY`) so it can
+   never run away. State persists in `data/model.json`. This tunes *risk
+   discipline*; it makes no claim to predict outcomes.
 6. **Confidence-proportional stakes** — with `CONFIDENCE_SCALING=true` (default),
    marginal-confidence entries bet 50% of the approved stake, strong-confidence
    entries bet 100%.
@@ -434,10 +438,22 @@ Instead of assuming the model is predictive, the bot *measures* whether it is:
   testing: estimators (baseline / recent-window / recency-weighted /
   Wilson-shrunk) are trained only on rounds before each test fold and judged
   on rounds they never saw. A variant counts as "signal" only if its bet
-  hit-rate beats the fold base rate with p < 0.05. On thin recorded history
+  hit-rate beats the fold base rate with p < 0.05 **after Holm-Bonferroni
+  correction across all tested variants** (testing k variants at 5% each
+  would otherwise produce lucky false positives). On thin recorded history
   it self-tests against a synthetic feed with a known answer (no signal).
   The verdict line is explicit: `NO PREDICTIVE SIGNAL DETECTED` means the
   gates run discipline-only — that is a *feature*, not a failure.
+- **Feature null-test** (`npm run feature:eval`, Phase 3 research) — asks
+  the next question: do the logged stream FEATURES carry any predictive
+  information? Expanding-window walk-forward fits a baseline, a full
+  L2-logistic model over all features, and one univariate logistic model
+  per feature; every comparison is corrected with Holm-Bonferroni over ALL
+  models together, and the report includes a per-feature OOS lift table.
+  Self-test on synthetic random rounds returns zero lift for every feature
+  (ground truth). Its verdict does NOT unlock betting — the live gate stays
+  on the walk-forward verdict — but a positive feature verdict is exactly
+  the trigger to build a live feature model.
 - **The verdict is live, not just a report.** Every run — and every engine
   boot with 400+ recorded rounds — stores `data/signal-verdict-<site>.json`,
   and the brain reads it through `MODEL_SIGNAL_POLICY`:
@@ -453,6 +469,15 @@ Instead of assuming the model is predictive, the bot *measures* whether it is:
 The same layer is deliberately market-agnostic (values in, verdicts out), so
 it can later be pointed at any numeric stream to test whether that stream
 contains a measurable edge before a trading layer ever touches it.
+
+### Research phases (round-gated roadmap)
+
+| Phase | Unlocks at | What it means |
+|---|---|---|
+| 0 · Warm-up | 0–150 rounds | Observing only — zero bets, memory building |
+| 1 · Collecting data | 150+ rounds | Gated micro-betting; every round persists to per-site history + prediction log with feature snapshot |
+| 2 · Validated | **400+ rounds per site** | Engine re-runs walk-forward on its own history at every boot, stores `signal-verdict-<site>.json`; with `MODEL_SIGNAL_POLICY=strict`, no validated signal ⇒ no bets |
+| 3 · Signal | a *positive* verdict | Feature-model research unlocked (`npm run feature:eval` verdicts guide what gets built); NOT a timer — if no signal is ever found, staying in phase 2 "don't bet" is the designed end state |
 
 ## Provably-fair audit
 
@@ -554,10 +579,11 @@ connection drops.
 npm test
 ```
 
-Runs 115 tests: strategy engine, stats, balance parsing, model, patterns,
+Runs 177 tests: strategy engine, stats, balance parsing, model, patterns,
 bankroll, confidence tiers, round detection, recovery ladder, simulator,
-site registry, accounts, round-rate math, REST endpoints and a live
-socket.io integration test.
+site registry, accounts, round-rate math, walk-forward + Holm-Bonferroni
+correction, feature null-test, REST endpoints and a live socket.io
+integration test.
 
 ### Pre-flight & offline demo
 

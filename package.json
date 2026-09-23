@@ -11,7 +11,8 @@
     "demo": "node scripts/demo.js",
     "test": "node --test test/*.test.js",
     "model:eval": "node scripts/model-eval.js",
-    "walkforward": "node scripts/walk-forward.js"
+    "walkforward": "node scripts/walk-forward.js",
+    "feature:eval": "node scripts/feature-eval.js"
   },
   "engines": {
     "node": ">=18"

@@ -126,7 +126,7 @@ class Predictor {
                 this.paused = true;
                 logger.warn(
                     `Model: ${this.consecutiveCold} consecutive crashes below ${this.targetMultiplier}x — ` +
-                    'pausing bets until the strip warms up (cold regime)'
+                    'loss-streak guard pausing bets until a warm round appears'
                 );
             }
         } else {
@@ -247,6 +247,11 @@ class Predictor {
     /**
      * Informational: the multiplier that historically maximized p(x)*x - 1.
      */
+    /** DESCRIPTIVE ONLY. This scans historical data for the target that
+     *  would have looked best — a classic in-sample curve fit. Picking the
+     *  max of ~40 tried values guarantees one looks good by chance. The
+     *  result is shown on the dashboard as a curiosity metric and must
+     *  NEVER drive bet targeting unless validated out-of-sample. */
     bestTarget() {
         if (this.history.length < this.minSampleSize) return null;
         let best = null;
@@ -259,6 +264,10 @@ class Predictor {
         return best;
     }
 
+    /** Streak-guard state. Named 'regime' historically, but this is a
+     *  LOSS-STREAK GUARD, not a statistical regime detector: k low crashes
+     *  in an independent stream are not evidence the distribution changed —
+     *  it is a risk rule that pauses betting through bad runs. */
     regime() {
         if (this.paused) return 'cold';
         if (this.consecutiveCold >= Math.max(1, this.coldStreakLimit - 1)) return 'cooling';
@@ -276,7 +285,7 @@ class Predictor {
         if (this.paused) {
             return {
                 allowed: false,
-                reason: `cold regime (${this.consecutiveCold} low crashes in a row)`,
+                reason: `loss-streak guard: ${this.consecutiveCold} low crashes in a row (risk rule — not evidence the stream changed)`,
                 probability,
                 regime: this.regime()
             };

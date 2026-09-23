@@ -29,7 +29,7 @@ test('probCrashAtLeast returns null with no history', () => {
     assert.strictEqual(p.probCrashAtLeast(1.5), null);
 });
 
-test('cold regime pauses betting and warm rounds resume it', () => {
+test('loss-streak guard pauses betting and warm rounds resume it', () => {
     const p = makePredictor({ minSampleSize: 2 });
     p.addRound(1.2);
     p.addRound(1.1);

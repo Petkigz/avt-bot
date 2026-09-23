@@ -63,3 +63,23 @@ test('writeVerdict/readVerdict persist a verdict for the live engine', () => {
     assert.match(back.verdict, /NO PREDICTIVE SIGNAL/);
     assert.equal(readVerdict(dir, 'nobody.example'), null);
 });
+
+test('holmBonferroni controls family-wise error across variants', () => {
+    const { holmBonferroni } = require('../scripts/walk-forward');
+    // One clearly significant p survives alone
+    assert.deepEqual(holmBonferroni([0.001, null, null], 0.05), [true, false, false]);
+    // Two borderline p-values: 0.03 passes rank-1 threshold (0.05/2=0.025)?
+    // No: 0.03 > 0.025 -> step-down stops, BOTH rejected. That is the point.
+    assert.deepEqual(holmBonferroni([0.03, 0.03], 0.05), [false, false]);
+    // 0.02 <= 0.025 passes rank 1; 0.04 <= 0.05 passes rank 2
+    assert.deepEqual(holmBonferroni([0.02, 0.04], 0.05), [true, true]);
+    // Nulls never pass
+    assert.deepEqual(holmBonferroni([null, null], 0.05), [false, false]);
+});
+
+test('walk-forward report documents the multiple-testing correction', () => {
+    const { runWalkForward, generateSynthetic } = require('../scripts/walk-forward');
+    const report = runWalkForward(generateSynthetic(1200, 0.03, 7), { target: 1.3 });
+    assert.match(report.correction, /holm-bonferroni/);
+    assert.strictEqual(report.signalDetected, false);
+});

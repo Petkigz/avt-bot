@@ -83,11 +83,11 @@ test('demotion ARMED -> MICRO when hit-rate sags', () => {
     assert.strictEqual(brain.tier, 'MICRO');
 });
 
-test('cold regime blocks betting even after warm-up', () => {
+test('loss-streak guard blocks betting even after warm-up', () => {
     const { brain } = makeBrain();
     warmUp(brain, config.RISK.MIN_ROUNDS_OBSERVE, 2.0);
     brain.tier = 'MICRO';
-    // three consecutive low crashes -> cold pause
+    // three consecutive low crashes -> streak-guard pause
     brain.onRoundEnded(1.0);
     brain.onRoundEnded(1.0);
     brain.onRoundEnded(1.0);
@@ -95,7 +95,7 @@ test('cold regime blocks betting even after warm-up', () => {
 
     const d = brain.decide({ bettingWindow: true, balance: 50000 });
     assert.strictEqual(d.shouldBet, false);
-    assert.match(d.reasons.join(' '), /cold regime/);
+    assert.match(d.reasons.join(' '), /loss-streak guard/);
 });
 
 test('session loss limit blocks all further bets', () => {
