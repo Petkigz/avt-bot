@@ -12,7 +12,8 @@
     "test": "node --test test/*.test.js",
     "model:eval": "node scripts/model-eval.js",
     "walkforward": "node scripts/walk-forward.js",
-    "feature:eval": "node scripts/feature-eval.js"
+    "feature:eval": "node scripts/feature-eval.js",
+    "error:analysis": "node scripts/error-analysis.js"
   },
   "engines": {
     "node": ">=18"
