@@ -305,8 +305,12 @@ class GameMonitor extends EventEmitter {
         this.sweepStaleBets();
 
         // ---- Cashout window ----
-        if (this.betManager.isWaitingForResult && inflight && Number.isFinite(state.liveMultiplier)) {
-            await this.betManager.checkCashout(frame, state.liveMultiplier);
+        // Paper bets are deliberately excluded: on some layouts the
+        // multiplier element keeps showing the PREVIOUS crash between
+        // rounds, which would book false early wins. Paper bets settle
+        // exactly against the next crash value at the round boundary.
+        if (!this.betManager.paperMode && this.betManager.isWaitingForResult && inflight && Number.isFinite(state.liveMultiplier)) {
+            await this.betManager.checkCashout(marker.frame, state.liveMultiplier);
         }
 
         // ---- Risk enforcement (strategy-level stop-loss / take-profit / streak) ----
@@ -348,7 +352,7 @@ class GameMonitor extends EventEmitter {
                 `tier ${decision.tier} | confidence ${(decision.confidence ?? 0).toFixed(2)} | ` +
                 `pattern ${decision.pattern ? decision.pattern.pattern : 'none'}`
             );
-            const ok = await this.betManager.placeBet(frame, balance, decision.stake, {
+            const ok = await this.betManager.placeBet(marker.frame, balance, decision.stake, {
                 confidence: decision.confidence,
                 pattern: decision.pattern,
                 tier: decision.tier
