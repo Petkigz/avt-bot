@@ -310,6 +310,10 @@ function runFeatureEval(values, opts = {}) {
     raw.forEach((r, i) => {
         const significant = r.pValue !== null && keep[i] && r.lift > 0;
         if (significant) signalDetected = true;
+        // Economic view: expected return per unit stake if every approved bet
+        // had been placed (hitRate*target - 1). A model can be statistically
+        // interesting and still economically negative — both are reported.
+        const evPerBet = r.hitRate !== null ? r.hitRate * target - 1 : null;
         modelsOut[r.name] = {
             bets: r.a.bets,
             wins: r.a.wins,
@@ -317,6 +321,7 @@ function runFeatureEval(values, opts = {}) {
             lift: r.lift !== null ? Number(r.lift.toFixed(4)) : null,
             pValue: r.pValue !== null ? Number(r.pValue.toFixed(4)) : null,
             significant,
+            evPerBet: evPerBet !== null ? Number(evPerBet.toFixed(5)) : null,
             brier: r.a.tests > 0 ? Number((r.a.brierSum / r.a.tests).toFixed(5)) : null,
             logLoss: r.a.tests > 0 ? Number((r.a.logLossSum / r.a.tests).toFixed(5)) : null
         };

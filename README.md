@@ -449,14 +449,17 @@ Instead of assuming the model is predictive, the bot *measures* whether it is:
   Wilson-shrunk) are trained only on rounds before each test fold and judged
   on rounds they never saw. A variant counts as "signal" only if its bet
   hit-rate beats the fold base rate with p < 0.05 **after Holm-Bonferroni
-  correction across all tested variants**, and a signal is only CONFIRMED if
-  the lift ALSO survives the newest third of test rounds (a fresh holdout
-  the discovery never saw). STRICT mode requires a CONFIRMED signal — a
-  detected-but-unconfirmed candidate is treated as false-positive risk and
-  keeps the gates closed. On thin recorded history the harness self-tests
-  against a synthetic feed with a known answer (no signal). The verdict line
-  is explicit: `NO PREDICTIVE SIGNAL DETECTED` means the gates run
-  discipline-only — that is a *feature*, not a failure.
+  correction across all tested variants**. Significance is judged on the
+  DISCOVERY folds only; the newest third of test rounds is an untouched
+  CONFIRMATION set a confirmed signal must still lift on. Two separate
+  questions are asked: statistical lift vs the base rate, and ECONOMIC
+  viability vs the break-even hit rate (1/target — ~76.9% at 1.3x): a lift
+  that is statistically real but below break-even still loses money and does
+  not unlock betting. STRICT mode requires confirmed AND economic signal.
+  On thin recorded history the harness self-tests against a synthetic feed
+  with a known answer (no signal). The verdict line is explicit:
+  `NO PREDICTIVE SIGNAL DETECTED` means the gates run discipline-only —
+  that is a *feature*, not a failure.
 - **Feature null-test** (`npm run feature:eval`, Phase 3 research) — asks
   the next question: do the logged stream FEATURES carry any predictive
   information? Expanding-window walk-forward fits a baseline and TWO
@@ -469,12 +472,15 @@ Instead of assuming the model is predictive, the bot *measures* whether it is:
   verdict does NOT unlock betting — the live gate stays on the walk-forward
   verdict — but a positive feature verdict is exactly the trigger to build
   a live feature model.
-- **Patterns are frozen, tested, then promoted.** A mined pattern starts as
-  a CANDIDATE with ZERO influence — with 3^10 possible length-10 sequences,
-  a random stream constantly produces impressive-looking noise. Only after
-  surviving `PATTERN_MIN_LIVE_USES` unseen future rounds does it start to
-  blend in, and its weight keeps growing only with further live evidence;
-  a pattern whose live win rate stays under 50% becomes a risk block.
+- **Patterns are frozen, tested, then promoted — with a statistical bar.** A
+  mined pattern starts as a CANDIDATE with ZERO influence — with 3^10
+  possible length-10 sequences, a random stream constantly produces
+  impressive-looking noise. Only after surviving `PATTERN_MIN_LIVE_USES`
+  unseen future rounds does it get considered, and even then betting weight
+  requires STATISTICAL evidence: the Wilson lower bound of the pattern's
+  live win record must exceed the stream's base rate (at 1.3x ~75% of rounds
+  win anyway, so merely "winning often" proves nothing). A pattern whose
+  live win rate ends up below the base rate becomes a risk block.
 - **The verdict is live, not just a report.** Every run — and every engine
   boot with 400+ recorded rounds — stores `data/signal-verdict-<site>.json`,
   and the brain reads it through `MODEL_SIGNAL_POLICY`:

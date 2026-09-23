@@ -228,8 +228,15 @@ test('STRICT signal policy blocks betting until a positive OOS verdict exists', 
     assert.strictEqual(d3a.shouldBet, false);
     assert.match(d3a.reasons.join(' '), /UNCONFIRMED/);
 
-    // Positive AND confirmed verdict -> the gate opens
-    const b3 = mk({ policy: 'strict', getVerdict: () => ({ signalDetected: true, signalConfirmed: true }) });
+    // Confirmed but UNECONOMIC (below break-even) -> still blocked
+    const b3b = mk({ policy: 'strict', getVerdict: () => ({ signalDetected: true, signalConfirmed: true, signalEconomical: false }) });
+    for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE; i++) b3b.onRoundEnded(2.0);
+    const d3b = b3b.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(d3b.shouldBet, false);
+    assert.match(d3b.reasons.join(' '), /break-even/);
+
+    // Positive AND confirmed AND economic -> the gate opens
+    const b3 = mk({ policy: 'strict', getVerdict: () => ({ signalDetected: true, signalConfirmed: true, signalEconomical: true }) });
     for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE; i++) b3.onRoundEnded(2.0);
     const d3 = b3.decide({ bettingWindow: true, balance: 50000 });
     assert.strictEqual(d3.shouldBet, true);
@@ -251,8 +258,8 @@ test('snapshot carries the signal policy + verdict summary', () => {
 test('pattern freeze -> test -> promote: candidates have zero influence', () => {
     // Fake detector: a pattern claiming 0.95 probability. As a CANDIDATE
     // (< MIN_LIVE_USES live uses) it must NOT move confidence; once promoted
-    // by its live record it may blend in.
-    const mkWithPattern = (used, liveWinRate) => {
+    // with a statistically-base-beating live record it may blend in.
+    const mkWithPattern = (used, liveWinRate, liveWins) => {
         const strategyConfig = { ...config.BETTING_STRATEGIES.MICRO };
         const strategy = new BettingStrategy(strategyConfig);
         const predictor = new Predictor({
@@ -274,7 +281,7 @@ test('pattern freeze -> test -> promote: candidates have zero influence', () => 
             recordUsageOutcome: () => {},
             detect: () => ({
                 found: true, pattern: 'LHL', probability: 0.95, quality: 1,
-                risky: false, used, liveWinRate
+                risky: false, used, liveWinRate, liveWins: liveWins ?? 0
             })
         };
         const brain = new Brain({ config, strategy, predictor, patterns, bankroll });
@@ -284,18 +291,27 @@ test('pattern freeze -> test -> promote: candidates have zero influence', () => 
         return brain;
     };
 
-    const candidate = mkWithPattern(config.PATTERN.MIN_LIVE_USES - 1, null);
-    const promoted = mkWithPattern(config.PATTERN.MIN_LIVE_USES * 2, 0.8);
+    const candidate = mkWithPattern(config.PATTERN.MIN_LIVE_USES - 1, null, 0);
+    // Perfect 20/20 live record: Wilson lower bound (~0.84) beats the ~0.75
+    // base rate of the mixed warm-up -> evidence factor 1.
+    const promoted = mkWithPattern(config.PATTERN.MIN_LIVE_USES * 2, 1.0, config.PATTERN.MIN_LIVE_USES * 2);
+    // Good-looking 80% record that does NOT statistically beat the ~75% base
+    // rate (Wilson lower bound ~0.58) -> evidence factor 0 -> zero influence.
+    const notBeating = mkWithPattern(config.PATTERN.MIN_LIVE_USES * 2, 0.8, 16);
     const dCand = candidate.decide({ bettingWindow: true, balance: 50000 });
     const dProm = promoted.decide({ bettingWindow: true, balance: 50000 });
+    const dNB = notBeating.decide({ bettingWindow: true, balance: 50000 });
 
     // Candidate: the 0.95 claim must not have lifted confidence at all
     assert.ok(dCand.confidence <= dProm.confidence);
     assert.ok(dProm.confidence > dCand.confidence + 0.05,
-        `promoted pattern should visibly raise confidence (cand ${dCand.confidence}, prom ${dProm.confidence})`);
+        `promoted evidence-backed pattern should visibly raise confidence (cand ${dCand.confidence}, prom ${dProm.confidence})`);
+    // A winning-looking record that doesn't beat the base rate gets NOTHING
+    assert.ok(Math.abs(dNB.confidence - dCand.confidence) < 1e-9,
+        `80% live record below base rate must not move confidence (nb ${dNB.confidence}, cand ${dCand.confidence})`);
 
-    // A promoted pattern that keeps LOSING becomes a risk block
-    const loser = mkWithPattern(config.PATTERN.MIN_LIVE_USES * 2, 0.3);
+    // A promoted pattern that keeps LOSING (below the base rate) blocks
+    const loser = mkWithPattern(config.PATTERN.MIN_LIVE_USES * 2, 0.3, 6);
     const dLose = loser.decide({ bettingWindow: true, balance: 50000 });
     assert.strictEqual(dLose.shouldBet, false);
     assert.match(dLose.reasons.join(' '), /live win rate 30% after/);

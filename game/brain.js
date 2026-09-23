@@ -1,5 +1,17 @@
 const logger = require('../util/logger');
 
+/** Wilson score lower bound for a binomial proportion (95%). The honest way
+ *  to say "this pattern's live win rate beats X": the lower edge of the
+ *  uncertainty interval must exceed it, not just the point estimate. */
+function wilsonLower(wins, n, z = 1.96) {
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    const p = Math.min(1, Math.max(0, wins / n));
+    const z2 = z * z;
+    const center = p + z2 / (2 * n);
+    const spread = z * Math.sqrt((p * (1 - p) + z2 / (4 * n)) / n);
+    return Math.max(0, (center - spread) / (1 + z2 / n));
+}
+
 /**
  * The Brain — the single decision core of the bot.
  *
@@ -126,6 +138,13 @@ class Brain {
                 );
                 return this.finish(decision);
             }
+            // A signal can be statistically real yet still LOSE money if its
+            // hit rate sits below the break-even probability (1/target).
+            // Strict mode requires the edge to clear break-even too.
+            if (v.signalEconomical === false) {
+                reasons.push('signal policy STRICT: signal confirmed but below break-even probability — betting it still loses money');
+                return this.finish(decision);
+            }
         }
 
         // ---- Model confidence gate (+ volatility risk adjustment) ----
@@ -159,14 +178,17 @@ class Brain {
             }
         }
 
-        // ---- Pattern gate (freeze → test → promote) ----
+        // ---- Pattern gate (freeze → test → promote → statistical evidence) ----
         // Patterns are mined in-sample, and with 3^k possible sequences a
         // random stream constantly produces impressive-looking noise. So a
         // mined pattern starts as a CANDIDATE: it is frozen and cannot move
         // confidence at all until it has survived PATTERN_MIN_LIVE_USES
-        // UNSEEN future rounds (its live track record). After promotion its
-        // weight grows with further live evidence, and a pattern whose live
-        // win rate stays under 50% becomes a RISK block instead.
+        // UNSEEN future rounds (its live track record). After promotion, its
+        // betting weight additionally requires STATISTICAL evidence that the
+        // live win rate BEATS the stream's base rate (Wilson lower bound):
+        // at a 1.3x target ~75% of rounds win ANYWAY, so "wins often" proves
+        // nothing — only beating the base rate does. A pattern whose live
+        // win rate ends up below the base rate becomes a RISK block.
         let pattern = null;
         if (this.patterns) {
             pattern = this.patterns.detect();
@@ -175,24 +197,39 @@ class Brain {
                 const used = pattern.used || 0;
                 const promoted = used >= minUses;
                 const maturity = promoted ? Math.min(1, used / (2 * minUses)) : 0;
+                const baseRate = this.predictor
+                    ? this.predictor.probCrashAtLeast(this.strategy.targetMultiplier) : null;
                 const maturedUnderperformer = promoted && maturity >= 1 &&
-                    Number.isFinite(pattern.liveWinRate) && pattern.liveWinRate < 0.5;
+                    Number.isFinite(pattern.liveWinRate) &&
+                    pattern.liveWinRate < (Number.isFinite(baseRate) ? baseRate : 0.5);
                 if (pattern.risky || maturedUnderperformer) {
                     reasons.push(
                         `pattern "${pattern.pattern}" signals risk (P=${pattern.probability.toFixed(2)}` +
-                        (maturedUnderperformer ? `, live win rate ${(pattern.liveWinRate * 100).toFixed(0)}% after ${used} uses` : '') + ')'
+                        (maturedUnderperformer
+                            ? `, live win rate ${(pattern.liveWinRate * 100).toFixed(0)}% after ${used} uses is below the ${(baseRate * 100).toFixed(0)}% base rate`
+                            : '') + ')'
                     );
                     return this.finish(decision);
                 }
+                // Statistical evidence factor: how confidently does the live
+                // record beat the base rate? Zero until the Wilson lower
+                // bound of (liveWins, used) exceeds the base rate, then ramps
+                // to 1 over a 5-point gap. On a fair stream this stays 0 —
+                // exactly what the evidence says.
+                let evidence = 1;
+                if (promoted && Number.isFinite(baseRate) && baseRate > 0 && used > 0) {
+                    const lower = wilsonLower(pattern.liveWins || 0, used);
+                    evidence = Math.max(0, Math.min(1, (lower - baseRate) / 0.05));
+                }
                 // Blend pattern evidence with the base probability — but ONLY
-                // in proportion to its proven live record (0 while a candidate).
-                const w = 0.5 * pattern.quality * maturity;
+                // in proportion to proven live record x statistical evidence.
+                const w = 0.5 * pattern.quality * maturity * evidence;
                 if (confidence !== null) {
                     confidence = confidence * (1 - w) + pattern.probability * w;
                 } else {
                     // No model: an unproven pattern must not fake confidence.
                     // Blend against a neutral 0.5 prior with the SAME weight,
-                    // so only promoted patterns move the needle.
+                    // so only promoted, evidence-backed patterns move the needle.
                     confidence = 0.5 * (1 - w) + pattern.probability * w;
                 }
             } else if (confidence !== null) {

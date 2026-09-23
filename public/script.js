@@ -661,6 +661,7 @@ function renderProfits(data) {
       html += `<h4 style="margin:10px 0 0;color:var(--muted);">🧠 ENGINE — only bets when its gates approve</h4>`;
       if (e && e.bets > 0) {
         html += statCards(e);
+        html += sparkline(e.curve, e.capital);
         // The aim, made measurable: loss per bet vs blind betting.
         const blindPerBet = s.baseline.pnl / s.baseline.bets;
         const engPerBet = e.pnl / e.bets;

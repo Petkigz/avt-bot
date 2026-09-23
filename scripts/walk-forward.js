@@ -144,13 +144,19 @@ function runWalkForward(values, opts = {}) {
     for (const name of names) {
         acc[name] = { bets: 0, wins: 0, pnl: 0, peak: 0, maxDD: 0, brierSum: 0, skipped: 0 };
     }
-    // Fresh-holdout confirmation: the NEWEST third of test folds is kept
-    // aside as a confirmation set. A variant may only become a CONFIRMED
-    // signal candidate if it is significant over the full OOS span AND
-    // still shows positive lift on that final third. This protects the
-    // STRICT gate from trusting a lucky early discovery that faded later.
+    // Fresh-holdout confirmation: the NEWEST third of test folds is held
+    // completely out of discovery. Significance is computed on the FIRST
+    // two thirds only (the discovery span); the final third then serves as
+    // an untouched confirmation set. A variant becomes a CONFIRMED signal
+    // candidate only if it is significant on discovery AND still lifts on
+    // the fresh third. This protects the STRICT gate from lucky discoveries
+    // and keeps confirmation data out of model selection.
     const accLate = {};
-    for (const name of names) accLate[name] = { bets: 0, wins: 0 };
+    const accEarly = {};
+    for (const name of names) {
+        accLate[name] = { bets: 0, wins: 0 };
+        accEarly[name] = { bets: 0, wins: 0, pnl: 0 };
+    }
     const totalFolds = Math.floor((values.length - trainMin) / testSize);
     const lateFrom = totalFolds - Math.max(1, Math.floor(totalFolds / 3));
     let lateTotal = 0;
@@ -196,6 +202,10 @@ function runWalkForward(values, opts = {}) {
                     if (isLate) {
                         accLate[name].bets += 1;
                         if (won) accLate[name].wins += 1;
+                    } else {
+                        accEarly[name].bets += 1;
+                        if (won) accEarly[name].wins += 1;
+                        accEarly[name].pnl += won ? stake * (target - 1) : -stake;
                     }
                     a.pnl += won ? stake * (target - 1) : -stake;
                     if (a.pnl > a.peak) a.peak = a.pnl;
@@ -209,26 +219,43 @@ function runWalkForward(values, opts = {}) {
     const oosBaseRate = testHits / totalTest;
     const lateBaseRate = lateTotal > 0 ? lateHits / lateTotal : null;
 
-    // ---- Multiple-testing correction (Holm-Bonferroni) ----
-    // We compare SEVERAL variants against the same base rate; testing k
-    // hypotheses at p<0.05 means ~1-(0.95^k) chance of a false positive.
-    // Holm's step-down procedure controls the family-wise error rate.
+    // ---- Significance on the DISCOVERY span only (early folds) ----
+    // The late third is untouched confirmation data and must not influence
+    // which variant looks significant. Holm-Bonferroni controls the
+    // family-wise error rate across all tested variants.
+    //
+    // Two separate questions are asked per variant:
+    //   1. STATISTICAL lift: hit rate > OOS base rate (discovery span)?
+    //   2. ECONOMIC viability: hit rate > break-even (1/target)? A
+    //      statistically significant lift to 76% is still LOSING money at a
+    //      1.3x target (break-even ~76.9%), so economic adequacy is tested
+    //      separately against the break-even probability.
+    const breakEven = 1 / target;
     const raw = names.map((name) => {
         const a = acc[name];
+        const e = accEarly[name];
         const hitRate = a.bets > 0 ? a.wins / a.bets : null;
-        let z = null;
+        const earlyHitRate = e.bets > 0 ? e.wins / e.bets : null;
         let pValue = null;
-        if (a.bets >= 30 && hitRate !== null && oosBaseRate > 0 && oosBaseRate < 1) {
-            z = (hitRate - oosBaseRate) / Math.sqrt((oosBaseRate * (1 - oosBaseRate)) / a.bets);
+        if (e.bets >= 30 && earlyHitRate !== null && oosBaseRate > 0 && oosBaseRate < 1) {
+            const z = (earlyHitRate - oosBaseRate) / Math.sqrt((oosBaseRate * (1 - oosBaseRate)) / e.bets);
             pValue = 2 * (1 - normCdf(Math.abs(z)));
         }
-        return { name, a, hitRate, z, pValue, lift: hitRate !== null ? hitRate - oosBaseRate : null };
+        let evPValue = null;
+        if (e.bets >= 30 && earlyHitRate !== null && breakEven > 0 && breakEven < 1) {
+            const z = (earlyHitRate - breakEven) / Math.sqrt((breakEven * (1 - breakEven)) / e.bets);
+            evPValue = 1 - normCdf(z); // one-sided: is it ABOVE break-even?
+        }
+        const lift = hitRate !== null ? hitRate - oosBaseRate : null;
+        const evPerBet = a.bets > 0 ? a.pnl / a.bets : null;
+        return { name, a, hitRate, earlyHitRate, pValue, evPValue, lift, evPerBet };
     });
     const corrected = holmBonferroni(raw.map((r) => r.pValue), 0.05);
 
     const results = {};
     let signalDetected = false;
     let signalConfirmed = false;
+    let signalEconomical = false;
     raw.forEach((r, i) => {
         const significant = r.pValue !== null && corrected[i] && r.lift > 0;
         if (significant) signalDetected = true;
@@ -241,6 +268,7 @@ function runWalkForward(values, opts = {}) {
             confirmed = lateLift > 0;
         }
         if (confirmed) signalConfirmed = true;
+        if (r.evPValue !== null && r.evPValue < 0.05 && r.earlyHitRate > breakEven) signalEconomical = true;
         results[r.name] = {
             bets: r.a.bets,
             wins: r.a.wins,
@@ -251,6 +279,8 @@ function runWalkForward(values, opts = {}) {
             lateBets: late.bets,
             lateLift: lateLift !== null ? Number(lateLift.toFixed(4)) : null,
             confirmed,
+            evPerBet: r.evPerBet !== null ? Number(r.evPerBet.toFixed(2)) : null,
+            economicallyViable: r.evPValue !== null && r.evPValue < 0.05 && r.earlyHitRate > breakEven,
             brier: Number((r.a.brierSum / totalTest).toFixed(5)),
             pnl: Number(r.a.pnl.toFixed(2)),
             maxDD: Number(r.a.maxDD.toFixed(2))
@@ -261,16 +291,20 @@ function runWalkForward(values, opts = {}) {
         rounds: values.length,
         folds,
         target,
+        breakEven: Number(breakEven.toFixed(4)),
         oosBaseRate: Number(oosBaseRate.toFixed(4)),
-        correction: `holm-bonferroni over ${raw.filter((r) => r.pValue !== null).length} tested variants`,
+        correction: `holm-bonferroni over ${raw.filter((r) => r.pValue !== null).length} tested variants (discovery on early folds, confirmation on fresh late folds)`,
         results,
         signalDetected,
         signalConfirmed,
-        verdict: signalConfirmed
-            ? 'SIGNAL CANDIDATE CONFIRMED — significant OOS lift that survived the fresh-holdout check. Re-verify on fresh data before building anything live.'
-            : signalDetected
-                ? 'SIGNAL CANDIDATE UNCONFIRMED — significant overall but failed the fresh-holdout check; treat as false-positive risk, gates stay closed.'
-                : 'NO PREDICTIVE SIGNAL DETECTED — no estimator beat the base rate out-of-sample; bet gates run discipline-only.'
+        signalEconomical,
+        verdict: signalConfirmed && signalEconomical
+            ? 'SIGNAL CANDIDATE CONFIRMED & ECONOMIC — significant OOS lift that survived the fresh holdout AND clears the break-even probability. Re-verify on fresh data before building anything live.'
+            : signalConfirmed
+                ? 'SIGNAL CANDIDATE CONFIRMED BUT UNECONOMIC — lift survives the holdout but does not clear break-even; betting it still loses money. Gates stay closed.'
+                : signalDetected
+                    ? 'SIGNAL CANDIDATE UNCONFIRMED — significant on discovery folds but failed the fresh-holdout check; treat as false-positive risk, gates stay closed.'
+                    : 'NO PREDICTIVE SIGNAL DETECTED — no estimator beat the base rate out-of-sample; bet gates run discipline-only.'
     };
 }
 
@@ -324,18 +358,21 @@ function listSiteHistories(dataDir) {
 function printReport(report, label) {
     console.log(`\n=== Walk-forward validation — ${label} ===`);
     if (report.error) { console.log(`  ${report.error}`); return; }
-    console.log(`Rounds: ${report.rounds} | folds: ${report.folds} | target: ${report.target}x | out-of-sample base rate: ${(report.oosBaseRate * 100).toFixed(1)}%`);
-    console.log('variant    bets   hitRate   lift      p      Brier    pnl      maxDD');
+    console.log(`Rounds: ${report.rounds} | folds: ${report.folds} | target: ${report.target}x | out-of-sample base rate: ${(report.oosBaseRate * 100).toFixed(1)}% | break-even hit rate: ${(report.breakEven * 100).toFixed(1)}%`);
+    console.log('variant    bets   hitRate   lift      p      ev/bet  Brier    pnl      maxDD');
     for (const [name, r] of Object.entries(report.results)) {
         const hr = r.hitRate === null ? '  -   ' : `${(r.hitRate * 100).toFixed(1).padStart(5)}%`;
         const lift = r.lift === null ? '   -   ' : `${(r.lift * 100 >= 0 ? '+' : '') + (r.lift * 100).toFixed(1)}%`.padStart(7);
         const pv = r.pValue === null ? ' n/a ' : r.pValue.toFixed(3).padStart(5);
+        const ev = r.evPerBet === null ? '   -   ' : `${(r.evPerBet >= 0 ? '+' : '') + r.evPerBet.toFixed(1)}`.padStart(7);
         console.log(
-            `${name.padEnd(10)} ${String(r.bets).padStart(5)}  ${hr}  ${lift}  ${pv}  ${r.brier.toFixed(4)}  ${String(r.pnl.toFixed(0)).padStart(7)}  ${String(r.maxDD.toFixed(0)).padStart(6)}` +
-            (r.significant ? '   << significant lift' : '')
+            `${name.padEnd(10)} ${String(r.bets).padStart(5)}  ${hr}  ${lift}  ${pv}  ${ev}  ${r.brier.toFixed(4)}  ${String(r.pnl.toFixed(0)).padStart(7)}  ${String(r.maxDD.toFixed(0)).padStart(6)}` +
+            (r.significant ? '   << significant lift' : '') +
+            (r.economicallyViable ? '  << clears break-even' : '')
         );
     }
     console.log(`\nVERDICT: ${report.verdict}`);
+    console.log('(baseline = the independence null model: the best bet possible if rounds are random)');
 }
 
 /** Persist a site's validation verdict so the LIVE engine can act on it. */

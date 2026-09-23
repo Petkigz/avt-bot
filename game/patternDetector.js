@@ -107,6 +107,7 @@ class PatternDetector {
                 // LIVE track record — how often this pattern's bets actually
                 // won in production (the guard against in-sample-only trust).
                 used: p.used || 0,
+                liveWins: p.liveWins || 0,
                 liveWinRate: (p.used || 0) > 0 ? (p.liveWins || 0) / p.used : null,
                 risky: probability < 0.45
             };
