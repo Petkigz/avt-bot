@@ -83,7 +83,13 @@ const config = {
         // Window (rounds) for the recent estimate + Wilson uncertainty bound.
         RECENT_WINDOW: num(process.env.MODEL_RECENT_WINDOW, 100),
         // How far below the entry threshold the Wilson floor may sit.
-        WILSON_CUSHION: num(process.env.MODEL_WILSON_CUSHION, 0.05)
+        WILSON_CUSHION: num(process.env.MODEL_WILSON_CUSHION, 0.05),
+        // How the walk-forward verdict participates in live decisions:
+        //   advisory — verdict is computed, stored and displayed (default)
+        //   strict   — a site may only bet after its OWN out-of-sample
+        //              validation has found predictive signal ("I don't know
+        //              -> don't bet").
+        SIGNAL_POLICY: (process.env.MODEL_SIGNAL_POLICY || 'advisory').toLowerCase()
     },
 
     // Pattern mining over recent round clusters. See game/patternDetector.js.
@@ -95,7 +101,11 @@ const config = {
         BINS: (process.env.PATTERN_BINS || '1.5,2.5')
             .split(',').map((s) => parseFloat(s.trim())).filter(Number.isFinite),
         // Confidence multiplier when NO known pattern matches (unconfirmed round).
-        NO_PATTERN_PENALTY: num(process.env.PATTERN_NO_PATTERN_PENALTY, 0.95)
+        NO_PATTERN_PENALTY: num(process.env.PATTERN_NO_PATTERN_PENALTY, 0.95),
+        // A mined pattern only gains influence in proportion to its LIVE track
+        // record; it needs this many settled real uses for full weight
+        // (protection against in-sample noise patterns).
+        MIN_LIVE_USES: num(process.env.PATTERN_MIN_LIVE_USES, 10)
     },
 
     // Bankroll & confidence-tier policy. See game/bankroll.js and game/brain.js.

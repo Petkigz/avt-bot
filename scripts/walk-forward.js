@@ -271,6 +271,33 @@ function printReport(report, label) {
     console.log(`\nVERDICT: ${report.verdict}`);
 }
 
+/** Persist a site's validation verdict so the LIVE engine can act on it. */
+function writeVerdict(dataDir, siteId, report) {
+    const safe = String(siteId || 'unknown').replace(/[^a-z0-9.-]/gi, '-');
+    const file = path.join(dataDir, `signal-verdict-${safe}.json`);
+    try {
+        fs.mkdirSync(dataDir, { recursive: true });
+        fs.writeFileSync(file, JSON.stringify({
+            siteId, ts: Date.now(), rounds: report.rounds, target: report.target,
+            signalDetected: report.signalDetected, verdict: report.verdict,
+            results: report.results
+        }, null, 2));
+        return file;
+    } catch (error) {
+        return null;
+    }
+}
+
+function readVerdict(dataDir, siteId) {
+    const safe = String(siteId || 'unknown').replace(/[^a-z0-9.-]/gi, '-');
+    const file = path.join(dataDir, `signal-verdict-${safe}.json`);
+    try {
+        if (!fs.existsSync(file)) return null;
+        const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+        return raw && typeof raw === 'object' ? raw : null;
+    } catch (error) { return null; }
+}
+
 if (require.main === module) {
     const args = process.argv.slice(2);
     const arg = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
@@ -282,7 +309,10 @@ if (require.main === module) {
         const { values, source } = loadRecordedHistory(dataDir, siteId);
         if (values.length >= 400) {
             console.log(`Data source: ${source} — ${values.length} rounds (cumulative across restarts)`);
-            printReport(runWalkForward(values, { target }), source);
+            const report = runWalkForward(values, { target });
+            printReport(report, source);
+            const file = writeVerdict(dataDir, siteId, report);
+            if (file) console.log(`Verdict stored for the live engine: ${file}`);
         } else {
             console.log(`${siteId} has ${values.length} recorded rounds — needs 400+ for walk-forward. Keep observing; every round persists.`);
         }
@@ -297,7 +327,10 @@ if (require.main === module) {
         for (const { siteId: sid, values } of sites) {
             if (values.length >= 400) {
                 console.log(`\nData source: ${sid} — ${values.length} rounds (cumulative across restarts)`);
-                printReport(runWalkForward(values, { target }), sid);
+                const report = runWalkForward(values, { target });
+                printReport(report, sid);
+                const file = writeVerdict(dataDir, sid, report);
+                if (file) console.log(`Verdict stored for the live engine: ${file}`);
             } else {
                 console.log(`\n${sid}: ${values.length} recorded rounds — needs 400+ for walk-forward. Keep observing; every round persists.`);
             }
@@ -308,4 +341,4 @@ if (require.main === module) {
     }
 }
 
-module.exports = { runWalkForward, generateSynthetic, loadRecordedHistory, listSiteHistories, VARIANTS };
+module.exports = { runWalkForward, generateSynthetic, loadRecordedHistory, listSiteHistories, writeVerdict, readVerdict, VARIANTS };

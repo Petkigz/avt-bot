@@ -19,12 +19,16 @@ const logger = require('../util/logger');
  *   (with volatility penalty), pattern check OK, bankroll policy OK.
  */
 class Brain {
-    constructor({ config, strategy, predictor, patterns, bankroll, microOnly }) {
+    constructor({ config, strategy, predictor, patterns, bankroll, microOnly, signal }) {
         this.config = config;
         this.strategy = strategy;
         this.predictor = predictor;       // may be null (model disabled)
         this.patterns = patterns;         // may be null (patterns disabled)
         this.bankroll = bankroll;
+        // Walk-forward validation hookup: { policy, getVerdict() }. Policy
+        // 'strict' refuses bets until this site has a positive OUT-OF-SAMPLE
+        // signal verdict; 'advisory' (default) only reports it.
+        this.signal = signal || null;
         // Strict safety profile: never promote beyond the MICRO tier.
         this.microOnly = microOnly ?? !!(config.MICRO_ONLY);
 
@@ -101,6 +105,18 @@ class Brain {
             return this.finish(decision);
         }
 
+        // ---- Signal-policy gate (walk-forward verdict controls the loop) ----
+        // In STRICT mode a site may only bet after its own out-of-sample
+        // validation has demonstrated predictive signal. This is the "I don't
+        // know -> don't bet" switch: absence of evidence blocks betting.
+        if (this.signal && String(this.signal.policy || '').toLowerCase() === 'strict') {
+            const v = this.signal.getVerdict ? this.signal.getVerdict() : null;
+            if (!v || !v.signalDetected) {
+                reasons.push('signal policy STRICT: no validated out-of-sample signal for this site yet (run walk-forward validation)');
+                return this.finish(decision);
+            }
+        }
+
         // ---- Model confidence gate (+ volatility risk adjustment) ----
         let confidence = null;
         if (this.predictor) {
@@ -126,20 +142,34 @@ class Brain {
         }
 
         // ---- Pattern gate ----
+        // Patterns are mined in-sample, so raw mining stats can be noise.
+        // A pattern only earns influence in proportion to its LIVE track
+        // record (used/liveWinRate): unproven patterns blend at zero weight,
+        // and a mature pattern that keeps losing becomes a risk signal.
         let pattern = null;
         if (this.patterns) {
             pattern = this.patterns.detect();
             if (pattern.found) {
-                if (pattern.risky) {
-                    reasons.push(`pattern "${pattern.pattern}" signals risk (P=${pattern.probability.toFixed(2)})`);
+                const maturity = Math.min(1, (pattern.used || 0) / this.config.PATTERN.MIN_LIVE_USES);
+                const maturedUnderperformer = maturity >= 1 &&
+                    Number.isFinite(pattern.liveWinRate) && pattern.liveWinRate < 0.5;
+                if (pattern.risky || maturedUnderperformer) {
+                    reasons.push(
+                        `pattern "${pattern.pattern}" signals risk (P=${pattern.probability.toFixed(2)}` +
+                        (maturedUnderperformer ? `, live win rate ${(pattern.liveWinRate * 100).toFixed(0)}%` : '') + ')'
+                    );
                     return this.finish(decision);
                 }
-                // Blend pattern evidence with the base probability (quality-weighted).
+                // Blend pattern evidence with the base probability
+                // (quality-weighted AND live-track-record-weighted).
+                const w = 0.5 * pattern.quality * maturity;
                 if (confidence !== null) {
-                    const w = 0.5 * pattern.quality;
                     confidence = confidence * (1 - w) + pattern.probability * w;
                 } else {
-                    confidence = pattern.probability;
+                    // No model: an unproven pattern must not fake confidence.
+                    // Blend against a neutral 0.5 prior with the SAME weight,
+                    // so only patterns with a live track record move the needle.
+                    confidence = 0.5 * (1 - w) + pattern.probability * w;
                 }
             } else if (confidence !== null) {
                 confidence *= this.config.PATTERN.NO_PATTERN_PENALTY; // unconfirmed = slightly less trust
@@ -269,7 +299,19 @@ class Brain {
             decisionFeed: [...this.decisionFeed],
             model: this.predictor ? this.predictor.snapshot() : null,
             patterns: this.patterns ? this.patterns.snapshot() : null,
-            bankroll: this.bankroll ? this.bankroll.snapshot() : null
+            bankroll: this.bankroll ? this.bankroll.snapshot() : null,
+            signal: this.signal ? {
+                policy: this.signal.policy || 'advisory',
+                verdict: (() => {
+                    try {
+                        const v = this.signal.getVerdict ? this.signal.getVerdict() : null;
+                        return v ? {
+                            signalDetected: !!v.signalDetected, rounds: v.rounds,
+                            target: v.target, ts: v.ts, text: v.verdict
+                        } : null;
+                    } catch (error) { return null; }
+                })()
+            } : null
         };
     }
 }

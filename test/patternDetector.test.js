@@ -129,3 +129,21 @@ test('rebuildStream restores detection ability from raw history', () => {
     assert.strictEqual(fresh.detect().found, true);
     assert.ok(before > 0);
 });
+
+test('patterns track a live win/loss record and expose it from detect()', () => {
+    const pd = new PatternDetector({ lengths: [3], minSupport: 2, targetMultiplier: 1.3 });
+    // Build a repeating LHL history so "LHL" has support and the stream ends on it.
+    for (let i = 0; i < 10; i++) { pd.observe(1.1); pd.observe(3.0); pd.observe(1.2); }
+    // Ensure the suffix of the stream is a known 3-pattern with support:
+    const d = pd.detect();
+    assert.strictEqual(d.found, true);
+    assert.strictEqual(d.used, 0);
+    assert.strictEqual(d.liveWinRate, null);
+
+    pd.recordUsageOutcome(d, true);
+    pd.recordUsageOutcome(d, true);
+    pd.recordUsageOutcome(d, false);
+    const d2 = pd.detect();
+    assert.strictEqual(d2.used, 3);
+    assert.ok(Math.abs(d2.liveWinRate - 2 / 3) < 1e-9);
+});

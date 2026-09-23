@@ -19,6 +19,11 @@ const PredictionLogger = require('./game/predictionLogger');
 const { extractFeatures } = require('./game/features');
 const PaperLedger = require('./game/paperLedger');
 const {
+    runWalkForward: runSignalValidation,
+    writeVerdict: writeSignalVerdict,
+    readVerdict: readSignalVerdict
+} = require('./scripts/walk-forward');
+const {
     collectInFrame: pfCollectInFrame,
     parseCapturedTexts: pfParseCapturedTexts,
     ProvablyFairLog,
@@ -1147,7 +1152,14 @@ async function main() {
             sitePatterns.rebuildStream(store.values);
         }
 
-        const siteBrain = new Brain({ config, strategy, predictor: sitePredictor, patterns: sitePatterns, bankroll });
+        let engineRef = null; // lets the brain read this engine's live verdict
+        const siteBrain = new Brain({
+            config, strategy, predictor: sitePredictor, patterns: sitePatterns, bankroll,
+            signal: {
+                policy: config.MODEL.SIGNAL_POLICY,
+                getVerdict: () => (engineRef ? engineRef.signalVerdict : null)
+            }
+        });
         const engine = {
             siteId: key,
             store,
@@ -1178,6 +1190,27 @@ async function main() {
         engine.paperEngine.load();
         engine.liveLedger = new PaperLedger(path.join(config.DATA_DIR, `live-${safe}.json`), { kind: 'log' });
         engine.liveLedger.load();
+        engineRef = engine;
+
+        // ---- Live signal validation: the walk-forward verdict is part of
+        // the engine, not just a report. Recomputed whenever an engine boots
+        // with enough rounds; persisted for other tools and restarts. ----
+        engine.signalVerdict = readSignalVerdict(config.DATA_DIR, key);
+        if (store.size() >= 400) {
+            try {
+                const report = runSignalValidation(store.values, { target: strategyConfig.targetMultiplier });
+                if (!report.error) {
+                    writeSignalVerdict(config.DATA_DIR, key, report);
+                    engine.signalVerdict = { ...report, ts: Date.now() };
+                    logger.info(`Signal validation [${key}]: ${report.verdict}`);
+                }
+            } catch (error) {
+                logger.debug(`Signal validation skipped [${key}]: ${error.message}`);
+            }
+        } else if (engine.signalVerdict) {
+            logger.info(`Signal validation [${key}]: using stored verdict (${engine.signalVerdict.verdict})`);
+        }
+
         engines.set(key, engine);
 
         if (!primaryEngine) {

@@ -187,3 +187,56 @@ test('paused state is surfaced in the brain snapshot', () => {
     brain.paused = true;
     assert.strictEqual(brain.paused, true);
 });
+
+test('STRICT signal policy blocks betting until a positive OOS verdict exists', () => {
+    const strategyConfig = { ...config.BETTING_STRATEGIES.MICRO };
+    const strategy = new BettingStrategy(strategyConfig);
+    const mk = (signal) => {
+        const predictor = new Predictor({
+            targetMultiplier: strategyConfig.targetMultiplier,
+            minSampleSize: 5, minEntryProbability: 0.55, maxEntryProbability: 0.85,
+            coldStreakLimit: 3, coldRecoveryCount: 1
+        });
+        const bankroll = new Bankroll({
+            sessionLossLimit: config.RISK.SESSION_LOSS_LIMIT,
+            dailyLossLimit: config.RISK.DAILY_LOSS_LIMIT,
+            maxStakeFraction: config.RISK.MAX_STAKE_FRACTION,
+            microStakeFraction: config.RISK.MICRO_STAKE_FRACTION,
+            minStake: strategyConfig.minBet
+        });
+        bankroll.setBalance(50000);
+        return new Brain({ config, strategy, predictor, patterns: null, bankroll, signal });
+    };
+    const verdict = { signalDetected: false };
+
+    // No verdict at all -> blocked
+    const b1 = mk({ policy: 'strict', getVerdict: () => null });
+    for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE; i++) b1.onRoundEnded(2.0);
+    const d1 = b1.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(d1.shouldBet, false);
+    assert.match(d1.reasons.join(' '), /signal policy STRICT/i);
+
+    // Negative verdict -> still blocked
+    const b2 = mk({ policy: 'strict', getVerdict: () => verdict });
+    for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE; i++) b2.onRoundEnded(2.0);
+    assert.strictEqual(b2.decide({ bettingWindow: true, balance: 50000 }).shouldBet, false);
+
+    // Positive verdict -> the gate opens (bet proceeds through normal gates)
+    const b3 = mk({ policy: 'strict', getVerdict: () => ({ signalDetected: true }) });
+    for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE; i++) b3.onRoundEnded(2.0);
+    const d3 = b3.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(d3.shouldBet, true);
+
+    // Advisory policy never blocks on verdicts
+    const b4 = mk({ policy: 'advisory', getVerdict: () => null });
+    for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE; i++) b4.onRoundEnded(2.0);
+    assert.strictEqual(b4.decide({ bettingWindow: true, balance: 50000 }).shouldBet, true);
+});
+
+test('snapshot carries the signal policy + verdict summary', () => {
+    const { brain } = makeBrain();
+    brain.signal = { policy: 'strict', getVerdict: () => ({ signalDetected: true, rounds: 500, target: 1.3, ts: 1, verdict: 'x' }) };
+    const snap = brain.snapshot();
+    assert.strictEqual(snap.signal.policy, 'strict');
+    assert.strictEqual(snap.signal.verdict.signalDetected, true);
+});

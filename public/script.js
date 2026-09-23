@@ -158,6 +158,24 @@ function renderLearning(b) {
     setText('bestTarget', bt ? `${bt.target}x (in-sample hist. EV ${fmt(bt.ev, 3)} — curiosity metric, not a bet input)` : 'not enough data');
   }
 
+  // Walk-forward signal verdict (does this stream show OOS predictive signal?)
+  const sv = b.signal;
+  const svEl = document.getElementById('signalVerdict');
+  if (svEl) {
+    if (sv && sv.verdict) {
+      const v = sv.verdict;
+      svEl.textContent = v.signalDetected
+        ? `SIGNAL CANDIDATE (${v.rounds} rds @${v.target}x)`
+        : `no OOS signal (${v.rounds} rds @${v.target}x) — discipline-only`;
+      svEl.className = 'value small ' + (v.signalDetected ? 'pos' : '');
+    } else if (sv) {
+      svEl.textContent = `awaiting 400+ rounds (${sv.policy})`;
+      svEl.className = 'value small';
+    } else {
+      svEl.textContent = '—';
+    }
+  }
+
   // Strongest pattern families
   const p = b.patterns;
   const pBody = document.getElementById('patternTableBody');

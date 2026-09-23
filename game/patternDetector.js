@@ -52,6 +52,7 @@ class PatternDetector {
                 seen: 0,
                 success: 0,
                 used: 0,
+                liveWins: 0, // settled live bets won on this pattern
                 recentUses: [], // last outcomes (true/false) when we bet on it
                 staleUntilRound: 0,
                 lastSeenRound: 0
@@ -103,6 +104,10 @@ class PatternDetector {
                 seen: p.seen,
                 probability,
                 quality,
+                // LIVE track record — how often this pattern's bets actually
+                // won in production (the guard against in-sample-only trust).
+                used: p.used || 0,
+                liveWinRate: (p.used || 0) > 0 ? (p.liveWins || 0) / p.used : null,
                 risky: probability < 0.45
             };
         }
@@ -118,6 +123,7 @@ class PatternDetector {
         const p = this.patterns.get(this.key(detection.length, detection.pattern));
         if (!p) return;
         p.used++;
+        if (won) p.liveWins = (p.liveWins || 0) + 1;
         p.recentUses.push(!!won);
         if (p.recentUses.length > 5) p.recentUses.shift();
         const tail = p.recentUses.slice(-this.staleAfterFails);

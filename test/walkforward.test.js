@@ -43,3 +43,23 @@ test('a genuinely rigged stream is detected out-of-sample', () => {
     assert.ok(report.results.recent.significant || report.results.recency.significant,
         'the lag-aware estimators should be the ones catching the regime');
 });
+
+test('writeVerdict/readVerdict persist a verdict for the live engine', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { writeVerdict, readVerdict } = require('../scripts/walk-forward');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'avt-wf-'));
+    const report = {
+        rounds: 1200, target: 1.3, signalDetected: false,
+        verdict: 'NO PREDICTIVE SIGNAL DETECTED — gates run discipline-only.',
+        results: { baseline: { bets: 0 } }
+    };
+    const file = writeVerdict(dir, 'betpawa.ug', report);
+    assert.ok(file && fs.existsSync(file));
+    const back = readVerdict(dir, 'betpawa.ug');
+    assert.strictEqual(back.signalDetected, false);
+    assert.strictEqual(back.rounds, 1200);
+    assert.match(back.verdict, /NO PREDICTIVE SIGNAL/);
+    assert.equal(readVerdict(dir, 'nobody.example'), null);
+});

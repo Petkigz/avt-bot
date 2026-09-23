@@ -222,9 +222,10 @@ Full list (promotion thresholds, volatility penalties, pattern bins, ...) is in
 
 ## Multi-site & multi-account
 
-The bot is **not BetPawa-only**. Aviator is ONE global Spribe game — every
-bookmaker shows the same rounds at the same time — so data gathered on any
-site feeds the same memory, model and pattern miner.
+The bot is **not BetPawa-only**. Bookmakers run **separate Aviator streams**
+(parallel monitoring showed their round values do not line up), so each site
+owns its own engine — memory, model, patterns and brain — and one game's
+rounds never pollute another's.
 
 **Built-in site profiles** (`util/sites.js`):
 
@@ -437,6 +438,17 @@ Instead of assuming the model is predictive, the bot *measures* whether it is:
   it self-tests against a synthetic feed with a known answer (no signal).
   The verdict line is explicit: `NO PREDICTIVE SIGNAL DETECTED` means the
   gates run discipline-only — that is a *feature*, not a failure.
+- **The verdict is live, not just a report.** Every run — and every engine
+  boot with 400+ recorded rounds — stores `data/signal-verdict-<site>.json`,
+  and the brain reads it through `MODEL_SIGNAL_POLICY`:
+  - `advisory` (default): verdict computed, stored and shown on the dashboard.
+  - `strict`: the **"I don't know → don't bet"** switch — a site may only
+    place bets after its *own* out-of-sample validation has detected signal.
+- **Patterns need a live track record.** A mined sequence only gains
+  confidence weight in proportion to its settled real uses
+  (`PATTERN_MIN_LIVE_USES`); unproven patterns blend at ~0 weight, and a
+  mature pattern that keeps losing becomes a *risk* signal. This closes the
+  "pattern discovered → instantly trusted" hole.
 
 The same layer is deliberately market-agnostic (values in, verdicts out), so
 it can later be pointed at any numeric stream to test whether that stream
