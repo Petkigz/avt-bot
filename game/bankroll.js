@@ -26,6 +26,7 @@ class Bankroll {
 
         this.balance = null;
         this.startingBalance = null;
+        this.paperReference = 0; // >0 in paper mode: simulated bankroll, real balance ignored
         this.sessionPnl = 0;
         this.halted = false;
         this.haltReason = null;
@@ -76,12 +77,26 @@ class Bankroll {
      */
     setBalance(balance) {
         if (!Number.isFinite(balance)) return;
+        if (this.paperReference > 0) return; // paper mode keeps its simulated bankroll
         this.balance = balance;
         if (this.startingBalance === null && balance > 0) {
             this.startingBalance = balance;
             logger.info(`Bankroll reference set: ${balance}`);
         }
         this.rollDailyIfNeeded();
+    }
+
+    /**
+     * Paper mode runs against the strategy's ASSUMED capital, not the real
+     * account balance — a real balance below the minimum stake must not
+     * silence the paper simulation (no real money moves either way).
+     */
+    setPaperReference(amount) {
+        if (!Number.isFinite(amount) || amount <= 0) return;
+        this.paperReference = amount;
+        this.balance = amount;
+        this.startingBalance = amount;
+        logger.info(`Paper bankroll reference set: ${amount} (real balance ignored for sizing/gates)`);
     }
 
     rollDailyIfNeeded() {

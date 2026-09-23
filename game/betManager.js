@@ -56,7 +56,9 @@ class BetManager {
                 return false;
             }
 
-            if (Number.isFinite(balance) && balance < betAmount) {
+            // Paper fills are virtual — never gate them on the real account
+            // balance (a low real balance must not silence the simulation).
+            if (!this.paperMode && Number.isFinite(balance) && balance < betAmount) {
                 logger.warn(`Insufficient balance (${balance}) for bet of ${betAmount} — skipping`);
                 return false;
             }

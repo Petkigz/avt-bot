@@ -1096,6 +1096,14 @@ async function main() {
         microStakeFraction: config.RISK.MICRO_STAKE_FRACTION,
         minStake: strategyConfig.minBet
     });
+    if (config.MODE.PAPER) {
+        // Paper mode simulates against the strategy's assumed capital —
+        // otherwise a real balance below the min stake silently blocks every
+        // simulated bet and the engine ledger stays empty forever.
+        const paperCapital = config.MODE.PAPER_BANKROLL > 0
+            ? config.MODE.PAPER_BANKROLL : strategyConfig.initialBet * 100;
+        bankroll.setPaperReference(paperCapital);
+    }
 
     const strategy = new BettingStrategy(strategyConfig);
     brain = new Brain({ config, strategy, predictor, patterns, bankroll });

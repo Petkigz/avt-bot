@@ -319,18 +319,25 @@ class GameMonitor extends EventEmitter {
         }
 
         // ---- THE decision (all gates live inside Brain.decide) ----
-        const bettingWindow =
-            !inflight &&
-            state.betButton.exists &&
-            state.betButton.visible &&
-            !state.betButton.disabled &&
-            state.betButton.text.includes('bet');
+        // Paper mode never clicks, so it must not depend on the real bet
+        // button existing (next-gen layouts use different selectors) — the
+        // window is simply "between rounds". Live mode still needs a real,
+        // clickable bet button.
+        const bettingWindow = this.betManager.paperMode
+            ? !inflight
+            : (!inflight &&
+                state.betButton.exists &&
+                state.betButton.visible &&
+                !state.betButton.disabled &&
+                state.betButton.text.includes('bet'));
 
         const decision = this.brain.decide({
             bettingWindow,
-            balance: Number.isFinite(balance)
-                ? balance - this.config.GAME.MIN_BALANCE_RESERVE
-                : null,
+            balance: this.betManager.paperMode
+                ? null // paper: sizing/gates use the simulated bankroll, not the real balance
+                : (Number.isFinite(balance)
+                    ? balance - this.config.GAME.MIN_BALANCE_RESERVE
+                    : null),
             cooldownRounds: this.cooldownRounds,
             halted: this.tradingHalted
         });

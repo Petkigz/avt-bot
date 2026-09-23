@@ -83,3 +83,17 @@ test('snapshot exposes limit usage for the dashboard', () => {
     assert.strictEqual(s.halted, false);
     assert.strictEqual(s.trades, 1);
 });
+
+test('paper reference bankroll ignores the real account balance', () => {
+    const b = new Bankroll({ minStake: 100 });
+    b.setBalance(20.82);
+    assert.strictEqual(b.balance, 20.82);
+    b.setPaperReference(10000);
+    assert.strictEqual(b.balance, 10000);
+    assert.strictEqual(b.startingBalance, 10000);
+    // A real balance read must not clobber the simulated bankroll
+    b.setBalance(20.82);
+    assert.strictEqual(b.balance, 10000);
+    // Stake sized against paper capital passes the balance gate
+    assert.strictEqual(b.canBet(100).allowed, true);
+});

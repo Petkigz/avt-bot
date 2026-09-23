@@ -530,7 +530,11 @@ per-site ledgers (`data/paper-baseline-<site>.json`, `paper-engine-<site>.json`,
   set — and resets automatically when you switch strategy.
 - **Engine ledger (paper).** Alongside the every-round baseline, the trades
   the engine's gates actually approve are logged separately, so you can see
-  whether discipline beats blind betting on real rounds.
+  whether discipline beats blind betting on real rounds. Paper bets are fully
+  virtual: they do NOT need the real bet button to exist (next-gen layouts)
+  and are sized/gated against the strategy's assumed capital, so a low real
+  balance never silently blocks the simulation. Both ledgers get their own
+  stat cards and balance curve for a direct comparison.
 - **Live mode — real P&L.** Once `PAPER_MODE=false`, actual settled trades
   feed the live ledger instead; the baseline stays frozen as the
   counterfactual.
