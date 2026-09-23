@@ -316,3 +316,18 @@ test('pattern freeze -> test -> promote: candidates have zero influence', () => 
     assert.strictEqual(dLose.shouldBet, false);
     assert.match(dLose.reasons.join(' '), /live win rate 30% after/);
 });
+
+test('setStrategy retargets the model and pattern miner on a strategy switch', () => {
+    const { brain, predictor, patterns } = makeBrain();
+    warmUp(brain, 200, 2.0);
+    assert.strictEqual(predictor.targetMultiplier, 1.3); // MICRO default in fixture
+
+    const aggressive = new BettingStrategy({ ...config.BETTING_STRATEGIES.AGGRESSIVE });
+    brain.setStrategy(aggressive);
+
+    assert.strictEqual(brain.strategy.targetMultiplier, 2.0);
+    assert.strictEqual(predictor.targetMultiplier, 2.0, 'model must predict the NEW target');
+    assert.strictEqual(patterns.targetMultiplier, 2.0, 'pattern success must measure the NEW target');
+    assert.ok(predictor.baseEntryProbability < 0.55,
+        'entry threshold must rescale down with the higher target');
+});

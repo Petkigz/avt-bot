@@ -127,13 +127,47 @@ test('wilson lower bound is conservative on small samples', () => {
 
 test('uncertainty guard blocks when the recent floor is too low', () => {
     const p = makePredictor({ targetMultiplier: 2.0, minSampleSize: 10 });
-    // Mixed feed: blended point estimate can look fine, but the recent
-    // Wilson floor is weak -> the gate must refuse.
+    // Hot long-term history keeps the BLENDED point estimate above the entry
+    // threshold, but the recent 100-round window is weak — the Wilson floor
+    // must veto the entry anyway.
     const values = [];
-    for (let i = 0; i < 60; i++) values.push(i % 2 === 0 ? 3.0 : 1.1);
+    for (let i = 0; i < 400; i++) values.push(3.0);   // hot past
+    for (let i = 0; i < 67; i++) values.push(1.1);    // weak recent window
+    for (let i = 0; i < 33; i++) values.push(3.0);    // ends warm (no pause)
     p.setHistory(values);
     const decision = p.shouldAllowBet();
     assert.equal(decision.allowed, false);
+});
+
+test('entry thresholds scale with the target so high-target strategies stay operable', () => {
+    // At the 1.3x design target the raw bounds are preserved EXACTLY.
+    const p13 = makePredictor({ targetMultiplier: 1.3 });
+    assert.strictEqual(p13.baseEntryProbability, 0.55);
+    assert.strictEqual(p13.maxEntryProbability, 0.85);
+    // Below the design target nothing changes either.
+    const p12 = makePredictor({ targetMultiplier: 1.2 });
+    assert.strictEqual(p12.baseEntryProbability, 0.55);
+    // A 2x target scales both bounds by 1.3/2 — an absolute 0.55 gate would
+    // be unreachable (P(crash >= 2x) ~ 45%) and silently disable the preset.
+    const p20 = makePredictor({ targetMultiplier: 2.0 });
+    assert.ok(Math.abs(p20.baseEntryProbability - 0.55 * 0.65) < 1e-9);
+    assert.ok(Math.abs(p20.maxEntryProbability - 0.85 * 0.65) < 1e-9);
+});
+
+test('retarget() rescales thresholds and re-evaluates the regime streak', () => {
+    const p = makePredictor({ targetMultiplier: 1.3, minSampleSize: 10 });
+    // Tail: 3 rounds between 1.3x and 2x — warm at 1.3x, cold at 2x.
+    p.setHistory([2.0, 2.0, 1.5, 1.5, 1.5]);
+    assert.strictEqual(p.paused, false);
+
+    p.retarget(2.0);
+    assert.strictEqual(p.targetMultiplier, 2.0);
+    assert.ok(Math.abs(p.baseEntryProbability - 0.55 * 0.65) < 1e-9);
+    assert.strictEqual(p.entryProbability, p.baseEntryProbability);
+    assert.strictEqual(p.consecutiveCold, 3);
+    assert.strictEqual(p.paused, true, 'three sub-2x crashes must trip the loss-streak guard');
+    // History is target-independent and must survive the retarget.
+    assert.strictEqual(p.history.length, 5);
 });
 
 test('blended probability falls back to plain estimate on short history', () => {

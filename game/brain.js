@@ -94,6 +94,25 @@ class Brain {
         return wins / this.recentDecisions.length;
     }
 
+    /**
+     * Hot-swap the strategy (dashboard strategy switch). The model and the
+     * pattern miner are TARGET-specific — a predictor tuned for 1.3x must be
+     * retargeted when the user switches to a 2x strategy, or the confidence
+     * gate measures the wrong event. Entry bounds rescale with the target so
+     * every preset stays operable (see Predictor.applyTargetScaling).
+     */
+    setStrategy(strategy) {
+        this.strategy = strategy;
+        this.stakeCache = null;
+        this.pendingResult = null;
+        if (this.predictor && Number.isFinite(strategy.targetMultiplier)) {
+            this.predictor.retarget(strategy.targetMultiplier);
+        }
+        if (this.patterns && Number.isFinite(strategy.targetMultiplier)) {
+            this.patterns.targetMultiplier = strategy.targetMultiplier;
+        }
+    }
+
     // ------------------------------------------------------------------
     // Decision
     // ------------------------------------------------------------------

@@ -836,7 +836,21 @@ async function main() {
                         ? [...engines.values()].map((e) => e.brain)
                         : (brain ? [brain] : []);
                     if (targets.length > 0) {
-                        targets.forEach((b) => { b.strategy = new BettingStrategy({ ...preset }); });
+                        // setStrategy retargets the model + pattern miner and
+                        // rescales the entry window to the new target.
+                        targets.forEach((b) => b.setStrategy(new BettingStrategy({ ...preset })));
+                        // Bet managers + monitors keep their own strategy
+                        // references (paper fills, live clicks, stop-loss rules
+                        // and the dashboard snapshot all read target/stake from
+                        // them) — swap those alongside the brain.
+                        for (const s of sessions.values()) {
+                            if (s.monitor) {
+                                s.monitor.strategy = new BettingStrategy({ ...preset });
+                                if (s.monitor.betManager) {
+                                    s.monitor.betManager.setStrategy(s.monitor.strategy);
+                                }
+                            }
+                        }
                         // Keep the shared strategy config in sync so stake
                         // sizing, ledger resets and the UI reflect the switch.
                         strategyConfig = { ...preset };

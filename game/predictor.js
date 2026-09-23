@@ -25,8 +25,11 @@ class Predictor {
     constructor(options = {}) {
         this.targetMultiplier = options.targetMultiplier ?? 1.5;
         this.minSampleSize = options.minSampleSize ?? 30;
-        this.baseEntryProbability = options.minEntryProbability ?? 0.55;
-        this.maxEntryProbability = options.maxEntryProbability ?? 0.85;
+        this._rawMinEntry = options.minEntryProbability ?? 0.55;
+        this._rawMaxEntry = options.maxEntryProbability ?? 0.85;
+        this.baseEntryProbability = this._rawMinEntry;
+        this.maxEntryProbability = this._rawMaxEntry;
+        this.applyTargetScaling();
         this.coldStreakLimit = options.coldStreakLimit ?? 3;
         this.coldRecoveryCount = options.coldRecoveryCount ?? 1;
         this.tightenStep = options.tightenStep ?? 0.02;
@@ -42,6 +45,56 @@ class Predictor {
         this.paused = false;
         this.settledBets = { wins: 0, losses: 0 };
         this.file = options.file || null;
+    }
+
+    /**
+     * Entry thresholds are entry-DISCIPLINE knobs calibrated at the 1.3x
+     * design target. As absolute numbers they become structurally
+     * unreachable on higher targets — P(crash ≥ 2x) ≈ 45%, so a flat 0.55
+     * gate would silently disable every 2x strategy. Both bounds therefore
+     * scale by 1.3/target: the same discipline distance relative to each
+     * target's own break-even, and behavior is UNCHANGED at ≤1.3x.
+     */
+    applyTargetScaling() {
+        const factor = Math.min(1, 1.3 / this.targetMultiplier);
+        this.baseEntryProbability = this._rawMinEntry * factor;
+        this.maxEntryProbability = this._rawMaxEntry * factor;
+    }
+
+    /**
+     * Switch to a new target multiplier at runtime (dashboard strategy
+     * switch). Rescales the entry bounds, re-bases the adaptive threshold,
+     * and re-evaluates the loss-streak regime against the new target.
+     * The round history itself is target-independent and is kept.
+     */
+    retarget(targetMultiplier) {
+        if (!Number.isFinite(targetMultiplier) || targetMultiplier <= 1) return;
+        if (targetMultiplier === this.targetMultiplier) return;
+        this.targetMultiplier = targetMultiplier;
+        this.applyTargetScaling();
+        this.entryProbability = this.baseEntryProbability;
+        this._recomputeTailStreak();
+        logger.info(
+            `Model retargeted to ${this.targetMultiplier}x ` +
+            `(entry window ${this.baseEntryProbability.toFixed(2)}–${this.maxEntryProbability.toFixed(2)})`
+        );
+    }
+
+    /** Tail-streak recompute shared by setHistory() and retarget(). */
+    _recomputeTailStreak() {
+        this.consecutiveCold = 0;
+        this.consecutiveWarm = 0;
+        for (let i = this.history.length - 1; i >= 0; i--) {
+            const cold = this.history[i] < this.targetMultiplier;
+            if (cold) {
+                if (this.consecutiveWarm > 0) break;
+                this.consecutiveCold++;
+            } else {
+                if (this.consecutiveCold > 0) break;
+                this.consecutiveWarm++;
+            }
+        }
+        this.paused = this.consecutiveCold >= this.coldStreakLimit;
     }
 
     // ------------------------------------------------------------------
@@ -96,19 +149,7 @@ class Predictor {
     setHistory(values) {
         this.history = [...values];
         // Recompute the tail streak so regime detection is accurate on load.
-        this.consecutiveCold = 0;
-        this.consecutiveWarm = 0;
-        for (let i = this.history.length - 1; i >= 0; i--) {
-            const cold = this.history[i] < this.targetMultiplier;
-            if (cold) {
-                if (this.consecutiveWarm > 0) break;
-                this.consecutiveCold++;
-            } else {
-                if (this.consecutiveCold > 0) break;
-                this.consecutiveWarm++;
-            }
-        }
-        this.paused = this.consecutiveCold >= this.coldStreakLimit;
+        this._recomputeTailStreak();
     }
 
     // ------------------------------------------------------------------
