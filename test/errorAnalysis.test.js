@@ -93,3 +93,17 @@ test('pearson returns null on degenerate inputs', () => {
     assert.strictEqual(pearson([1, 2], [0, 1]).r, null); // n < 3
     assert.strictEqual(pearson([2, 2, 2], [0, 1, 0]).r, null); // zero variance
 });
+
+test('target mixing: pooled skill can be positive while within-target skill is zero', () => {
+    // Two targets, each PERFECTLY calibrated to its own base rate: zero real
+    // skill. Pooling them must not fake an edge.
+    const pairs = [];
+    for (let i = 0; i < 100; i++) pairs.push({ site: 's', target: 1.3, prob: 0.75, won: i < 75 });
+    for (let i = 0; i < 100; i++) pairs.push({ site: 's', target: 2.0, prob: 0.45, won: i < 45 });
+    const report = analyzeSite('s', records(pairs));
+    assert.strictEqual(report.targetCount, 2);
+    assert.ok(report.brierSkill > 0.05, `pooled skill ${report.brierSkill} inflated by mixing`);
+    assert.ok(Math.abs(report.withinTargetBrierSkill) < 0.02,
+        `within-target skill ${report.withinTargetBrierSkill} must stay ~0`);
+    assert.match(report.verdict, /MIXING ARTIFACT/);
+});

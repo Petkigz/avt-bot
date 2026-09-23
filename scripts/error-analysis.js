@@ -8,13 +8,20 @@
  * settled track record and answers, per site:
  *
  *   1. ACCURACY  — is the engine's probability more accurate than simply
- *      quoting the stream base rate? (Brier skill score; >0 beats climatology)
- *   2. CALIBRATION — reliability table + Expected Calibration Error: when it
- *      says 0.80, does the round win ~80%? Direction of any drift.
- *   3. WHERE IT FAILS — error concentration by regime/tier buckets.
+ *      quoting the stream base rate? (Brier skill; >0 beats climatology)
+ *      IMPORTANT: the log mixes predictions made under different strategies
+ *      (1.2x/1.3x/2x/adaptive). Pooling them FAKES skill — a probability
+ *      that merely matches each target's own base rate beats one pooled
+ *      flat guess with zero per-round skill. Every headline number is
+ *      therefore computed WITHIN each target group; pooled values are shown
+ *      for reference only.
+ *   2. CALIBRATION — reliability table + Expected Calibration Error for the
+ *      dominant target: when it says 0.80, does the round win ~80%?
+ *   3. WHERE IT FAILS — error concentration by tier.
  *   4. EXPLORATORY — which stream-state features correlate with outcomes
- *      (Holm-Bonferroni guarded; in-sample by nature — hypothesis GENERATOR
- *      only; anything interesting must survive walk-forward before use).
+ *      WITHIN the dominant target (Holm-Bonferroni guarded; in-sample by
+ *      nature — hypothesis GENERATOR only; anything interesting must survive
+ *      walk-forward/feature-eval before use).
  *
  * HONEST FRAMING: this does not create signal. It measures how well the
  * engine knows what it doesn't know, and points future research at the
@@ -151,16 +158,61 @@ function analyzeSite(siteId, records) {
         return report;
     }
 
+    // ---- TARGET-AWARE analysis -------------------------------------------
+    // The log mixes predictions made under different strategies (1.2x, 1.3x,
+    // 2x, adaptive...). Pooling them fakes skill: a probability that merely
+    // matches EACH target's own base rate beats one pooled flat guess with
+    // zero per-round skill, and feature values computed against different
+    // targets are not comparable. Every headline number below is therefore
+    // computed WITHIN each target group; pooled values are kept for reference
+    // only.
+    const groups = new Map();
+    for (const p of pairs) {
+        const key = Number(p.target) || 0;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(p);
+    }
+    const byTarget = {};
+    let wModelSum = 0, wBaseSum = 0, wN = 0;
+    for (const [target, g] of groups) {
+        const wins = g.filter((p) => p.won).length;
+        const base = wins / g.length;
+        const bModel = brier(g);
+        const bBase = base * (1 - base) ** 2 + (1 - base) * base ** 2;
+        const skill = bBase > 0 ? 1 - bModel / bBase : null;
+        const eceG = g.length >= MIN_PAIRS ? reliability(g).ece : null;
+        byTarget[target] = {
+            n: g.length, baseRate: round4(base),
+            meanProb: round4(g.reduce((s, p) => s + p.prob, 0) / g.length),
+            brierModel: round4(bModel), brierBaseRate: round4(bBase),
+            brierSkill: skill === null ? null : round4(skill),
+            ece: eceG === null ? null : round4(eceG)
+        };
+        if (skill !== null && g.length >= 30) {
+            wModelSum += g.length * bModel;
+            wBaseSum += g.length * bBase;
+            wN += g.length;
+        }
+    }
+    const withinSkill = wN > 0 && wBaseSum > 0 ? 1 - wModelSum / wBaseSum : null;
+
+    // Dominant target: the group with the most settled pairs. Reliability and
+    // the feature scan are reported FOR IT ONLY (cross-target comparisons are
+    // confounded, see above).
+    let dominantTarget = null, dominantPairs = [];
+    for (const [target, g] of groups) {
+        if (g.length > dominantPairs.length) { dominantTarget = target; dominantPairs = g; }
+    }
+
+    // ---- Pooled stats (reference only — see target-mixing note) ----------
     const wins = pairs.filter((p) => p.won).length;
     const baseRate = wins / pairs.length;
     const meanProb = pairs.reduce((s, p) => s + p.prob, 0) / pairs.length;
-
     const bModel = brier(pairs);
-    // Climatology baseline: always quote the realized base rate.
     const bBase = baseRate * (1 - baseRate) ** 2 + (1 - baseRate) * baseRate ** 2;
-    const brierSkill = bBase > 0 ? 1 - bModel / bBase : null;
+    const pooledSkill = bBase > 0 ? 1 - bModel / bBase : null;
 
-    const { table, ece } = reliability(pairs);
+    const { table, ece } = reliability(dominantPairs);
     const gaps = table.filter((b) => b.gap !== null).map((b) => b.gap);
     const meanGap = gaps.length ? gaps.reduce((s, g) => s + g, 0) / gaps.length : 0;
 
@@ -183,13 +235,17 @@ function analyzeSite(siteId, records) {
         delete t.se; delete t.probSum; delete t.wins;
     }
 
-    const features = featureScan(pairs);
+    const features = featureScan(dominantPairs);
 
+    const targetCount = groups.size;
+    const domECE = byTarget[dominantTarget] ? byTarget[dominantTarget].ece : null;
     let verdict;
-    if (brierSkill !== null && brierSkill > 0.02 && ece < 0.06) {
-        verdict = 'CALIBRATED: the engine\'s probabilities beat the flat base-rate guess and track realized frequencies closely.';
-    } else if (brierSkill !== null && brierSkill > 0) {
-        verdict = 'PARTIAL: probabilities beat the base-rate guess but calibration drift is visible (see reliability table).';
+    if (withinSkill !== null && withinSkill > 0.02 && (domECE === null || domECE < 0.06)) {
+        verdict = 'CALIBRATED (within-target): the engine\'s probabilities beat each target\'s own base-rate guess and track realized frequencies closely.';
+    } else if (withinSkill !== null && withinSkill > 0) {
+        verdict = 'PARTIAL: within-target probabilities beat the base-rate guess slightly, but calibration drift is visible (see reliability table).';
+    } else if (pooledSkill !== null && pooledSkill > 0.02) {
+        verdict = 'MIXING ARTIFACT: the pooled numbers look positive only because predictions at different targets are pooled; WITHIN each target the engine has no calibration edge. Consistent with the walk-forward NO SIGNAL verdict.';
     } else {
         verdict = 'NO CALIBRATION EDGE: the engine\'s probabilities are no more accurate than quoting the stream base rate. This is consistent with the walk-forward NO SIGNAL verdict.';
     }
@@ -197,7 +253,11 @@ function analyzeSite(siteId, records) {
     report.meanProb = round4(meanProb);
     report.brierModel = round4(bModel);
     report.brierBaseRate = round4(bBase);
-    report.brierSkill = brierSkill === null ? null : round4(brierSkill);
+    report.brierSkill = pooledSkill === null ? null : round4(pooledSkill); // pooled: reference only
+    report.withinTargetBrierSkill = withinSkill === null ? null : round4(withinSkill); // headline
+    report.byTarget = byTarget;
+    report.dominantTarget = dominantTarget;
+    report.targetCount = targetCount;
     report.ece = round4(ece);
     report.meanGap = round4(meanGap);
     report.calibrationDirection = meanGap > 0.02 ? 'under-confident (wins more than predicted)'
@@ -229,10 +289,21 @@ function printReport(rep) {
     console.log(`ERROR ANALYSIS — ${rep.site}   (${rep.pairs} settled predictions)`);
     console.log('='.repeat(70));
     if (rep.pairs < MIN_PAIRS) { console.log(rep.verdict); return; }
-    console.log(`Base rate (wins): ${(rep.baseRate * 100).toFixed(1)}%   mean predicted: ${(rep.meanProb * 100).toFixed(1)}%`);
-    console.log(`Brier: model ${rep.brierModel} vs base-rate ${rep.brierBaseRate} -> skill ${rep.brierSkill === null ? 'n/a' : (rep.brierSkill * 100).toFixed(1) + '%'}  (positive = better than the flat guess)`);
-    console.log(`Expected calibration error: ${(rep.ece * 100).toFixed(1)} pts   direction: ${rep.calibrationDirection}`);
-    console.log('\nReliability (predicted vs realized):');
+
+    // ---- Per-target breakdown (the honest view) ----
+    console.log(`\nPer-target calibration (predictions at DIFFERENT targets are NOT pooled):`);
+    const entries = Object.entries(rep.byTarget).sort((a, b) => b[1].n - a[1].n);
+    for (const [target, t] of entries) {
+        const skill = t.brierSkill === null ? 'n/a' : (t.brierSkill * 100).toFixed(1) + '%';
+        const ece = t.ece === null ? ' (n<100)' : ` ECE ${(t.ece * 100).toFixed(1)}pts`;
+        console.log(`  target ${target}x: n=${String(t.n).padStart(4)}  base ${(t.baseRate * 100).toFixed(1)}%  predicted ${(t.meanProb * 100).toFixed(1)}%  skill ${skill}${ece}`);
+    }
+    const headline = rep.withinTargetBrierSkill === null ? 'n/a' : (rep.withinTargetBrierSkill * 100).toFixed(1) + '%';
+    console.log(`\nWITHIN-TARGET Brier skill (headline): ${headline}  <- compare model vs each target's OWN base rate`);
+    const pooled = rep.brierSkill === null ? 'n/a' : (rep.brierSkill * 100).toFixed(1) + '%';
+    console.log(`Pooled Brier skill (reference ONLY): ${pooled}${rep.targetCount > 1 ? '   [inflated by mixing ' + rep.targetCount + ' targets]' : ''}`);
+
+    console.log(`\nReliability for dominant target ${rep.dominantTarget}x — ECE ${(rep.ece * 100).toFixed(1)} pts, direction: ${rep.calibrationDirection}`);
     for (const b of rep.reliability) {
         console.log(`  ${b.bin}: n=${String(b.n).padStart(4)}  predicted ${(b.predicted * 100).toFixed(0).padStart(3)}%  realized ${(b.realized * 100).toFixed(0).padStart(3)}%  gap ${(b.gap >= 0 ? '+' : '') + (b.gap * 100).toFixed(1)}pts`);
     }
@@ -241,9 +312,9 @@ function printReport(rep) {
         console.log(`  ${tier}: n=${t.n}  win ${(t.winRate * 100).toFixed(1)}%  meanProb ${(t.meanProb * 100).toFixed(1)}%  brier ${round4(t.brier)}`);
     }
     if (rep.features && rep.features.skipped) {
-        console.log(`\nFeature scan: ${rep.features.reason}`);
+        console.log(`\nFeature scan (dominant target only): ${rep.features.reason}`);
     } else if (rep.features && rep.features.rows) {
-        console.log(`\nFeature-outcome correlations (exploratory, Holm-guarded; n=${rep.features.n}):`);
+        console.log(`\nFeature-outcome correlations — dominant target ${rep.dominantTarget}x ONLY (exploratory, Holm-guarded; n=${rep.features.n}):`);
         const sig = rep.features.rows.filter((r) => r.significant);
         if (sig.length === 0) {
             console.log('  none significant — no stream-state feature carries detectable outcome information.');
@@ -251,7 +322,9 @@ function printReport(rep) {
             for (const r of sig) console.log(`  ${r.feature}: r=${r.r.toFixed(3)} p=${r.p.toExponential(2)}  SIGNIFICANT`);
         }
         console.log('  top 5 by |r|:');
-        for (const r of [...rep.features.rows].sort((a, b) => Math.abs(b.r) - Math.abs(a.r)).slice(0, 5)) {
+        const ranked = [...rep.features.rows].sort((a, b) => Math.abs(b.r) - Math.abs(a.r)).slice(0, 5);
+        if (ranked.length === 0) console.log('    (no variable features in this subset)');
+        for (const r of ranked) {
             console.log(`    ${r.feature}: r=${r.r.toFixed(3)} p=${r.p.toExponential(2)}${r.significant ? '  *' : ''}`);
         }
     }
