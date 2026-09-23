@@ -342,7 +342,7 @@ class GameMonitor extends EventEmitter {
             halted: this.tradingHalted
         });
 
-        if (bettingWindow && decision.shouldBet) {
+        if (bettingWindow && decision.shouldBet && !this.betManager.paperMode) {
             logger.info(
                 `[${this.mode().toUpperCase()}] BET round #${this.roundId + 1}: stake ${decision.stake} | ` +
                 `tier ${decision.tier} | confidence ${(decision.confidence ?? 0).toFixed(2)} | ` +
@@ -457,7 +457,12 @@ class GameMonitor extends EventEmitter {
         // ---- Settle the open bet ----
         const bet = this.betManager.currentBet;
         if (this.betManager.isWaitingForResult && bet && !bet.settled) {
-            if (bet.armed) {
+            if (this.betManager.paperMode) {
+                // Paper fills settle EXACTLY against the crash value — no
+                // reliance on the in-flight multiplier element, which varies
+                // across site layouts.
+                this.betManager.settlePaperRound(crashValue);
+            } else if (bet.armed) {
                 this.betManager.recordLoss(crashValue, { roundId: this.roundId });
             } else {
                 bet.unarmedRoundEnds++;
@@ -475,6 +480,33 @@ class GameMonitor extends EventEmitter {
             this.cooldownRounds--;
             if (this.cooldownRounds === 0) {
                 logger.info('Cooldown complete — betting may resume');
+            }
+        }
+
+        // ---- Paper mode: decide the NEXT round right at the round boundary.
+        // Event-driven, so it never depends on the site's bet button or the
+        // live-multiplier element (both vary across layouts); settlement of
+        // this bet happens against the next crash value above. ----
+        if (this.betManager.paperMode && !this.tradingHalted) {
+            const decision = this.brain.decide({
+                bettingWindow: true,
+                balance: null, // paper: sizing uses the simulated bankroll
+                cooldownRounds: this.cooldownRounds,
+                halted: false
+            });
+            if (decision.shouldBet && decision.stake > 0) {
+                logger.info(
+                    `[PAPER] BET round #${this.roundId + 1}: stake ${decision.stake} | ` +
+                    `tier ${decision.tier} | confidence ${(decision.confidence ?? 0).toFixed(2)} | ` +
+                    `pattern ${decision.pattern ? decision.pattern.pattern : 'none'}`
+                );
+                this.betManager.placeBet(null, null, decision.stake, {
+                    confidence: decision.confidence,
+                    pattern: decision.pattern,
+                    tier: decision.tier
+                }).catch((error) => logger.error(`Paper bet placement failed: ${error.message}`));
+            } else if (decision.reasons.length) {
+                logger.debug(`[PAPER] Standing down round #${this.roundId + 1}: ${decision.reasons.join('; ')}`);
             }
         }
 

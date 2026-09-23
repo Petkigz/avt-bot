@@ -182,6 +182,20 @@ class BetManager {
      * Called every cycle while a round is in flight.
      * `liveMultiplier` is read from the game UI by the GameMonitor.
      */
+    /** Paper mode only: settle the virtual bet exactly against the crash
+     *  value. crash >= target means the target WAS reached during the round
+     *  (the crash value is the round's maximum), which is mathematically
+     *  identical to cashing out at the target — no reliance on reading the
+     *  live multiplier element, which differs across site layouts. */
+    settlePaperRound(crash) {
+        if (!this.paperMode || !this.currentBet || this.currentBet.settled) return;
+        if (Number.isFinite(crash) && crash >= this.currentBet.targetMultiplier) {
+            this.recordWin(this.currentBet.targetMultiplier);
+        } else {
+            this.recordLoss(Number.isFinite(crash) ? crash : null);
+        }
+    }
+
     async checkCashout(frame, liveMultiplier) {
         if (!this.isWaitingForResult || !this.currentBet) return;
         if (!Number.isFinite(liveMultiplier)) return;

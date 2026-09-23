@@ -89,8 +89,9 @@ test('confirmed win prevents double booking at round end', () => {
     assert.strictEqual(stats.losingTrades, 0);
 });
 
-test('unarmed bet survives one round end, then is booked conservatively', () => {
+test('unarmed bet survives one round end, then is booked conservatively (live mode)', () => {
     const m = makeMonitor();
+    m.betManager.paperMode = false; // unarmed-ladder bookkeeping is a LIVE-mode concern
     simulateActiveBet(m, false);
 
     m.onRoundEnded(2.0, null);
@@ -244,4 +245,39 @@ test('settled trades feed the brain (model learning + bankroll)', () => {
     assert.deepStrictEqual(m.brain.recentDecisions, [false]);
     assert.strictEqual(m.brain.predictor.settledBets.losses, 1);
     assert.strictEqual(m.brain.bankroll.sessionPnl, -2);
+});
+
+test('paper mode: bets are placed at round boundaries and settled exactly against the crash', async () => {
+    const brain = makeBrain();
+    const m = makeMonitor(brain);
+    m.betManager.paperMode = true;
+
+    const trades = [];
+    m.on('trade', (t) => trades.push(t));
+
+    // Warm well past OBSERVING so the paper cycle is fully active
+    for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE + 3; i++) m.onRoundEnded(2.0, null);
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(m.brain.tier, 'MICRO');
+    // Drain whatever settled during warm-up; a fresh bet must be armed now
+    const settled = trades.length;
+    assert.ok(m.betManager.currentBet && !m.betManager.currentBet.settled,
+        'a paper bet should be armed at the round boundary');
+
+    // Next round crashes ABOVE the target -> the armed bet wins at the target
+    m.onRoundEnded(2.0, null);
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(trades.length, settled + 1);
+    assert.strictEqual(trades[settled].won, true);
+    assert.ok(trades[settled].profit > 0);
+
+    // Next round crashes BELOW the target -> the new armed bet loses the stake
+    m.onRoundEnded(1.2, null);
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(trades.length, settled + 2);
+    assert.strictEqual(trades[settled + 1].won, false);
+    assert.ok(trades[settled + 1].loss < 0);
+
+    // And a fresh bet is already armed for the following round
+    assert.ok(m.betManager.currentBet && !m.betManager.currentBet.settled);
 });
