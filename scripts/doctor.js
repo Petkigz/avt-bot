@@ -98,6 +98,24 @@ if (fs.existsSync(accountsFile)) {
     warn('accounts.json', 'not created yet (first run creates it)');
 }
 
+// ---- Stale Chrome profile locks (pages-stop-opening culprit) ------------------
+try {
+    const lockNames = ['SingletonLock', 'SingletonCookie', 'SingletonSocket', 'lockfile', 'DevToolsActivePort'];
+    const locked = [];
+    for (const entry of fs.readdirSync(dataDir)) {
+        if (!entry.startsWith('browser-profile')) continue;
+        for (const lock of lockNames) {
+            const file = path.join(dataDir, entry, lock);
+            try { if (fs.lstatSync(file, { throwIfNoEntry: false })) locked.push(`${entry}/${lock}`); } catch { /* absent */ }
+        }
+    }
+    if (locked.length === 0) {
+        pass('Browser profile locks', 'no stale locks (the bot also self-clears them on launch)');
+    } else {
+        warn('Browser profile locks', `${locked.length} lock file(s) present: ${locked.slice(0, 3).join(', ')} — if Chrome is NOT running these are stale; the bot clears them automatically at launch, or close all Chrome windows and restart`);
+    }
+} catch { /* no profiles yet */ }
+
 // ---- Dashboard port free ------------------------------------------------------
 if (config && config.DASHBOARD.ENABLED) {
     const tester = net.createServer();

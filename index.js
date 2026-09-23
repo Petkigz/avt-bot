@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const fs = require('fs');
 const path = require('path');
 const puppeteer = require('puppeteer');
 const readline = require('readline');
@@ -300,6 +301,29 @@ async function gotoSafe(page, url, label) {
     }
 }
 
+/**
+ * Clears stale Chrome profile lock files. When the bot (or the PC) exits
+ * uncleanly, Chrome can leave lock files behind that make the next launch
+ * fail with "failed to launch browser" — the classic cause of "the pages
+ * stopped opening". Deleting them is safe: a RUNNING Chrome would refuse to
+ * give them up, so success here means the lock was stale.
+ */
+function clearStaleProfileLocks(userDataDir) {
+    if (!userDataDir) return [];
+    const lockNames = ['SingletonLock', 'SingletonCookie', 'SingletonSocket', 'lockfile', 'DevToolsActivePort'];
+    const removed = [];
+    for (const name of lockNames) {
+        const file = path.join(userDataDir, name);
+        try {
+            if (fs.existsSync(file) || fs.lstatSync(file, { throwIfNoEntry: false })) {
+                fs.rmSync(file, { force: true, recursive: false });
+                removed.push(name);
+            }
+        } catch (error) { /* not present or not removable */ }
+    }
+    return removed;
+}
+
 async function launchSession(account, site) {
     const launchOptions = {
         headless: config.BROWSER.HEADLESS,
@@ -308,7 +332,29 @@ async function launchSession(account, site) {
         // Per-account persistent profile: log in once per account, stays logged in.
         userDataDir: accounts.profileDir(account.id)
     };
-    const browser = await puppeteer.launch(launchOptions);
+    let browser;
+    try {
+        browser = await puppeteer.launch(launchOptions);
+    } catch (firstError) {
+        // Self-heal: stale profile locks from an unclean exit are the most
+        // common reason a previously-working bot suddenly opens no pages.
+        const removed = clearStaleProfileLocks(launchOptions.userDataDir);
+        if (removed.length > 0) {
+            logger.warn(`Browser failed to start (${firstError.message.split('\n')[0]}); cleared stale profile lock(s) [${removed.join(', ')}] — retrying once`);
+        } else {
+            logger.warn(`Browser failed to start (${firstError.message.split('\n')[0]}) — retrying once`);
+        }
+        try {
+            browser = await puppeteer.launch(launchOptions);
+        } catch (secondError) {
+            const hint = /Could not find|Failed to launch|cannot find/i.test(secondError.message)
+                ? 'Fix: Chrome is missing or corrupted — run "npm install" again, then launcher option [2] health check. If it persists, delete data/browser-profile* folders and retry (you will need to log in once more).'
+                : 'Fix: close ALL Chrome/Chromium windows (Windows: Task Manager -> End task on every Chrome process), then restart the bot. If it still fails, reboot the PC once to release locked profile files.';
+            logger.error(`Browser still failed to start after retry: ${secondError.message.split('\n')[0]}. ${hint}`);
+            emitSiteStatus('error', { message: `Browser failed to start — ${hint}` });
+            throw secondError;
+        }
+    }
     const page = await browser.newPage();
     page.setDefaultNavigationTimeout(config.NAVIGATION.TIMEOUT);
 
@@ -1304,6 +1350,7 @@ async function main() {
     };
 
     // Watcher loop across ALL sessions (same-tab navigation, retries, pruning)
+    let watcherLastError = '';
     const watcher = setInterval(async () => {
         try {
             for (const session of sessions.values()) {
@@ -1334,7 +1381,12 @@ async function main() {
                 }
             }
         } catch (error) {
-            logger.debug(`Watcher loop: ${error.message}`);
+            // Was logger.debug — invisible failures here once hid a broken
+            // monitor-attach loop. Warn once per distinct error instead.
+            if (watcherLastError !== error.message) {
+                watcherLastError = error.message;
+                logger.warn(`Watcher loop problem: ${error.message}`);
+            }
         }
     }, 3000);
 
@@ -1342,7 +1394,16 @@ async function main() {
     activeSite = selection.site;
     accounts.setLastActive(activeSite.id, selection.account.id);
     logger.info(`Session: ${activeSite.name} / "${selection.account.label}" (profile ${selection.account.id})`);
-    const initialSession = await launchSession(selection.account, activeSite);
+    let initialSession;
+    try {
+        initialSession = await launchSession(selection.account, activeSite);
+    } catch (error) {
+        // Keep the dashboard up so the error stays visible in the UI,
+        // then let the process exit for supervisor restart.
+        emitSiteStatus('error', { message: `Browser failed to start: ${error.message.split('\n')[0]} — see the bot window for the fix` });
+        logger.error('Cannot continue without a browser session — exiting. Read the message above for the fix.');
+        throw error;
+    }
     await navigateSessionToGame(initialSession);
 
     // Keep the dashboard's session view fresh even between phase changes
@@ -1396,5 +1457,7 @@ process.on('uncaughtException', (error) => {
 
 main().catch((error) => {
     logger.error(`Failed to start bot: ${error.stack || error.message}`);
-    process.exit(1);
+    logger.error('The dashboard (if it started) still shows this error — read the lines above for the fix.');
+    // Give the dashboard a moment to deliver the fatal state to any open UI.
+    setTimeout(() => process.exit(1), 1500);
 });
