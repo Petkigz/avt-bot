@@ -352,11 +352,76 @@ function clearStaleProfileLocks(userDataDir) {
     return removed;
 }
 
+// --- Crash recovery -------------------------------------------------------
+// When a site's browser window dies on its own (Chromium crash, out of memory,
+// forced close) that is NOT a site logout — but without recovery the session
+// just evaporates and the bot parks on a "please log in" prompt. So an
+// unexpected disconnect relaunches the session automatically, with a windowed
+// cap so a machine that keeps crashing a site does not loop forever.
+const crashRestarts = new Map(); // accountId -> { count, windowStart }
+const MAX_CRASH_RESTARTS = 3;
+const CRASH_RESTART_WINDOW_MS = 5 * 60 * 1000; // budget resets after 5 quiet minutes
+const CRASH_RESTART_DELAY_MS = 4000;
+
+function scheduleCrashRestart(account, site) {
+    const now = Date.now();
+    let rec = crashRestarts.get(account.id);
+    if (!rec || now - rec.windowStart > CRASH_RESTART_WINDOW_MS) {
+        rec = { count: 0, windowStart: now };
+    }
+    rec.count += 1;
+    crashRestarts.set(account.id, rec);
+
+    if (rec.count > MAX_CRASH_RESTARTS) {
+        logger.error(
+            `"${account.label}" (${site.name}) keeps crashing (${rec.count} times in ` +
+            `${Math.round(CRASH_RESTART_WINDOW_MS / 60000)} min) — stopping auto-restart. ` +
+            'Fix: close other heavy programs/browser windows to free memory, then reopen ' +
+            'this site from the dashboard (Sites panel → open). This is a browser crash, not a logout.'
+        );
+        emitSiteStatus('error', {
+            message: `${site.name} browser keeps crashing — free up memory, then reopen it from the Sites panel`,
+            accountLabel: account.label
+        });
+        return;
+    }
+
+    logger.warn(
+        `"${account.label}" (${site.name}) browser closed unexpectedly — this is a browser ` +
+        `crash, NOT a site logout. Auto-restarting in ${CRASH_RESTART_DELAY_MS / 1000}s ` +
+        `(attempt ${rec.count}/${MAX_CRASH_RESTARTS}).`
+    );
+    setTimeout(() => {
+        if (shuttingDown || switchInProgress) return;
+        if (sessions.has(account.id)) return; // something else already reopened it
+        (async () => {
+            try {
+                const session = await launchSession(account, site);
+                await navigateSessionToGame(session);
+            } catch (error) {
+                logger.error(`Auto-restart of "${account.label}" (${site.name}) failed: ${error.message.split('\n')[0]}`);
+            }
+        })();
+    }, CRASH_RESTART_DELAY_MS);
+}
+
 async function launchSession(account, site) {
     const launchOptions = {
         headless: config.BROWSER.HEADLESS,
         defaultViewport: null,
-        args: ['--start-maximized'],
+        args: [
+            '--start-maximized',
+            // Stability flags: when several site windows run side by side,
+            // Windows/Chromium can suspend or "occlude" the window that is
+            // not in front, which is a common cause of the browser randomly
+            // disconnecting/crashing mid-session. These keep every window
+            // fully awake so a backgrounded site does not drop its session.
+            '--disable-features=CalculateNativeWinOcclusion',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--disable-background-timer-throttling',
+            '--disable-dev-shm-usage'
+        ],
         // Per-account persistent profile: log in once per account, stays logged in.
         userDataDir: accounts.profileDir(account.id)
     };
@@ -391,6 +456,7 @@ async function launchSession(account, site) {
     emitSessions();
 
     browser.on('disconnected', () => {
+        const wasCancelled = session.cancelled === true;
         sessions.delete(account.id);
         emitSessions();
         logger.warn(`Browser session closed for account "${account.label}" (${site.name})`);
@@ -399,6 +465,11 @@ async function launchSession(account, site) {
         if (sessions.size === 0 && !shuttingDown && !switchInProgress) {
             logger.error('No browser sessions left — exiting for supervisor restart');
             process.exit(1);
+        }
+        // An unexpected, uncancelled death of the window is a browser crash,
+        // not a site logout — relaunch the session instead of losing it.
+        if (!shuttingDown && !switchInProgress && !wasCancelled) {
+            scheduleCrashRestart(account, site);
         }
     });
 
@@ -614,6 +685,14 @@ async function logPageDiagnostics(page, site) {
 async function navigateSessionToGame(session) {
     const { page, site } = session;
     await gotoSafe(page, site.baseUrl, `${site.name} home`);
+
+    // The browser/page can die during that navigation (a crash). A dead page
+    // can never show a login screen, so skip the manual login flow for it —
+    // the disconnect handler is already relaunching the session.
+    if (session.page.isClosed()) {
+        logger.warn(`Session for "${session.account.label}" (${site.name}) lost its browser before login — auto-restart will take over`);
+        return;
+    }
 
     if (site.loginFlow === 'manual') {
         await waitForLogin(session);
