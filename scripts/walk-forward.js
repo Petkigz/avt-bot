@@ -232,6 +232,28 @@ function loadRecordedHistory(dataDir, siteId = null) {
     return { values, source };
 }
 
+/** List per-site history files with their round counts (validation must run
+ *  per site — bookmakers host separate Aviator streams and mixing them would
+ *  corrupt the sequence analysis). */
+function listSiteHistories(dataDir) {
+    const readValues = (file) => {
+        try {
+            const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+            return Array.isArray(raw) ? raw.filter((v) => Number.isFinite(v) && v > 0) : [];
+        } catch (error) { return []; }
+    };
+    const out = [];
+    try {
+        for (const name of fs.readdirSync(dataDir)) {
+            const m = /^history-(.+)\.json$/.exec(name);
+            if (!m) continue;
+            const values = readValues(path.join(dataDir, name));
+            if (values.length > 0) out.push({ siteId: m[1], values });
+        }
+    } catch (error) { /* no data dir */ }
+    return out;
+}
+
 function printReport(report, label) {
     console.log(`\n=== Walk-forward validation — ${label} ===`);
     if (report.error) { console.log(`  ${report.error}`); return; }
@@ -256,17 +278,34 @@ if (require.main === module) {
     const target = parseFloat(arg('--target') || process.env.WALKFORWARD_TARGET || '1.3');
     const siteId = arg('--site');
 
-    const { values, source } = loadRecordedHistory(dataDir, siteId);
-    if (values.length >= 400) {
-        console.log(`Data source: ${source} — ${values.length} rounds`);
-        printReport(runWalkForward(values, { target }), source);
+    if (siteId) {
+        const { values, source } = loadRecordedHistory(dataDir, siteId);
+        if (values.length >= 400) {
+            console.log(`Data source: ${source} — ${values.length} rounds (cumulative across restarts)`);
+            printReport(runWalkForward(values, { target }), source);
+        } else {
+            console.log(`${siteId} has ${values.length} recorded rounds — needs 400+ for walk-forward. Keep observing; every round persists.`);
+        }
     } else {
-        console.log(`Recorded history too thin for walk-forward (${values.length} rounds < 400).`);
-        console.log('Validating on SYNTHETIC rounds instead (known 3% house edge — no signal exists by construction):\n');
-        const synth = generateSynthetic(5000, 0.03, 20260922);
-        printReport(runWalkForward(synth, { target }), 'synthetic 5000 rounds (ground truth: no signal)');
-        console.log('\nKeep the bot observing; rerun once a few thousand real rounds are recorded.');
+        // No --site given: validate EACH site separately. Sites are separate
+        // Aviator streams; merging them would corrupt the analysis.
+        const sites = listSiteHistories(dataDir);
+        if (sites.length === 0) {
+            console.log('No recorded history yet. Validating on SYNTHETIC rounds (known 3% house edge — no signal exists by construction):\n');
+            printReport(runWalkForward(generateSynthetic(5000, 0.03, 20260922), { target }), 'synthetic 5000 rounds (ground truth: no signal)');
+        }
+        for (const { siteId: sid, values } of sites) {
+            if (values.length >= 400) {
+                console.log(`\nData source: ${sid} — ${values.length} rounds (cumulative across restarts)`);
+                printReport(runWalkForward(values, { target }), sid);
+            } else {
+                console.log(`\n${sid}: ${values.length} recorded rounds — needs 400+ for walk-forward. Keep observing; every round persists.`);
+            }
+        }
+        if (sites.length > 1) {
+            console.log('\nEach site was validated separately on purpose: bookmakers run separate Aviator streams.');
+        }
     }
 }
 
-module.exports = { runWalkForward, generateSynthetic, loadRecordedHistory, VARIANTS };
+module.exports = { runWalkForward, generateSynthetic, loadRecordedHistory, listSiteHistories, VARIANTS };
