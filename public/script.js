@@ -853,6 +853,38 @@ onEvent('debugGameBtn', 'click', async () => {
   }
 });
 
+onEvent('provablyFairBtn', 'click', async () => {
+  const btn = el('provablyFairBtn');
+  btn.disabled = true;
+  btn.textContent = '🔍 Scanning…';
+  try {
+    const res = await fetch(`/api/debug/provablyfair?accountId=${encodeURIComponent(el('accountSelect').value || '')}`);
+    const data = await res.json();
+    const pre = el('debugOut');
+    let header = 'PROVABLY-FAIR SCAN\n\n';
+    if (data.error) {
+      header += `Error: ${data.error}\n`;
+    } else {
+      header += `Site: ${data.site} | frames scanned: ${data.framesScanned} | frames with fair-data: ${data.found.length}\n`;
+      header += `Records stored: ${data.analysis.records} | distinct 64-hex values: ${data.analysis.distinctHex64}\n`;
+      if (data.analysis.nonceRange) header += `Nonce range seen: ${data.analysis.nonceRange.min} – ${data.analysis.nonceRange.max}\n`;
+      if (data.analysis.anomalies.length) header += `\n⚠ ANOMALIES:\n${data.analysis.anomalies.map((a) => '  • ' + a).join('\n')}\n`;
+      if (data.found.length === 0) {
+        header += '\nNothing found yet. In the game window, open the shield / "Provably Fair" panel (it shows the server-seed hash, client seed and nonce), then click Scan again. Each scan is stored, so evidence accumulates.';
+      }
+    }
+    pre.textContent = header + '\n\n' + JSON.stringify(data, null, 2);
+    pre.classList.remove('hidden');
+    pre.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (e) {
+    el('debugOut').textContent = `Provably-fair scan failed: ${e.message}`;
+    el('debugOut').classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 Scan provably-fair data';
+  }
+});
+
 onEvent('strategyApplyBtn', 'click', async () => {
   const name = el('strategySelect').value;
   const status = el('controlStatus');

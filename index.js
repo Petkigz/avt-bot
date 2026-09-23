@@ -17,6 +17,12 @@ const CalibrationTracker = require('./game/calibration');
 const PredictionLogger = require('./game/predictionLogger');
 const { extractFeatures } = require('./game/features');
 const PaperLedger = require('./game/paperLedger');
+const {
+    collectInFrame: pfCollectInFrame,
+    parseCapturedTexts: pfParseCapturedTexts,
+    ProvablyFairLog,
+    analyze: pfAnalyze
+} = require('./game/provablyFair');
 const Bankroll = require('./game/bankroll');
 const Brain = require('./game/brain');
 const CsvLog = require('./util/csvLog');
@@ -660,12 +666,58 @@ async function main() {
 
     if (config.DASHBOARD.ENABLED) {
         try {
+            // ---- Provably-fair capture (implementation-weakness audit) ----
+            // Scans the live page for the game's fair-data panel (seeds,
+            // hashes, nonces), persists everything per site, and reports
+            // anomalies such as seed reuse or revealed plaintext seeds.
+            const pfLogs = new Map();
+            const pfLogFor = (siteId) => {
+                const safe = String(siteId || 'unknown').replace(/[^a-z0-9.-]/gi, '-');
+                if (!pfLogs.has(safe)) {
+                    pfLogs.set(safe, new ProvablyFairLog(path.join(config.DATA_DIR, `provablyfair-${safe}.jsonl`)));
+                }
+                return pfLogs.get(safe);
+            };
+            const scanProvablyFair = async (accountId) => {
+                const s = (accountId && sessions.get(accountId)) || sessions.values().next().value;
+                if (!s || !s.page || s.page.isClosed()) return { error: 'no open session — launch one first' };
+                let frames = [];
+                try { frames = s.page.frames(); } catch (error) { return { error: `frames unavailable: ${error.message}` }; }
+                const collected = [];
+                for (const frame of frames) {
+                    try {
+                        const data = await frame.evaluate(pfCollectInFrame);
+                        if (data && ((data.texts && data.texts.length) || (data.buttons && data.buttons.length))) {
+                            collected.push(data);
+                        }
+                    } catch (error) { /* frame detached or not ready */ }
+                }
+                const found = collected.map((c) => ({
+                    frame: c.url,
+                    buttons: c.buttons,
+                    ...pfParseCapturedTexts(c.texts)
+                }));
+                const siteId = s.site.id;
+                const log = pfLogFor(siteId);
+                for (const f of found) {
+                    log.record({ site: siteId, frame: f.frame, hex64: f.hex64, serverSeed: f.serverSeed, serverSeedHash: f.serverSeedHash, clientSeed: f.clientSeed, nonce: f.nonce, labels: (f.labels || []).length });
+                }
+                const analysis = pfAnalyze(log.readAll());
+                if (found.length === 0) {
+                    logger.info(`Provably-fair scan [${siteId}]: no fair-panel content visible — open the shield/"Provably Fair" panel inside the game, then scan again`);
+                } else {
+                    logger.info(`Provably-fair scan [${siteId}]: captured ${found.length} frame(s), ${analysis.distinctHex64} distinct 64-hex values; anomalies: ${analysis.anomalies.length || 'none'}`);
+                }
+                return { site: siteId, framesScanned: frames.length, found, analysis };
+            };
+
             const dashboardDeps = {
                 accounts,
                 getActiveSite: () => ({ id: activeSite.id, name: activeSite.name, currency: activeSite.currency }),
                 getSessions: sessionsSnapshot,
                 getControlState: controlState,
                 profits: () => profitsSnapshot(),
+                getProvablyFair: scanProvablyFair,
                 getGameDebug: async (accountId) => {
                     const s = (accountId && sessions.get(accountId)) || sessions.values().next().value;
                     if (!s) return { error: 'no session' };

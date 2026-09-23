@@ -442,6 +442,21 @@ The same layer is deliberately market-agnostic (values in, verdicts out), so
 it can later be pointed at any numeric stream to test whether that stream
 contains a measurable edge before a trading layer ever touches it.
 
+## Provably-fair audit
+
+Crash values alone can't expose a weak RNG, so the dashboard also has a
+**🔍 Scan provably-fair data** button (Debug panel). It scans every frame of
+the live page for the game's fair-data panel — server-seed hash, plaintext
+server seeds when revealed, client seeds, nonces — and stores each capture
+in `data/provablyfair-<site>.jsonl`. The analysis layer then hunts for
+implementation weaknesses: **reused seed/hash values** (flagged loudly),
+revealed plaintext seeds (which make every round of that seed fully
+replayable), and nonce ranges. `replayRound()` recomputes
+`SHA256(serverSeed:clientSeed:nonce)` and tests candidate crash-derivation
+formulas against observed crashes, so a revealed seed can be verified — or
+exploited, should the data ever show the scheme to be weak. The panel is
+often behind the in-game shield icon: open it in the game window, then scan.
+
 ## Profits & losses panel
 
 The dashboard has a dedicated **Profits & losses** panel with persistent,

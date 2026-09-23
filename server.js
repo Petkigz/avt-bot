@@ -197,6 +197,16 @@ async function startDashboard(port, logger, deps = {}) {
             }
         });
 
+        // Provably-fair audit: scan the live page for seeds/hashes/nonces.
+        app.get('/api/debug/provablyfair', async (req, res) => {
+            if (!deps.getProvablyFair) return res.status(503).json({ error: 'provably-fair scan unavailable' });
+            try {
+                res.json(await deps.getProvablyFair(req.query.accountId));
+            } catch (error) {
+                res.status(500).json({ error: error.message });
+            }
+        });
+
         app.post('/api/accounts/new', (req, res) => {
             if (!deps.accounts) return res.status(503).json({ error: 'accounts unavailable' });
             const { site, label, notes } = req.body || {};
