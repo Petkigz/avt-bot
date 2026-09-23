@@ -144,11 +144,25 @@ function runWalkForward(values, opts = {}) {
     for (const name of names) {
         acc[name] = { bets: 0, wins: 0, pnl: 0, peak: 0, maxDD: 0, brierSum: 0, skipped: 0 };
     }
+    // Fresh-holdout confirmation: the NEWEST third of test folds is kept
+    // aside as a confirmation set. A variant may only become a CONFIRMED
+    // signal candidate if it is significant over the full OOS span AND
+    // still shows positive lift on that final third. This protects the
+    // STRICT gate from trusting a lucky early discovery that faded later.
+    const accLate = {};
+    for (const name of names) accLate[name] = { bets: 0, wins: 0 };
+    const totalFolds = Math.floor((values.length - trainMin) / testSize);
+    const lateFrom = totalFolds - Math.max(1, Math.floor(totalFolds / 3));
+    let lateTotal = 0;
+    let lateHits = 0;
+
     let folds = 0;
     let totalTest = 0;
     let testHits = 0;
 
     for (let t = trainMin; t + testSize <= values.length; t += testSize) {
+        const fi = folds;
+        const isLate = fi >= lateFrom;
         const train = values.slice(0, t);
         const test = values.slice(t, t + testSize);
         const foldBase = rateOf(test, target);
@@ -156,6 +170,10 @@ function runWalkForward(values, opts = {}) {
         folds += 1;
         totalTest += test.length;
         testHits += test.filter((v) => v >= target).length;
+        if (isLate) {
+            lateTotal += test.length;
+            lateHits += test.filter((v) => v >= target).length;
+        }
 
         // One estimate per variant for this fold (train data only).
         const estimates = {};
@@ -175,6 +193,10 @@ function runWalkForward(values, opts = {}) {
                 if (est >= trainBase + o.margin) {
                     a.bets += 1;
                     if (won) a.wins += 1;
+                    if (isLate) {
+                        accLate[name].bets += 1;
+                        if (won) accLate[name].wins += 1;
+                    }
                     a.pnl += won ? stake * (target - 1) : -stake;
                     if (a.pnl > a.peak) a.peak = a.pnl;
                     const dd = a.peak - a.pnl;
@@ -185,6 +207,7 @@ function runWalkForward(values, opts = {}) {
     }
 
     const oosBaseRate = testHits / totalTest;
+    const lateBaseRate = lateTotal > 0 ? lateHits / lateTotal : null;
 
     // ---- Multiple-testing correction (Holm-Bonferroni) ----
     // We compare SEVERAL variants against the same base rate; testing k
@@ -205,9 +228,19 @@ function runWalkForward(values, opts = {}) {
 
     const results = {};
     let signalDetected = false;
+    let signalConfirmed = false;
     raw.forEach((r, i) => {
         const significant = r.pValue !== null && corrected[i] && r.lift > 0;
         if (significant) signalDetected = true;
+        // Fresh-holdout confirmation on the newest third of test rounds.
+        const late = accLate[r.name];
+        let lateLift = null;
+        let confirmed = false;
+        if (significant && lateBaseRate !== null && late.bets >= 15) {
+            lateLift = late.wins / late.bets - lateBaseRate;
+            confirmed = lateLift > 0;
+        }
+        if (confirmed) signalConfirmed = true;
         results[r.name] = {
             bets: r.a.bets,
             wins: r.a.wins,
@@ -215,6 +248,9 @@ function runWalkForward(values, opts = {}) {
             lift: r.lift !== null ? Number(r.lift.toFixed(4)) : null,
             pValue: r.pValue !== null ? Number(r.pValue.toFixed(4)) : null,
             significant,
+            lateBets: late.bets,
+            lateLift: lateLift !== null ? Number(lateLift.toFixed(4)) : null,
+            confirmed,
             brier: Number((r.a.brierSum / totalTest).toFixed(5)),
             pnl: Number(r.a.pnl.toFixed(2)),
             maxDD: Number(r.a.maxDD.toFixed(2))
@@ -229,9 +265,12 @@ function runWalkForward(values, opts = {}) {
         correction: `holm-bonferroni over ${raw.filter((r) => r.pValue !== null).length} tested variants`,
         results,
         signalDetected,
-        verdict: signalDetected
-            ? 'SIGNAL CANDIDATE DETECTED — treat with suspicion until re-verified on fresh data (random data regularly produces lucky streaks).'
-            : 'NO PREDICTIVE SIGNAL DETECTED — no estimator beat the base rate out-of-sample; bet gates run discipline-only.'
+        signalConfirmed,
+        verdict: signalConfirmed
+            ? 'SIGNAL CANDIDATE CONFIRMED — significant OOS lift that survived the fresh-holdout check. Re-verify on fresh data before building anything live.'
+            : signalDetected
+                ? 'SIGNAL CANDIDATE UNCONFIRMED — significant overall but failed the fresh-holdout check; treat as false-positive risk, gates stay closed.'
+                : 'NO PREDICTIVE SIGNAL DETECTED — no estimator beat the base rate out-of-sample; bet gates run discipline-only.'
     };
 }
 

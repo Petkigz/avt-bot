@@ -18,6 +18,9 @@
  *       baseline          — training base rate only (the null);
  *       logistic-all      — L2 logistic regression over ALL features
  *                           (hand-rolled gradient descent, no deps);
+ *       boost-all         — gradient-boosted depth-2 trees over ALL
+ *                           features (hand-rolled, log loss, no deps) —
+ *                           a genuinely non-linear, interacting family;
  *       logistic-<name>   — one univariate logistic model PER feature, so
  *                           each feature gets its own OOS lift table row;
  *   - every comparison is a z-test of OOS bet hit-rate vs the OOS base rate;
@@ -117,6 +120,102 @@ function fitLogistic(X, y, colIdx, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Gradient-boosted depth-2 trees (hand-rolled, log loss). A genuinely
+// different model family from logistic regression: non-linear, feature-
+// interacting. Used ONLY out-of-sample, compared against the same null,
+// and corrected together with every other model via Holm-Bonferroni.
+// ---------------------------------------------------------------------------
+
+function fitBoosting(X, y, colIdx, opts = {}) {
+    const { trees = 50, lr = 0.1, minChild = 10 } = opts;
+    const n = X.length;
+    const d = colIdx.length;
+    if (n < 60 || d === 0) return null;
+
+    // Standardization from training data only — never peek at the test fold.
+    const mean = new Array(d).fill(0);
+    const std = new Array(d).fill(0);
+    for (let j = 0; j < d; j++) {
+        let s = 0;
+        for (let i = 0; i < n; i++) s += X[i][colIdx[j]];
+        mean[j] = s / n;
+        let v = 0;
+        for (let i = 0; i < n; i++) v += (X[i][colIdx[j]] - mean[j]) ** 2;
+        std[j] = Math.sqrt(v / n) || 1;
+    }
+    const zOf = (row, j) => (row[colIdx[j]] - mean[j]) / std[j];
+
+    // Split candidates: terciles of each standardized feature (train only).
+    const thresholds = [];
+    for (let j = 0; j < d; j++) {
+        const vals = [];
+        for (let i = 0; i < n; i++) vals.push(zOf(X[i], j));
+        vals.sort((a, b) => a - b);
+        thresholds.push([
+            vals[Math.floor(n / 3)],
+            vals[Math.floor((2 * n) / 3)]
+        ]);
+    }
+
+    const sigmoid = (s) => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, s))));
+    const base = Math.max(1e-6, Math.min(1 - 1e-6, y.reduce((s, v) => s + v, 0) / n));
+    const f0 = Math.log(base / (1 - base));
+    const f = new Array(n).fill(f0);
+    const forest = [];
+
+    const sseOf = (idx, resid) => {
+        let s = 0, sq = 0;
+        for (const i of idx) { s += resid[i]; sq += resid[i] * resid[i]; }
+        return { s, sse: sq - (s * s) / idx.length };
+    };
+
+    const allIdx = [];
+    for (let i = 0; i < n; i++) allIdx.push(i);
+
+    for (let m = 0; m < trees; m++) {
+        // Negative gradient of log loss = the regression target.
+        const resid = new Array(n);
+        for (let i = 0; i < n; i++) resid[i] = y[i] - sigmoid(f[i]);
+
+        const fitNode = (idx, depth) => {
+            const here = sseOf(idx, resid);
+            const leafV = here.s / idx.length;
+            if (depth >= 2 || idx.length < 2 * minChild) return { v: leafV };
+            let best = null;
+            for (let j = 0; j < d; j++) {
+                for (const thr of thresholds[j]) {
+                    const L = [], R = [];
+                    for (const i of idx) (zOf(X[i], j) <= thr ? L : R).push(i);
+                    if (L.length < minChild || R.length < minChild) continue;
+                    const sse = sseOf(L, resid).sse + sseOf(R, resid).sse;
+                    const gain = here.sse - sse;
+                    if (gain > 1e-12 && (!best || gain > best.gain)) best = { j, thr, L, R, gain };
+                }
+            }
+            if (!best) return { v: leafV };
+            return { j: best.j, thr: best.thr, l: fitNode(best.L, depth + 1), r: fitNode(best.R, depth + 1) };
+        };
+        const tree = fitNode(allIdx, 0);
+        forest.push(tree);
+
+        const predictNode = (node, row) =>
+            (node.v !== undefined) ? node.v
+                : (zOf(row, node.j) <= node.thr ? predictNode(node.l, row) : predictNode(node.r, row));
+        for (let i = 0; i < n; i++) f[i] += lr * predictNode(tree, X[i]);
+    }
+
+    const predictNodeOf = (node, row) =>
+        (node.v !== undefined) ? node.v
+            : (zOf(row, node.j) <= node.thr ? predictNodeOf(node.l, row) : predictNodeOf(node.r, row));
+    const predict = (row) => {
+        let s = f0;
+        for (const tree of forest) s += lr * predictNodeOf(tree, row);
+        return sigmoid(s);
+    };
+    return { predict };
+}
+
+// ---------------------------------------------------------------------------
 // Walk-forward evaluation
 // ---------------------------------------------------------------------------
 
@@ -134,9 +233,14 @@ function runFeatureEval(values, opts = {}) {
 
     const baseRateAll = rows.reduce((s, r) => s + r.y, 0) / rows.length;
     const allCols = names.map((_, j) => j);
-    // Models: full + one univariate per feature (the feature-importance table)
-    const models = [{ name: 'logistic-all', cols: allCols }];
-    for (let j = 0; j < names.length; j++) models.push({ name: `logistic-${names[j]}`, cols: [j] });
+    // Models: two genuinely different model families over ALL features
+    // (linear logistic + non-linear gradient boosting), plus one univariate
+    // logistic per feature (the feature-importance table).
+    const models = [
+        { name: 'logistic-all', cols: allCols, kind: 'logistic' },
+        { name: 'boost-all', cols: allCols, kind: 'boost' }
+    ];
+    for (let j = 0; j < names.length; j++) models.push({ name: `logistic-${names[j]}`, cols: [j], kind: 'logistic' });
 
     const acc = {};
     for (const m of [{ name: 'baseline', cols: [] }, ...models]) {
@@ -153,7 +257,13 @@ function runFeatureEval(values, opts = {}) {
         const trainBase = train.reduce((s, r) => s + r.y, 0) / train.length;
 
         const fitted = {};
-        for (const m of models) fitted[m.name] = fitLogistic(train.map((r) => r.x), train.map((r) => r.y), m.cols);
+        for (const m of models) {
+            const trainX = train.map((r) => r.x);
+            const trainY = train.map((r) => r.y);
+            fitted[m.name] = m.kind === 'boost'
+                ? fitBoosting(trainX, trainY, m.cols)
+                : fitLogistic(trainX, trainY, m.cols);
+        }
 
         for (const row of test) {
             totalTest += 1;
@@ -252,13 +362,13 @@ function writeFeatureVerdict(dataDir, siteId, report) {
 function printReport(report, source) {
     if (report.error) { console.log(`  ${source}: ${report.error}`); return; }
     console.log(`\nFeature null-test — ${source} (${report.featureRows} rows, ${report.features} features, ${report.folds} folds, target ${report.target}x, OOS base ${(report.oosBaseRate * 100).toFixed(1)}%)`);
-    console.log('model              bets  hitRate    lift     p     brier   logLoss');
+    console.log('model                bets  hitRate    lift     p     brier   logLoss');
     for (const [name, r] of Object.entries(report.models)) {
         const hr = r.hitRate === null ? '  -   ' : `${(r.hitRate * 100).toFixed(1).padStart(5)}%`;
         const lift = r.lift === null ? '   -   ' : `${(r.lift * 100 >= 0 ? '+' : '') + (r.lift * 100).toFixed(1)}%`.padStart(7);
         const pv = r.pValue === null ? ' n/a ' : r.pValue.toFixed(3).padStart(5);
         console.log(
-            `${name.padEnd(18)} ${String(r.bets).padStart(5)}  ${hr}  ${lift}  ${pv}  ${(r.brier ?? 0).toFixed(4)}  ${(r.logLoss ?? 0).toFixed(4)}` +
+            `${name.padEnd(20)} ${String(r.bets).padStart(5)}  ${hr}  ${lift}  ${pv}  ${(r.brier ?? 0).toFixed(4)}  ${(r.logLoss ?? 0).toFixed(4)}` +
             (r.significant ? '   << significant OOS lift' : '')
         );
     }

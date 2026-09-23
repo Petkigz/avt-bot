@@ -113,10 +113,17 @@ class Brain {
         // In STRICT mode a site may only bet after its own out-of-sample
         // validation has demonstrated predictive signal. This is the "I don't
         // know -> don't bet" switch: absence of evidence blocks betting.
+        // A signal must also be CONFIRMED — significant over the full OOS
+        // span AND still lifting on the newest holdout third. Detected-but-
+        // unconfirmed signals are treated as false-positive risk and block.
         if (this.signal && String(this.signal.policy || '').toLowerCase() === 'strict') {
             const v = this.signal.getVerdict ? this.signal.getVerdict() : null;
-            if (!v || !v.signalDetected) {
-                reasons.push('signal policy STRICT: no validated out-of-sample signal for this site yet (run walk-forward validation)');
+            if (!v || !v.signalDetected || !v.signalConfirmed) {
+                reasons.push(
+                    !v || !v.signalDetected
+                        ? 'signal policy STRICT: no validated out-of-sample signal for this site yet (run walk-forward validation)'
+                        : 'signal policy STRICT: signal candidate UNCONFIRMED on the fresh holdout — treating as false-positive risk'
+                );
                 return this.finish(decision);
             }
         }
@@ -152,34 +159,40 @@ class Brain {
             }
         }
 
-        // ---- Pattern gate ----
-        // Patterns are mined in-sample, so raw mining stats can be noise.
-        // A pattern only earns influence in proportion to its LIVE track
-        // record (used/liveWinRate): unproven patterns blend at zero weight,
-        // and a mature pattern that keeps losing becomes a risk signal.
+        // ---- Pattern gate (freeze → test → promote) ----
+        // Patterns are mined in-sample, and with 3^k possible sequences a
+        // random stream constantly produces impressive-looking noise. So a
+        // mined pattern starts as a CANDIDATE: it is frozen and cannot move
+        // confidence at all until it has survived PATTERN_MIN_LIVE_USES
+        // UNSEEN future rounds (its live track record). After promotion its
+        // weight grows with further live evidence, and a pattern whose live
+        // win rate stays under 50% becomes a RISK block instead.
         let pattern = null;
         if (this.patterns) {
             pattern = this.patterns.detect();
             if (pattern.found) {
-                const maturity = Math.min(1, (pattern.used || 0) / this.config.PATTERN.MIN_LIVE_USES);
-                const maturedUnderperformer = maturity >= 1 &&
+                const minUses = this.config.PATTERN.MIN_LIVE_USES;
+                const used = pattern.used || 0;
+                const promoted = used >= minUses;
+                const maturity = promoted ? Math.min(1, used / (2 * minUses)) : 0;
+                const maturedUnderperformer = promoted && maturity >= 1 &&
                     Number.isFinite(pattern.liveWinRate) && pattern.liveWinRate < 0.5;
                 if (pattern.risky || maturedUnderperformer) {
                     reasons.push(
                         `pattern "${pattern.pattern}" signals risk (P=${pattern.probability.toFixed(2)}` +
-                        (maturedUnderperformer ? `, live win rate ${(pattern.liveWinRate * 100).toFixed(0)}%` : '') + ')'
+                        (maturedUnderperformer ? `, live win rate ${(pattern.liveWinRate * 100).toFixed(0)}% after ${used} uses` : '') + ')'
                     );
                     return this.finish(decision);
                 }
-                // Blend pattern evidence with the base probability
-                // (quality-weighted AND live-track-record-weighted).
+                // Blend pattern evidence with the base probability — but ONLY
+                // in proportion to its proven live record (0 while a candidate).
                 const w = 0.5 * pattern.quality * maturity;
                 if (confidence !== null) {
                     confidence = confidence * (1 - w) + pattern.probability * w;
                 } else {
                     // No model: an unproven pattern must not fake confidence.
                     // Blend against a neutral 0.5 prior with the SAME weight,
-                    // so only patterns with a live track record move the needle.
+                    // so only promoted patterns move the needle.
                     confidence = 0.5 * (1 - w) + pattern.probability * w;
                 }
             } else if (confidence !== null) {

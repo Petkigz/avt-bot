@@ -449,32 +449,39 @@ Instead of assuming the model is predictive, the bot *measures* whether it is:
   Wilson-shrunk) are trained only on rounds before each test fold and judged
   on rounds they never saw. A variant counts as "signal" only if its bet
   hit-rate beats the fold base rate with p < 0.05 **after Holm-Bonferroni
-  correction across all tested variants** (testing k variants at 5% each
-  would otherwise produce lucky false positives). On thin recorded history
-  it self-tests against a synthetic feed with a known answer (no signal).
-  The verdict line is explicit: `NO PREDICTIVE SIGNAL DETECTED` means the
-  gates run discipline-only — that is a *feature*, not a failure.
+  correction across all tested variants**, and a signal is only CONFIRMED if
+  the lift ALSO survives the newest third of test rounds (a fresh holdout
+  the discovery never saw). STRICT mode requires a CONFIRMED signal — a
+  detected-but-unconfirmed candidate is treated as false-positive risk and
+  keeps the gates closed. On thin recorded history the harness self-tests
+  against a synthetic feed with a known answer (no signal). The verdict line
+  is explicit: `NO PREDICTIVE SIGNAL DETECTED` means the gates run
+  discipline-only — that is a *feature*, not a failure.
 - **Feature null-test** (`npm run feature:eval`, Phase 3 research) — asks
   the next question: do the logged stream FEATURES carry any predictive
-  information? Expanding-window walk-forward fits a baseline, a full
-  L2-logistic model over all features, and one univariate logistic model
-  per feature; every comparison is corrected with Holm-Bonferroni over ALL
-  models together, and the report includes a per-feature OOS lift table.
-  Self-test on synthetic random rounds returns zero lift for every feature
-  (ground truth). Its verdict does NOT unlock betting — the live gate stays
-  on the walk-forward verdict — but a positive feature verdict is exactly
-  the trigger to build a live feature model.
+  information? Expanding-window walk-forward fits a baseline and TWO
+  genuinely different model families over all features — an L2 logistic
+  regression and a gradient-boosted depth-2 tree ensemble (both hand-rolled,
+  zero dependencies) — plus one univariate logistic model per feature; every
+  comparison is corrected with Holm-Bonferroni over ALL models together, and
+  the report includes a per-feature OOS lift table. Self-test on synthetic
+  random rounds returns zero lift for every feature (ground truth). Its
+  verdict does NOT unlock betting — the live gate stays on the walk-forward
+  verdict — but a positive feature verdict is exactly the trigger to build
+  a live feature model.
+- **Patterns are frozen, tested, then promoted.** A mined pattern starts as
+  a CANDIDATE with ZERO influence — with 3^10 possible length-10 sequences,
+  a random stream constantly produces impressive-looking noise. Only after
+  surviving `PATTERN_MIN_LIVE_USES` unseen future rounds does it start to
+  blend in, and its weight keeps growing only with further live evidence;
+  a pattern whose live win rate stays under 50% becomes a risk block.
 - **The verdict is live, not just a report.** Every run — and every engine
   boot with 400+ recorded rounds — stores `data/signal-verdict-<site>.json`,
   and the brain reads it through `MODEL_SIGNAL_POLICY`:
   - `advisory` (default): verdict computed, stored and shown on the dashboard.
   - `strict`: the **"I don't know → don't bet"** switch — a site may only
-    place bets after its *own* out-of-sample validation has detected signal.
-- **Patterns need a live track record.** A mined sequence only gains
-  confidence weight in proportion to its settled real uses
-  (`PATTERN_MIN_LIVE_USES`); unproven patterns blend at ~0 weight, and a
-  mature pattern that keeps losing becomes a *risk* signal. This closes the
-  "pattern discovered → instantly trusted" hole.
+    place bets after its *own* out-of-sample validation has detected AND
+    holdout-confirmed signal.
 
 The same layer is deliberately market-agnostic (values in, verdicts out), so
 it can later be pointed at any numeric stream to test whether that stream

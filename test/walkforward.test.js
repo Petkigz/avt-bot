@@ -82,4 +82,16 @@ test('walk-forward report documents the multiple-testing correction', () => {
     const report = runWalkForward(generateSynthetic(1200, 0.03, 7), { target: 1.3 });
     assert.match(report.correction, /holm-bonferroni/);
     assert.strictEqual(report.signalDetected, false);
+    assert.strictEqual(report.signalConfirmed, false);
+});
+
+test('fresh-holdout confirmation fields are reported per variant', () => {
+    const { runWalkForward, generateSynthetic } = require('../scripts/walk-forward');
+    const report = runWalkForward(generateSynthetic(2000, 0.03, 11), { target: 1.3 });
+    for (const r of Object.values(report.results)) {
+        assert.ok('lateBets' in r);
+        assert.ok('confirmed' in r);
+        // Nothing significant on random data -> nothing confirmed
+        assert.strictEqual(r.confirmed, false);
+    }
 });

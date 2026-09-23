@@ -35,6 +35,9 @@ test('feature null-test finds no signal in genuinely random rounds', () => {
     assert.ok(!report.error);
     assert.match(report.correction, /holm-bonferroni over \d+ model comparisons/);
     assert.ok(Array.isArray(report.featureLifts) && report.featureLifts.length >= 15);
+    // Both model families are in the comparison set
+    assert.ok(report.models['logistic-all']);
+    assert.ok(report.models['boost-all']);
     // Ground truth: an independent RNG has no feature information. With
     // Holm-Bonferroni over all comparisons a false positive stays <5%.
     assert.strictEqual(report.signalDetected, false);

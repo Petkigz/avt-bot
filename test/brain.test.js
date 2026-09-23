@@ -221,8 +221,15 @@ test('STRICT signal policy blocks betting until a positive OOS verdict exists', 
     for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE; i++) b2.onRoundEnded(2.0);
     assert.strictEqual(b2.decide({ bettingWindow: true, balance: 50000 }).shouldBet, false);
 
-    // Positive verdict -> the gate opens (bet proceeds through normal gates)
-    const b3 = mk({ policy: 'strict', getVerdict: () => ({ signalDetected: true }) });
+    // Detected but UNCONFIRMED signal -> still blocked (fresh-holdout failed)
+    const b3a = mk({ policy: 'strict', getVerdict: () => ({ signalDetected: true, signalConfirmed: false }) });
+    for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE; i++) b3a.onRoundEnded(2.0);
+    const d3a = b3a.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(d3a.shouldBet, false);
+    assert.match(d3a.reasons.join(' '), /UNCONFIRMED/);
+
+    // Positive AND confirmed verdict -> the gate opens
+    const b3 = mk({ policy: 'strict', getVerdict: () => ({ signalDetected: true, signalConfirmed: true }) });
     for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE; i++) b3.onRoundEnded(2.0);
     const d3 = b3.decide({ bettingWindow: true, balance: 50000 });
     assert.strictEqual(d3.shouldBet, true);
@@ -239,4 +246,57 @@ test('snapshot carries the signal policy + verdict summary', () => {
     const snap = brain.snapshot();
     assert.strictEqual(snap.signal.policy, 'strict');
     assert.strictEqual(snap.signal.verdict.signalDetected, true);
+});
+
+test('pattern freeze -> test -> promote: candidates have zero influence', () => {
+    // Fake detector: a pattern claiming 0.95 probability. As a CANDIDATE
+    // (< MIN_LIVE_USES live uses) it must NOT move confidence; once promoted
+    // by its live record it may blend in.
+    const mkWithPattern = (used, liveWinRate) => {
+        const strategyConfig = { ...config.BETTING_STRATEGIES.MICRO };
+        const strategy = new BettingStrategy(strategyConfig);
+        const predictor = new Predictor({
+            targetMultiplier: strategyConfig.targetMultiplier,
+            minSampleSize: 5, minEntryProbability: 0.55, maxEntryProbability: 0.85,
+            coldStreakLimit: 3, coldRecoveryCount: 1
+        });
+        const bankroll = new Bankroll({
+            sessionLossLimit: config.RISK.SESSION_LOSS_LIMIT,
+            dailyLossLimit: config.RISK.DAILY_LOSS_LIMIT,
+            maxStakeFraction: config.RISK.MAX_STAKE_FRACTION,
+            microStakeFraction: config.RISK.MICRO_STAKE_FRACTION,
+            minStake: strategyConfig.minBet
+        });
+        bankroll.setBalance(50000);
+        const patterns = {
+            observe: () => {},
+            snapshot: () => null,
+            recordUsageOutcome: () => {},
+            detect: () => ({
+                found: true, pattern: 'LHL', probability: 0.95, quality: 1,
+                risky: false, used, liveWinRate
+            })
+        };
+        const brain = new Brain({ config, strategy, predictor, patterns, bankroll });
+        // Mixed warm-up: ~75% base confidence (above the entry threshold but
+        // below the pattern's 0.95 claim, so a promoted pattern lifts it).
+        for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE; i++) brain.onRoundEnded(i % 4 === 3 ? 1.0 : 2.0);
+        return brain;
+    };
+
+    const candidate = mkWithPattern(config.PATTERN.MIN_LIVE_USES - 1, null);
+    const promoted = mkWithPattern(config.PATTERN.MIN_LIVE_USES * 2, 0.8);
+    const dCand = candidate.decide({ bettingWindow: true, balance: 50000 });
+    const dProm = promoted.decide({ bettingWindow: true, balance: 50000 });
+
+    // Candidate: the 0.95 claim must not have lifted confidence at all
+    assert.ok(dCand.confidence <= dProm.confidence);
+    assert.ok(dProm.confidence > dCand.confidence + 0.05,
+        `promoted pattern should visibly raise confidence (cand ${dCand.confidence}, prom ${dProm.confidence})`);
+
+    // A promoted pattern that keeps LOSING becomes a risk block
+    const loser = mkWithPattern(config.PATTERN.MIN_LIVE_USES * 2, 0.3);
+    const dLose = loser.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(dLose.shouldBet, false);
+    assert.match(dLose.reasons.join(' '), /live win rate 30% after/);
 });
