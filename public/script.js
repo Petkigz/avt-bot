@@ -857,9 +857,15 @@ function applyControlState(cs) {
     switchBtn.classList.remove('hidden');
     status.textContent = cs.strategy ? `Running — strategy ${cs.strategy} (${cs.mode || 'paper'})` : 'Running';
   }
-  // Keep the selector in sync with the strategy actually in use
+  // Keep the selector in sync with the strategy actually in use — but
+  // NEVER clobber an unapplied user pick; show a hint instead.
   if (cs.strategy && strategySelect.querySelector(`option[value="${cs.strategy}"]`)) {
-    strategySelect.value = cs.strategy;
+    if (!strategyDirty) {
+      strategySelect.value = cs.strategy;
+    } else if (strategySelect.value === cs.strategy) {
+      strategyDirty = false; // pick already took effect (Apply/launch landed)
+    }
+    updateStrategyHint(cs.strategy);
   }
   const pauseBtn = el('pauseBtn');
   const resumeBtn = el('resumeBtn');
@@ -960,6 +966,27 @@ onEvent('provablyFairBtn', 'click', async () => {
   }
 });
 
+// Unapplied strategy picks: the dropdown is the user's INTENT; the running
+// strategy only changes on Apply (or the next launch). Never snap the
+// dropdown back under the user's cursor — warn instead.
+let strategyDirty = false;
+function updateStrategyHint(activeName) {
+  const hint = el('strategyHint');
+  if (!hint) return;
+  const sel = el('strategySelect');
+  if (strategyDirty && activeName && sel.value !== activeName) {
+    hint.textContent = `≠ running (${activeName}) — click ✓ Apply`;
+  } else {
+    hint.textContent = '';
+  }
+}
+onEvent('strategySelect', 'change', () => {
+  strategyDirty = true;
+  updateStrategyHint(null);
+  const hint = el('strategyHint');
+  if (hint && !hint.textContent) hint.textContent = 'click ✓ Apply to switch';
+});
+
 onEvent('strategyApplyBtn', 'click', async () => {
   const name = el('strategySelect').value;
   const status = el('controlStatus');
@@ -967,6 +994,8 @@ onEvent('strategyApplyBtn', 'click', async () => {
     const res = await fetch(`/api/strategies/${encodeURIComponent(name)}`, { method: 'PUT' });
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    strategyDirty = false;
+    updateStrategyHint(body.name);
     status.textContent = `Strategy set to ${body.name} ✓`;
   } catch (e) {
     status.textContent = `Strategy change failed: ${e.message}`;
