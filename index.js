@@ -284,6 +284,28 @@ async function customStrategySetup(attempt = 1) {
 // ---------------------------------------------------------------------------
 // Browser sessions (one persistent browser + profile per account)
 // ---------------------------------------------------------------------------
+/**
+ * Is this page essentially the site's home/login page? Home pages of betting
+ * sites embed Aviator TEASER widgets (and odds grids full of bare numbers)
+ * that content-discovery happily matches — but they are NOT the playable
+ * game. Anywhere on the home page we must navigate to the real game URL
+ * instead of concluding "Aviator is already open".
+ */
+function isSiteHomeUrl(url, site) {
+    const raw = String(url || '').trim();
+    if (!raw || raw === 'about:blank') return true;
+    const normalize = (u) => {
+        try {
+            const p = new URL(u);
+            return (p.origin + p.pathname).replace(/\/+$/, '');
+        } catch (error) { return ''; }
+    };
+    const here = normalize(raw);
+    if (!here) return true;
+    return here === normalize(site.baseUrl) ||
+        (!!site.loginUrl && here === normalize(site.loginUrl));
+}
+
 async function gotoSafe(page, url, label) {
     if (!url) return false;
     try {
@@ -599,8 +621,14 @@ async function navigateSessionToGame(session) {
     }
 
     // Already on the game page (you opened Aviator yourself)? Don't
-    // re-navigate — that would throw away the working page.
-    if (await FrameHelper.findGameMarker(page, selectorsFor(site).BUBBLE_MULTIPLIER).catch(() => null)) {
+    // re-navigate — that would throw away the working page. EXCEPTION: on
+    // the site's HOME page this check is unreliable (home pages embed
+    // Aviator teaser widgets + odds grids that look like the round strip),
+    // so there we ALWAYS proceed to the real game URL.
+    let currentUrl = '';
+    try { currentUrl = session.page.url(); } catch (error) { /* closed */ }
+    if (!isSiteHomeUrl(currentUrl, site) &&
+            await FrameHelper.findGameMarker(page, selectorsFor(site).BUBBLE_MULTIPLIER).catch(() => null)) {
         logger.info(`${site.name}: Aviator is already open — staying on this page`);
         setSessionPhase(session, 'active');
         emitSiteStatus('active', { accountLabel: session.account.label });
@@ -936,10 +964,13 @@ async function main() {
                     const s = accountId ? sessions.get(accountId) : sessions.values().next().value;
                     if (!s) return;
                     const selectors = selectorsFor(s.site);
+                    let hereUrl = '';
+                    try { hereUrl = s.page.url(); } catch (error) { /* closed */ }
+                    const onHome = isSiteHomeUrl(hereUrl, s.site);
                     FrameHelper.findGameMarker(s.page, selectors.BUBBLE_MULTIPLIER)
                         .catch(() => null)
                         .then(async (found) => {
-                            if (found) {
+                            if (found && !onHome) {
                                 logger.info(`${s.site.name}: Aviator is already open — nothing to do`);
                                 emitSiteStatus('active', { accountLabel: s.account.label });
                                 return;
@@ -1240,6 +1271,11 @@ async function main() {
     // ---- Monitor attachment (any page of any session that hosts the game) ----
     const attachMonitor = async (candidate, session) => {
         if (!candidate || session.monitor) return;
+        // Never attach on the home page: its teaser widgets/odds grids can
+        // look like the round strip, but you can't watch or bet from there.
+        try {
+            if (isSiteHomeUrl(candidate.url(), session.site)) return;
+        } catch (error) { return; /* page closing */ }
         const selectors = selectorsFor(session.site);
         try {
             if (!(await FrameHelper.findGameMarker(candidate, selectors.BUBBLE_MULTIPLIER))) return;
