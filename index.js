@@ -729,6 +729,11 @@ async function main() {
     }
 
     // ---- Dashboard FIRST: UI_START mode and live controls depend on it ----
+    // The per-site engine registry is declared BEFORE the dashboard is built
+    // so UI handlers (strategy switch, resets) never touch a binding that is
+    // still in the temporal dead zone — before launch the map is just empty.
+    const engines = new Map();
+    let primaryEngine = null;
     let brain = null;          // assigned after strategy selection (handlers are null-safe)
     let strategyConfig = null;
     let pendingStrategyName = null; // strategy picked in the UI before launch
@@ -832,6 +837,10 @@ async function main() {
                         : (brain ? [brain] : []);
                     if (targets.length > 0) {
                         targets.forEach((b) => { b.strategy = new BettingStrategy({ ...preset }); });
+                        // Keep the shared strategy config in sync so stake
+                        // sizing, ledger resets and the UI reflect the switch.
+                        strategyConfig = { ...preset };
+                        pendingStrategyName = preset.name;
                         // The paper simulation restarts on the NEW strategy's
                         // capital and stake ("assume the capital from the
                         // selected strategy").
@@ -860,7 +869,11 @@ async function main() {
                 // Profits panel: current snapshot now, updates flow on every
                 // round/trade; the reset button restarts the paper simulation.
                 socket.emit('profits', profitsSnapshot());
-                socket.on('resetPaperLedgers', ({ siteId } = {}) => resetPaperLedgers(siteId || null));
+                socket.on('resetPaperLedgers', ({ siteId } = {}) => {
+                    try { resetPaperLedgers(siteId || null); } catch (error) {
+                        logger.error(`Paper ledger reset failed: ${error.message}`);
+                    }
+                });
                 // Open an ADDITIONAL session side by side (multi-account
                 // observation), limited by MAX_SESSIONS.
                 const openExtraSession = async (account, site) => {
@@ -1119,8 +1132,7 @@ async function main() {
     // memory, predictor, pattern miner and brain. The FIRST engine created
     // inherits the legacy shared archive as a starting prior; later engines
     // start clean and must warm up on their own game's rounds.
-    const engines = new Map();
-    let primaryEngine = null;
+    // (engines/primaryEngine are declared up top, before the dashboard.)
     const engineFor = (siteId) => {
         const key = String(siteId || 'unknown');
         if (engines.has(key)) return engines.get(key);
@@ -1307,16 +1319,27 @@ async function main() {
     const emitProfits = () => {
         if (dashboard) dashboard.io.emit('profits', profitsSnapshot());
     };
-    const resetPaperBaseline = (siteId = null) => {
+    // Reset the paper books (Profits panel "Reset paper simulation" button,
+    // and strategy switches). Hoisted on purpose: the dashboard handlers
+    // registered earlier in main() call this before its source position runs.
+    function resetPaperLedgers(siteId = null) {
+        if (!strategyConfig) return; // nothing sized yet — nothing to reset
+        const capital = config.MODE.PAPER_BANKROLL > 0
+            ? config.MODE.PAPER_BANKROLL
+            : strategyConfig.initialBet * 100;
         for (const e of engines.values()) {
             if (siteId && e.siteId !== siteId) continue;
-            if (!e.paperBaseline) continue;
-            const capital = config.MODE.PAPER_BANKROLL > 0 ? config.MODE.PAPER_BANKROLL : strategyConfig.initialBet * 100;
-            e.paperBaseline.reset(capital, strategyConfig.initialBet, strategyConfig.targetMultiplier);
-            logger.info(`Paper baseline [${e.siteId}] reset to ${capital} (stake ${strategyConfig.initialBet} @ ${strategyConfig.targetMultiplier}x)`);
+            if (e.paperBaseline) {
+                e.paperBaseline.reset(capital, strategyConfig.initialBet, strategyConfig.targetMultiplier);
+                logger.info(`Paper baseline [${e.siteId}] reset to ${capital} (stake ${strategyConfig.initialBet} @ ${strategyConfig.targetMultiplier}x)`);
+            }
+            if (e.paperEngine) {
+                e.paperEngine.reset(0, strategyConfig.initialBet, strategyConfig.targetMultiplier);
+                logger.info(`Paper engine ledger [${e.siteId}] reset (stake ${strategyConfig.initialBet} @ ${strategyConfig.targetMultiplier}x)`);
+            }
         }
-        emitProfits();
-    };
+        if (dashboard) dashboard.io.emit('profits', profitsSnapshot());
+    }
 
     // Round-by-round + trade CSV logs (site/account tagged per row)
     const csvRounds = new CsvLog(path.join(config.DATA_DIR, 'rounds.csv'), [
