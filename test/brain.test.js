@@ -331,3 +331,40 @@ test('setStrategy retargets the model and pattern miner on a strategy switch', (
     assert.ok(predictor.baseEntryProbability < 0.55,
         'entry threshold must rescale down with the higher target');
 });
+
+test('ADAPTIVE mode: decide picks a model-driven target within the strategy bounds', () => {
+    const { brain } = makeBrain({ strategyOverrides: {
+        adaptiveTarget: true, adaptiveMin: 1.3, adaptiveMax: 10
+    } });
+    // Mixed warm-up so the distribution read has a real tail
+    for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE + 20; i++) {
+        brain.onRoundEnded(i % 5 === 0 ? 4 + (i % 3) : 1.2 + (i % 4) * 0.15);
+    }
+    assert.strictEqual(brain.tier, 'MICRO');
+
+    const seen = new Set();
+    for (let i = 0; i < 30; i++) {
+        const d = brain.decide({ bettingWindow: true, balance: 50000 });
+        if (!d.shouldBet) continue;
+        assert.ok(d.targetMultiplier >= 1.3 && d.targetMultiplier <= 10,
+            `adaptive target ${d.targetMultiplier} outside bounds`);
+        seen.add(d.targetMultiplier);
+        brain.onRoundEnded(1.5); // settle-ish feedback between decisions
+    }
+    assert.ok(seen.size >= 2, `targets should vary round-to-round (got ${[...seen].join(', ')})`);
+});
+
+test('ADAPTIVE mode: loss-streak guard still blocks betting', () => {
+    const { brain } = makeBrain({ strategyOverrides: {
+        adaptiveTarget: true, adaptiveMin: 1.3, adaptiveMax: 10
+    } });
+    for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE + 5; i++) brain.onRoundEnded(3.0);
+    // Trip the guard: three rounds below the armed target
+    brain.decide({ bettingWindow: true, balance: 50000 });
+    brain.onRoundEnded(1.05);
+    brain.onRoundEnded(1.05);
+    brain.onRoundEnded(1.05);
+    const d = brain.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(d.shouldBet, false);
+    assert.match(d.reasons.join(' '), /loss-streak guard/);
+});

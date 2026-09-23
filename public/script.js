@@ -75,9 +75,12 @@ socket.on('status', (s) => {
   // Strategy profile (all configs are first-class — show which one is active)
   if (s.strategy) {
     const st = s.strategy;
+    const targetText = st.adaptiveTarget
+      ? `target: model-driven ${st.adaptiveMin}x–${st.adaptiveMax}x`
+      : `target ${st.targetMultiplier}x`;
     document.getElementById('strategyProfile').textContent =
       `Strategy: ${st.name} — next stake ${fmt(st.nextStake, 0)} (min ${fmt(st.minBet, 0)} / max ${fmt(st.maxBet, 0)}) · ` +
-      `target ${st.targetMultiplier}x · martingale ×${st.martingaleMultiplier} · ` +
+      `${targetText} · martingale ×${st.martingaleMultiplier} · ` +
       `stop-loss ${fmt(st.stopLoss, 0)} · take-profit ${fmt(st.takeProfit, 0)}`;
   }
 
@@ -828,7 +831,10 @@ async function loadStrategies() {
     for (const s of strategies) {
       const opt = document.createElement('option');
       opt.value = s.name;
-      opt.textContent = `${s.name} — stake ${s.initialBet}, min ${s.minBet}, max ${s.maxBet}, target ${s.targetMultiplier}x`;
+      const target = s.adaptiveTarget
+        ? `target: model-driven ${s.adaptiveMin}x–${s.adaptiveMax}x`
+        : `target ${s.targetMultiplier}x`;
+      opt.textContent = `${s.name} — stake ${s.initialBet}, min ${s.minBet}, max ${s.maxBet}, ${target}`;
       sel.appendChild(opt);
     }
     if (!sel.value || !sel.querySelector(`option[value="${sel.value}"]`)) sel.value = 'MICRO';

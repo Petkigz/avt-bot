@@ -259,6 +259,26 @@ const config = {
             martingaleMultiplier: 2.5,
             averageMultiplierThreshold: 3.00,
             maxConsecutiveLosses: 5
+        },
+        // Model-driven target: instead of a fixed 1.2x/1.3x/2x, each round's
+        // target is DRAWN from the model's live read of the crash
+        // distribution (hot tail -> bigger targets, cold tail -> smaller).
+        // targetMultiplier is only the nominal anchor for the regime guard
+        // and pattern mining; the real target varies every round.
+        ADAPTIVE: {
+            name: 'ADAPTIVE',
+            initialBet: 500,
+            maxBet: 25000,
+            minBet: 100,
+            targetMultiplier: 1.50,
+            adaptiveTarget: true,
+            adaptiveMin: 1.30,
+            adaptiveMax: 30,
+            stopLoss: 15000,
+            takeProfit: 50000,
+            martingaleMultiplier: 1.5,
+            averageMultiplierThreshold: 2.00,
+            maxConsecutiveLosses: 6
         }
     }
 };

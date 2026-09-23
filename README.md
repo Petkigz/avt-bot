@@ -338,7 +338,7 @@ produced which data — while the shared model learns from all of it.
 
 ## Strategies
 
-**All four presets are always available** — via the interactive menu, the
+**All five presets are always available** — via the interactive menu, the
 `STRATEGY` env var (for headless runs), or `--strategy` in the simulator.
 
 | Preset | Initial | Max | Target | Martingale | Stop-loss | Take-profit |
@@ -347,6 +347,14 @@ produced which data — while the shared model learns from all of it.
 | CONSERVATIVE | UGX 500 | UGX 25,000 | 1.20x | ×1.5 | UGX 10,000 | UGX 20,000 |
 | MODERATE | UGX 1,000 | UGX 50,000 | 1.50x | ×2 | UGX 25,000 | UGX 50,000 |
 | AGGRESSIVE | UGX 2,500 | UGX 100,000 | 2.00x | ×2.5 | UGX 50,000 | UGX 150,000 |
+| ADAPTIVE | UGX 500 | UGX 25,000 | model-chosen 1.3–30x | ×1.5 | UGX 15,000 | UGX 50,000 |
+
+> **ADAPTIVE** is different: instead of a fixed target it asks the model for
+> the stream's current crash distribution each round and DRAWS a target from
+> it — a hot tail produces 7x/12x/30x picks, a cold tail keeps it near 1.3x.
+> It exercises the model's distribution read, but it does NOT predict
+> individual rounds: big targets are longshots, and the house edge makes the
+> EV negative at every target. Use it to watch how the model sizes ambition.
 
 > **Caution-tuned for BetPawa by default:** 150-round warm-up, 0.60 entry
 > confidence, 1.5% max stake fraction, UGX 3,000 session / UGX 6,000 daily loss

@@ -355,7 +355,8 @@ class GameMonitor extends EventEmitter {
             const ok = await this.betManager.placeBet(marker.frame, balance, decision.stake, {
                 confidence: decision.confidence,
                 pattern: decision.pattern,
-                tier: decision.tier
+                tier: decision.tier,
+                targetMultiplier: decision.targetMultiplier // ADAPTIVE: per-round target
             });
             if (ok) {
                 this.roundBetMeta = {
@@ -389,6 +390,9 @@ class GameMonitor extends EventEmitter {
                 minBet: this.strategy.minBet,
                 maxBet: this.strategy.maxBet,
                 targetMultiplier: this.strategy.targetMultiplier,
+                adaptiveTarget: this.strategy.adaptiveTarget === true,
+                adaptiveMin: this.strategy.adaptiveMin,
+                adaptiveMax: this.strategy.adaptiveMax,
                 martingaleMultiplier: this.strategy.martingaleMultiplier,
                 stopLoss: this.strategy.stopLoss,
                 takeProfit: this.strategy.takeProfit,
@@ -499,15 +503,18 @@ class GameMonitor extends EventEmitter {
                 halted: false
             });
             if (decision.shouldBet && decision.stake > 0) {
+                const isAdaptive = this.brain.strategy && this.brain.strategy.adaptiveTarget;
                 logger.info(
                     `[PAPER] BET round #${this.roundId + 1}: stake ${decision.stake} | ` +
+                    `target ${decision.targetMultiplier}x${isAdaptive ? ' (model-chosen)' : ''} | ` +
                     `tier ${decision.tier} | confidence ${(decision.confidence ?? 0).toFixed(2)} | ` +
                     `pattern ${decision.pattern ? decision.pattern.pattern : 'none'}`
                 );
                 this.betManager.placeBet(null, null, decision.stake, {
                     confidence: decision.confidence,
                     pattern: decision.pattern,
-                    tier: decision.tier
+                    tier: decision.tier,
+                    targetMultiplier: decision.targetMultiplier // ADAPTIVE: per-round target
                 }).catch((error) => logger.error(`Paper bet placement failed: ${error.message}`));
             } else if (decision.reasons.length) {
                 logger.debug(`[PAPER] Standing down round #${this.roundId + 1}: ${decision.reasons.join('; ')}`);

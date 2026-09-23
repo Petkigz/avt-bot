@@ -52,6 +52,7 @@ class Brain {
         this.paused = false;         // user toggle from the dashboard (UI kill-switch)
         this.pendingResult = null;   // outcome of the last settled trade
         this.stakeCache = null;      // stake computed from the last result
+        this.pendingTarget = null;   // target of the armed bet (ADAPTIVE regime guard)
         this.recentDecisions = [];   // rolling window of settled bet outcomes
         this.lastDecision = null;    // for dashboard/CSV
         this.lastConfidence = null;
@@ -65,7 +66,11 @@ class Brain {
     // Round lifecycle
     // ------------------------------------------------------------------
     onRoundEnded(crash) {
-        if (this.predictor) this.predictor.addRound(crash);
+        // Feed the regime guard the target that was actually bet (ADAPTIVE
+        // picks a different one each round); fall back to the nominal target.
+        const betTarget = this.pendingTarget ?? (this.strategy ? this.strategy.targetMultiplier : null);
+        this.pendingTarget = null;
+        if (this.predictor) this.predictor.addRound(crash, betTarget);
         if (this.patterns) this.patterns.observe(crash);
         this.updateTier();
     }
@@ -124,7 +129,8 @@ class Brain {
         const reasons = [];
         const decision = {
             shouldBet: false, stake: 0, confidence: null,
-            pattern: null, tier: this.tier, reasons, mode: this.mode
+            pattern: null, tier: this.tier, reasons, mode: this.mode,
+            targetMultiplier: this.strategy ? this.strategy.targetMultiplier : null
         };
 
         if (halted) { reasons.push('trading halted'); return this.finish(decision); }
@@ -168,7 +174,36 @@ class Brain {
 
         // ---- Model confidence gate (+ volatility risk adjustment) ----
         let confidence = null;
-        if (this.predictor) {
+        const adaptive = !!(this.strategy && this.strategy.adaptiveTarget) && this.predictor;
+        if (adaptive) {
+            // ADAPTIVE mode: the model picks this round's target from its
+            // live distribution read instead of betting a fixed multiplier.
+            // Confidence and target are COUPLED here — a 30x target
+            // legitimately carries a ~3% hit probability — so a fixed
+            // confidence threshold cannot apply. Discipline comes from the
+            // loss-streak guard (checked inside the pick), the tier gate and
+            // the bankroll policy. HONEST NOTE: this rides the model's
+            // DISTRIBUTION read, which shifts slowly; it does not predict
+            // individual rounds (walk-forward found no per-round signal).
+            if (this.predictor.paused) {
+                reasons.push(
+                    `model: loss-streak guard: ${this.predictor.consecutiveCold} low crashes in a row (risk rule — not evidence the stream changed)`
+                );
+                return this.finish(decision);
+            }
+            const pick = this.predictor.adaptiveTarget({
+                minTarget: this.strategy.adaptiveMin,
+                maxTarget: this.strategy.adaptiveMax
+            });
+            decision.targetMultiplier = pick.target;
+            confidence = pick.confidence;
+            if (this.recalibrator && confidence !== null) {
+                confidence = this.recalibrator.adjust(confidence);
+            }
+            decision.reasons.push(
+                `adaptive target ${pick.target}x (model P(hit) ≈ ${(confidence ?? 0).toFixed(2)})`
+            );
+        } else if (this.predictor) {
             const gate = this.predictor.shouldAllowBet();
             if (!gate.allowed) {
                 reasons.push(`model: ${gate.reason}`);
@@ -211,7 +246,10 @@ class Brain {
         let pattern = null;
         if (this.patterns) {
             pattern = this.patterns.detect();
-            if (pattern.found) {
+            // ADAPTIVE mode: patterns keep mining on the nominal anchor, but
+            // they cannot move confidence or veto a VARIABLE target — their
+            // stats describe a different event. Still surfaced on decisions.
+            if (pattern.found && !adaptive) {
                 const minUses = this.config.PATTERN.MIN_LIVE_USES;
                 const used = pattern.used || 0;
                 const promoted = used >= minUses;
@@ -251,7 +289,7 @@ class Brain {
                     // so only promoted, evidence-backed patterns move the needle.
                     confidence = 0.5 * (1 - w) + pattern.probability * w;
                 }
-            } else if (confidence !== null) {
+            } else if (!adaptive && confidence !== null) {
                 confidence *= this.config.PATTERN.NO_PATTERN_PENALTY; // unconfirmed = slightly less trust
             }
         }
@@ -267,7 +305,9 @@ class Brain {
         // Confidence-proportional sizing: marginal-confidence entries bet
         // smaller, strong-confidence entries bet full — never below 50% of
         // the approved stake. Only applies when a confidence exists.
-        if (this.config.RISK.CONFIDENCE_SCALING && this.predictor && Number.isFinite(confidence)) {
+        // (Adaptive mode: confidence is the hit probability of a variable
+        // target, not comparable against the fixed entry window — skipped.)
+        if (!adaptive && this.config.RISK.CONFIDENCE_SCALING && this.predictor && Number.isFinite(confidence)) {
             const base = this.predictor.baseEntryProbability;
             const span = Math.max(0.01, this.predictor.maxEntryProbability - base);
             const f = Math.min(1, Math.max(0, (confidence - base) / span));
@@ -309,6 +349,9 @@ class Brain {
         this.lastDecision = decision;
         this.lastConfidence = decision.confidence;
         this.lastPattern = decision.pattern;
+        // Remember the target actually bet so the regime guard judges the
+        // next round against IT (matters for ADAPTIVE's variable targets).
+        this.pendingTarget = decision.shouldBet ? decision.targetMultiplier : null;
 
         // Feed the dashboard only when the decision situation actually changes.
         const sig = `${decision.shouldBet}|${decision.reasons[0] || ''}`;

@@ -175,3 +175,49 @@ test('blended probability falls back to plain estimate on short history', () => 
     p.setHistory([1.2, 2.2, 3.3]);
     assert.equal(p.blendedProbability(2.0), p.probCrashAtLeast(2.0));
 });
+
+test('adaptiveTarget stays inside bounds and varies with the drawn probability', () => {
+    const p = makePredictor({ targetMultiplier: 1.5, minSampleSize: 20 });
+    // Mixed stream with a real tail
+    const stream = [];
+    for (let i = 0; i < 300; i++) stream.push(1 + Math.pow((i * 7919) % 100 / 100, 3) * 12);
+    p.setHistory(stream);
+
+    const timid = p.adaptiveTarget({ minTarget: 1.3, maxTarget: 30, rng: () => 0 });   // p = minProb
+    const greedy = p.adaptiveTarget({ minTarget: 1.3, maxTarget: 30, rng: () => 0.999 }); // p ~ maxProb
+    for (const pick of [timid, greedy]) {
+        assert.ok(pick.adaptive);
+        assert.ok(pick.target >= 1.3 && pick.target <= 30, `target ${pick.target} out of bounds`);
+        assert.ok(pick.confidence > 0 && pick.confidence <= 1);
+    }
+    // High hit-probability draw -> small target; low draw -> bigger target
+    assert.ok(greedy.target <= timid.target,
+        `greedy ${greedy.target}x should not exceed timid ${timid.target}x`);
+});
+
+test('adaptiveTarget follows the model: hot tail picks bigger targets than cold tail', () => {
+    const mk = (values) => {
+        const p = makePredictor({ targetMultiplier: 1.5, minSampleSize: 20 });
+        p.setHistory(values);
+        return p;
+    };
+    const hot = [];
+    const cold = [];
+    for (let i = 0; i < 200; i++) {
+        hot.push(i % 4 === 0 ? 8 + (i % 7) : 1.1 + (i % 3) * 0.2);
+        cold.push(1.05 + (i % 5) * 0.05);
+    }
+    const mid = () => 0.5; // same drawn ambition for both
+    const hotPick = mk(hot).adaptiveTarget({ minTarget: 1.3, maxTarget: 30, rng: mid });
+    const coldPick = mk(cold).adaptiveTarget({ minTarget: 1.3, maxTarget: 30, rng: mid });
+    assert.ok(hotPick.target > coldPick.target,
+        `hot-tail target ${hotPick.target} should exceed cold-tail ${coldPick.target}`);
+});
+
+test('adaptiveTarget falls back to the nominal target before enough history', () => {
+    const p = makePredictor({ targetMultiplier: 1.5, minSampleSize: 50 });
+    p.setHistory([1.2, 2.0, 1.4]);
+    const pick = p.adaptiveTarget({ minTarget: 1.3, maxTarget: 30 });
+    assert.strictEqual(pick.adaptive, false);
+    assert.strictEqual(pick.target, 1.5);
+});

@@ -67,7 +67,10 @@ class BetManager {
                 this.currentBet = {
                     amount: betAmount,
                     timestamp: Date.now(),
-                    targetMultiplier: this.strategy.targetMultiplier,
+                    // ADAPTIVE strategies pass a per-round target in meta.
+                    targetMultiplier: Number.isFinite(meta.targetMultiplier) && meta.targetMultiplier > 1
+                        ? meta.targetMultiplier
+                        : this.strategy.targetMultiplier,
                     armed: true,   // paper fills are treated as live in the round
                     settled: false,
                     unarmedRoundEnds: 0,
@@ -200,8 +203,13 @@ class BetManager {
         if (!this.isWaitingForResult || !this.currentBet) return;
         if (!Number.isFinite(liveMultiplier)) return;
 
-        if (liveMultiplier >= this.strategy.targetMultiplier) {
-            logger.info(`Target reached: ${liveMultiplier}x >= ${this.strategy.targetMultiplier}x — cashing out`);
+        // Use the target of the bet actually in flight (ADAPTIVE picks a
+        // different one each round), falling back to the strategy default.
+        const target = Number.isFinite(this.currentBet.targetMultiplier) && this.currentBet.targetMultiplier > 1
+            ? this.currentBet.targetMultiplier
+            : this.strategy.targetMultiplier;
+        if (liveMultiplier >= target) {
+            logger.info(`Target reached: ${liveMultiplier}x >= ${target}x — cashing out`);
             await this.executeCashout(frame, liveMultiplier);
         }
     }

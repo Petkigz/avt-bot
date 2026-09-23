@@ -171,6 +171,9 @@ async function startDashboard(port, logger, deps = {}) {
                 minBet: s.minBet,
                 maxBet: s.maxBet,
                 targetMultiplier: s.targetMultiplier,
+                adaptiveTarget: s.adaptiveTarget === true,
+                adaptiveMin: s.adaptiveMin,
+                adaptiveMax: s.adaptiveMax,
                 stopLoss: s.stopLoss,
                 takeProfit: s.takeProfit
             })));

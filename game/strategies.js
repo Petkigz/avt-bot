@@ -16,6 +16,11 @@ class BettingStrategy {
         this.maxBet = config.maxBet ?? this.initialBet;
         this.minBet = config.minBet ?? Math.min(1, this.initialBet);
         this.targetMultiplier = config.targetMultiplier ?? 1.5;
+        // ADAPTIVE mode: the real target is drawn per-round from the model's
+        // live distribution read; these bound it. False for all fixed presets.
+        this.adaptiveTarget = config.adaptiveTarget === true;
+        this.adaptiveMin = config.adaptiveMin ?? 1.3;
+        this.adaptiveMax = config.adaptiveMax ?? 30;
         this.stopLoss = config.stopLoss ?? Infinity;
         this.takeProfit = config.takeProfit ?? Infinity;
         this.martingaleMultiplier = config.martingaleMultiplier || 2;
@@ -111,6 +116,13 @@ class BettingStrategy {
         if (cfg.maxConsecutiveLosses !== undefined &&
             (!Number.isInteger(cfg.maxConsecutiveLosses) || cfg.maxConsecutiveLosses < 1)) {
             errors.push('maxConsecutiveLosses must be an integer >= 1');
+        }
+        if (cfg.adaptiveTarget === true) {
+            if (typeof cfg.adaptiveMin !== 'number' || typeof cfg.adaptiveMax !== 'number' ||
+                !Number.isFinite(cfg.adaptiveMin) || !Number.isFinite(cfg.adaptiveMax) ||
+                cfg.adaptiveMin < 1.01 || cfg.adaptiveMax <= cfg.adaptiveMin) {
+                errors.push('adaptiveMin/adaptiveMax must satisfy 1.01 <= adaptiveMin < adaptiveMax');
+            }
         }
         return { ok: errors.length === 0, errors };
     }

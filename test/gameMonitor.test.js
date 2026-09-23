@@ -281,3 +281,37 @@ test('paper mode: bets are placed at round boundaries and settled exactly agains
     // And a fresh bet is already armed for the following round
     assert.ok(m.betManager.currentBet && !m.betManager.currentBet.settled);
 });
+
+test('ADAPTIVE paper cycle: per-round model targets flow into placement and settlement', async () => {
+    const brain = makeBrain({ adaptiveTarget: true, adaptiveMin: 1.3, adaptiveMax: 12 });
+    const m = makeMonitor(brain);
+    m.betManager.paperMode = true;
+
+    const trades = [];
+    m.on('trade', (t) => trades.push(t));
+
+    // Warm up on a stream with a real tail, well past OBSERVING
+    for (let i = 0; i < config.RISK.MIN_ROUNDS_OBSERVE + 5; i++) {
+        m.onRoundEnded(i % 4 === 0 ? 5.0 : 1.35, null);
+    }
+    await new Promise((r) => setImmediate(r));
+
+    const armed = m.betManager.currentBet;
+    assert.ok(armed && !armed.settled, 'adaptive bet armed at the round boundary');
+    assert.ok(armed.targetMultiplier >= 1.3 && armed.targetMultiplier <= 12,
+        `armed target ${armed.targetMultiplier} outside adaptive bounds`);
+    const target = armed.targetMultiplier;
+    const settled = trades.length; // drain whatever settled during warm-up
+
+    // Round ends ABOVE the adaptive target -> win booked AT the target
+    const crash = target + 1;
+    m.onRoundEnded(crash, null);
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(trades.length, settled + 1);
+    assert.strictEqual(trades[settled].won, true);
+    assert.ok(Math.abs(trades[settled].profit - trades[settled].betAmount * (target - 1)) < 0.01,
+        'win must be booked at the adaptive target, not the crash value');
+
+    // Next armed bet may carry a DIFFERENT target (model re-picks each round)
+    assert.ok(m.betManager.currentBet && !m.betManager.currentBet.settled);
+});

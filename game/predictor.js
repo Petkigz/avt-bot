@@ -155,18 +155,23 @@ class Predictor {
     // ------------------------------------------------------------------
     // Learning
     // ------------------------------------------------------------------
-    addRound(crash) {
+    addRound(crash, targetOverride = null) {
         if (!Number.isFinite(crash) || crash <= 0) return;
         this.history.push(crash);
         if (this.history.length > 5000) this.history.shift();
 
-        if (crash < this.targetMultiplier) {
+        // ADAPTIVE mode bets a different target each round, so the regime
+        // guard measures the streak against the target that was actually
+        // bet (falls back to the nominal strategy target).
+        const target = Number.isFinite(targetOverride) && targetOverride > 1
+            ? targetOverride : this.targetMultiplier;
+        if (crash < target) {
             this.consecutiveCold++;
             this.consecutiveWarm = 0;
             if (!this.paused && this.consecutiveCold >= this.coldStreakLimit) {
                 this.paused = true;
                 logger.warn(
-                    `Model: ${this.consecutiveCold} consecutive crashes below ${this.targetMultiplier}x — ` +
+                    `Model: ${this.consecutiveCold} consecutive crashes below ${target}x — ` +
                     'loss-streak guard pausing bets until a warm round appears'
                 );
             }
@@ -270,6 +275,54 @@ class Predictor {
         const weighted = this.weightedProbCrashAtLeast(x);
         if (all === null || weighted === null) return all ?? weighted;
         return 0.5 * all + 0.5 * weighted;
+    }
+
+    /**
+     * ADAPTIVE mode: pick this round's target FROM the model's own live
+     * read of the crash distribution.
+     *
+     * The model maintains a recency-weighted survival curve S(t) =
+     * P(crash >= t). We draw a desired hit probability p at random in
+     * [minProb, maxProb], then invert S to find the multiplier t where the
+     * stream is CURRENTLY delivering that probability. On a hot tail the
+     * same p maps to a bigger target; on a cold tail to a smaller one — so
+     * the target adapts to what the model sees, and varies every round.
+     *
+     * HONEST NOTE: this uses the model's DISTRIBUTION read (which shifts
+     * slowly), not per-round prediction — walk-forward validation found no
+     * per-round signal on either site. Big targets are longshots: the EV
+     * stays negative at every target; this mode explores the stream's shape.
+     */
+    adaptiveTarget({ minTarget = 1.3, maxTarget = 30, minProb = 0.08, maxProb = 0.75, rng = Math.random } = {}) {
+        const nominal = this.targetMultiplier;
+        if (this.history.length < this.minSampleSize) {
+            return { target: nominal, confidence: this.blendedProbability(nominal), p: null, adaptive: false };
+        }
+        const lo = Math.max(1.01, minTarget);
+        const hi = Math.max(lo + 0.01, maxTarget);
+        const p = minProb + (maxProb - minProb) * rng();
+
+        // Candidate targets: a log-spaced grid plus recent actual crashes in
+        // the allowed band, so the inversion can land anywhere the stream goes.
+        const candidates = new Set();
+        let t = lo;
+        while (t <= hi) { candidates.add(Number(t.toFixed(2))); t *= 1.05; }
+        candidates.add(Number(hi.toFixed(2)));
+        for (const v of this.history.slice(-500)) {
+            if (v >= lo && v <= hi) candidates.add(Number(v.toFixed(2)));
+        }
+
+        let best = lo;
+        let bestDiff = Infinity;
+        let bestS = null;
+        for (const cand of candidates) {
+            const s = this.weightedProbCrashAtLeast(cand);
+            if (s === null) continue;
+            const diff = Math.abs(s - p);
+            if (diff < bestDiff) { bestDiff = diff; best = cand; bestS = s; }
+        }
+        const target = Math.min(hi, Math.max(lo, best));
+        return { target, confidence: bestS, p, adaptive: true };
     }
 
     average() {

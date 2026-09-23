@@ -4,12 +4,23 @@ const config = require('../util/config');
 const BettingStrategy = require('../game/strategies');
 
 test('ALL strategy presets are present and valid (not just MICRO)', () => {
-    const expected = ['MICRO', 'CONSERVATIVE', 'MODERATE', 'AGGRESSIVE'];
+    const expected = ['MICRO', 'CONSERVATIVE', 'MODERATE', 'AGGRESSIVE', 'ADAPTIVE'];
     for (const name of expected) {
         assert.ok(config.BETTING_STRATEGIES[name], `missing preset: ${name}`);
         const { ok, errors } = BettingStrategy.validate(config.BETTING_STRATEGIES[name]);
         assert.strictEqual(ok, true, `${name} failed validation: ${errors.join(', ')}`);
         assert.strictEqual(config.BETTING_STRATEGIES[name].name, name);
+    }
+});
+
+test('ADAPTIVE preset opts into model-chosen targets with sane bounds', () => {
+    const a = config.BETTING_STRATEGIES.ADAPTIVE;
+    assert.strictEqual(a.adaptiveTarget, true);
+    assert.ok(a.adaptiveMin >= 1.01 && a.adaptiveMin < a.adaptiveMax);
+    assert.ok(a.adaptiveMax >= 5, 'the point of ADAPTIVE is reaching for big targets');
+    // Fixed presets must NOT be adaptive.
+    for (const name of ['MICRO', 'CONSERVATIVE', 'MODERATE', 'AGGRESSIVE']) {
+        assert.ok(!config.BETTING_STRATEGIES[name].adaptiveTarget, `${name} must stay fixed-target`);
     }
 });
 
