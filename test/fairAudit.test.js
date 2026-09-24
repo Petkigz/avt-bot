@@ -60,3 +60,30 @@ test('a stream with an impossible instant-bust mass is flagged', () => {
     assert.strictEqual(r.verdict, 'FLAGGED');
     assert.ok(r.flagged.some((f) => f.includes('instant-bust')), 'should flag implausible edge');
 });
+
+test('Bonferroni: the real betpawa.ug case is WATCHED, not flagged', () => {
+    // Regression from the live audit of 2026-09-24: 2605 rounds, 5.07%
+    // instant-bust mass, and a tail running slightly HOT at every threshold
+    // (1.3x: 75.4% observed vs 73.0% fair, nominal p=0.0074). Six thresholds
+    // tested on the SAME rounds means that deviation does NOT survive
+    // family-wise correction — flagging it would false-flag fair streams ~6%
+    // of the time. The honest read: CONSISTENT_WITH_FAIR, kept on watch.
+    const n = 2605;
+    const S = { t13: 1964, t15: 1696, t2: 1287, t3: 852, t5: 518, t10: 274 }; // observed survival counts
+    const instant = 132;
+    const vals = [];
+    for (let i = 0; i < instant; i++) vals.push(1.0);
+    for (let i = 0; i < (n - instant - S.t13); i++) vals.push(1.15);
+    for (let i = 0; i < (S.t13 - S.t15); i++) vals.push(1.4);
+    for (let i = 0; i < (S.t15 - S.t2); i++) vals.push(1.7);
+    for (let i = 0; i < (S.t2 - S.t3); i++) vals.push(2.5);
+    for (let i = 0; i < (S.t3 - S.t5); i++) vals.push(4.0);
+    for (let i = 0; i < (S.t5 - S.t10); i++) vals.push(7.0);
+    for (let i = 0; i < S.t10; i++) vals.push(15.0);
+    const r = auditDistribution(vals);
+    assert.strictEqual(r.verdict, 'CONSISTENT_WITH_FAIR',
+        `nominal-only drift must not flag, got ${r.verdict}: ${r.flagged}`);
+    assert.strictEqual(r.flagged.length, 0);
+    // The deviation must still be VISIBLE as a watch item — never buried.
+    assert.ok(r.watch.some((w) => w.includes('1.3x')), 'the hot 1.3x bin stays on watch');
+});

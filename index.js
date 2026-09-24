@@ -1539,6 +1539,11 @@ async function main() {
                 tier: engine.brain.tier, regime,
                 rawProb, featureModelProb, probSource, modelTarget,
                 featureVersion: FEATURE_VERSION,
+                // Auditability (review #9): every record says WHICH model
+                // family produced the deployed probability, so later analysis
+                // can attribute results to a component, not just to "the bot".
+                modelSource: engine.modelVerdict ? (engine.modelVerdict.source || 'train-model') : null,
+                modelWinner: engine.modelVerdict && engine.modelVerdict.winner ? engine.modelVerdict.winner : null,
                 // Feature snapshot of the stream state — raw material for
                 // future error analysis (which, if any, feature carries signal).
                 features: extractFeatures(engine.store.values, target)

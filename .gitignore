@@ -15,3 +15,6 @@ version2
 
 # IDE
 .idea/
+
+# agent scratch / session memory
+.arena/

@@ -63,9 +63,13 @@ function auditDistribution(values, opts = {}) {
 
     const bins = [];
     let flagged = [];
+    const watch = [];
     // Bonferroni: flagging at alpha/num_thresholds keeps the family-wise
-    // false-flag rate at ~1% for a genuinely fair stream.
+    // false-flag rate at ~1% for a genuinely fair stream. Six thresholds
+    // are tested on the SAME rounds, so a raw p=0.01 per threshold would
+    // false-flag a fair game ~6% of the time.
     const flagP = 0.01 / thresholds.length;
+    const nominalP = 0.01;
     for (const t of thresholds) {
         const survive = vals.filter((v) => v >= t).length;
         const expected = (1 - r) / t;
@@ -79,12 +83,14 @@ function auditDistribution(values, opts = {}) {
             deviation: Number(dev.toFixed(4)),
             pValue: Number(p.toFixed(4))
         });
-        // Only flag statistically clear deviations, and label the direction:
-        // fewer survivors than fair = the site crashes LOW more often than a
-        // fair game (hurts every cashout strategy); more survivors = crashes
-        // run high (helps, and would also be worth knowing).
-        if (p < 0.01) {
-            flagged.push(`${dev < 0 ? 'LOW-SKEW' : 'HIGH-SKEW'} at ${t}x: observed ${(empirical * 100).toFixed(1)}% survive vs fair ${(expected * 100).toFixed(1)}% (p=${p.toFixed(4)})`);
+        // Direction labels: fewer survivors than fair = the site crashes LOW
+        // more often than a fair game (hurts every cashout strategy); more
+        // survivors = crashes run HIGH (helps, and worth knowing too).
+        const label = `${dev < 0 ? 'LOW-SKEW' : 'HIGH-SKEW'} at ${t}x: observed ${(empirical * 100).toFixed(1)}% survive vs fair ${(expected * 100).toFixed(1)}% (p=${p.toFixed(4)})`;
+        if (p < flagP) {
+            flagged.push(label); // survives Bonferroni — a real flag
+        } else if (p < nominalP) {
+            watch.push(`${label} — nominal only, does NOT survive multiple-testing correction`);
         }
     }
 
@@ -101,6 +107,7 @@ function auditDistribution(values, opts = {}) {
         estimatedHouseEdge: Number(r.toFixed(4)),
         bins,
         flagged,
+        watch,
         verdict,
         reason: flagged.length === 0
             ? `survival curve matches the fair-game tail within noise (edge estimate ${(r * 100).toFixed(2)}%)`
@@ -161,6 +168,10 @@ function main() {
             console.log(`    ${String(b.threshold).padEnd(11)} ${(b.empirical * 100).toFixed(1).padStart(7)}% ${(b.fair * 100).toFixed(1).padStart(7)}% ${b.deviation > 0 ? '+' : ''}${(b.deviation * 100).toFixed(1).padStart(6)}pp  ${b.pValue}`);
         }
         console.log(`  DISTRIBUTION VERDICT: ${d.verdict} — ${d.reason}`);
+        if (d.watch && d.watch.length) {
+            console.log('  on watch (nominal drift, NOT confirmed after multiple-testing correction):');
+            for (const w of d.watch) console.log(`    · ${w}`);
+        }
         if (r.provablyFair) {
             const pf = r.provablyFair;
             console.log(`  provably-fair capture: ${pf.records} records, ${pf.distinctHex64} distinct hashes, ${pf.revealedServerSeeds} revealed seeds, ${pf.reusedValues} reused values`);

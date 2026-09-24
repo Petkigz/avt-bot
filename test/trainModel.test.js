@@ -94,6 +94,29 @@ test('trainAndEvaluate: pure noise earns NO_SIGNAL (first-class outcome)', () =>
     assert.ok(skillRefused || entriesRefused, 'a NO_SIGNAL verdict must trace to a failed gate');
 });
 
+test('trainAndEvaluate: a signal that DECAYS is refused — the pipeline knows when an edge disappears', () => {
+    // Reviewer environment C: rounds 1-1000 carry a strong learnable signal,
+    // rounds 1001-2000 are pure noise (the edge is gone). The untouched
+    // holdout falls entirely in the dead zone, so the model — trained on the
+    // live zone — must be judged against a world it no longer fits. This is
+    // the drift-detection guarantee: DETECT (while signal lives) -> DECAY ->
+    // NO_SIGNAL (once it dies), with no human in the loop.
+    const rows = signalRows(1000, 21).concat(noiseRows(1000, 22));
+    const r = trainAndEvaluate(rows);
+    assert.strictEqual(r.error, undefined);
+    assert.strictEqual(r.verdict, 'NO_SIGNAL',
+        `a decayed signal must be refused, got ${r.verdict} (skill ${r.brierSkill})`);
+    // The refusal must trace to the gates: no positive-CONFIDENCE skill on
+    // the post-decay holdout, and/or no economic entry case.
+    const ciRefused = !(r.bootstrapCi && r.bootstrapCi.lo > 0);
+    const entriesRefused = r.entries < 30 || r.entryPValue >= 0.05 || !(r.evPerBet > 0);
+    assert.ok(ciRefused || entriesRefused, 'NO_SIGNAL must trace to a failed gate');
+    // And sanity: on the decayed holdout the model should not even BEAT the
+    // best persistence null by a meaningful margin.
+    assert.ok(r.brierSkill === null || r.brierSkill < 0.05,
+        `post-decay skill should be ~0 or negative, got ${r.brierSkill}`);
+});
+
 test('trainAndEvaluate: too little holdout data yields INSUFFICIENT_DATA', () => {
     const r = trainAndEvaluate(signalRows(300, 23)); // ~102 holdout rows < 150
     assert.strictEqual(r.verdict, 'INSUFFICIENT_DATA');
