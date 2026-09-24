@@ -16,7 +16,7 @@ const Predictor = require('./game/predictor');
 const PatternDetector = require('./game/patternDetector');
 const CalibrationTracker = require('./game/calibration');
 const PredictionLogger = require('./game/predictionLogger');
-const { extractFeatures } = require('./game/features');
+const { extractFeatures, FEATURE_VERSION } = require('./game/features');
 const PaperLedger = require('./game/paperLedger');
 const Recalibrator = require('./game/recalibrator');
 const {
@@ -31,7 +31,8 @@ const {
     analyze: pfAnalyze
 } = require('./game/provablyFair');
 const Bankroll = require('./game/bankroll');
-const { readModelVerdict, loadFeatureModel } = require('./game/modelLayer');
+const { readModelVerdict, loadFeatureModel, modelStaleness } = require('./game/modelLayer');
+const { runSite: trainModelForSite, rowsForSite } = require('./scripts/train-model');
 const Brain = require('./game/brain');
 const CsvLog = require('./util/csvLog');
 const AccountsManager = require('./util/accounts');
@@ -1290,16 +1291,54 @@ async function main() {
         // scripts/train-model.js. Only a DEPLOY verdict loads a model into the
         // Brain; NO_SIGNAL and INSUFFICIENT_DATA keep the engine discipline-only.
         // The verdict file is the audit trail — it records WHY we bet or don't.
-        const modelVerdict = readModelVerdict(config.DATA_DIR, key);
+        // ---- Phase-3 feature model (reviews #7-#8: live model consumption) ----
+        // The verdict is the OUT-OF-SAMPLE judgment written by
+        // scripts/train-model.js. Only a DEPLOY verdict loads a model into the
+        // Brain; NO_SIGNAL / INSUFFICIENT_DATA keep the engine discipline-only.
+        // Lifecycle: a verdict is only trusted on data like what it was trained
+        // on. Once the log grows by MODEL.RETRAIN_AFTER_ROUNDS beyond the
+        // training corpus, the verdict is STALE and the model is automatically
+        // re-trained + re-validated on the fresh data before anything loads.
+        let modelVerdict = readModelVerdict(config.DATA_DIR, key);
+        if (modelVerdict) {
+            const logFile = path.join(config.DATA_DIR, `predictions-${safe}.jsonl`);
+            const currentRows = fs.existsSync(logFile)
+                ? rowsForSite(new PredictionLogger(logFile).readAll(), key).length : 0;
+            // Verdicts written before the lifecycle metadata existed are
+            // automatically re-validated once (their models lack feature
+            // version + target-safety guarantees anyway).
+            const fresh = Number.isFinite(modelVerdict.rowsAtTraining)
+                ? modelStaleness(modelVerdict, currentRows, config.MODEL.RETRAIN_AFTER_ROUNDS)
+                : { stale: true, newRows: 0, reason: 'verdict predates the lifecycle metadata — revalidating' };
+            if (fresh.stale) {
+                logger.info(`Feature model [${key}]: STALE — ${fresh.reason}. Auto-revalidating on the fresh data now...`);
+                const retrained = trainModelForSite(key);
+                if (retrained && !retrained.error) {
+                    modelVerdict = readModelVerdict(config.DATA_DIR, key) || modelVerdict;
+                    logger.info(`Feature model [${key}]: fresh verdict ${modelVerdict.verdict} (${modelVerdict.reason})`);
+                } else {
+                    modelVerdict = { ...modelVerdict, stale: true };
+                    logger.warn(`Feature model [${key}]: revalidation failed (${retrained ? retrained.error : 'unknown'}) — stale model parked, discipline-only gates in force`);
+                }
+            }
+        }
         let siteFeatureModel = null;
-        if (modelVerdict && modelVerdict.verdict === 'DEPLOY') {
+        if (modelVerdict && modelVerdict.verdict === 'DEPLOY' && !modelVerdict.stale) {
             siteFeatureModel = loadFeatureModel(config.DATA_DIR, key);
-            if (siteFeatureModel) {
-                logger.info(`Feature model [${key}]: DEPLOYED — model probabilities drive the entry gate ` +
-                    `(OOS Brier skill ${modelVerdict.brierSkill}, model-approved hit rate ${modelVerdict.entryHitRate}, EV/bet ${modelVerdict.evPerBet})`);
+            // Target-safe + version-safe: a model is only usable if it was
+            // trained on the CURRENT feature schema for a known target.
+            if (siteFeatureModel && (!siteFeatureModel.meta ||
+                !Number.isFinite(siteFeatureModel.meta.target) ||
+                (Number.isFinite(siteFeatureModel.meta.featureVersion) &&
+                 siteFeatureModel.meta.featureVersion !== FEATURE_VERSION))) {
+                logger.warn(`Feature model [${key}]: metadata missing/incompatible with feature schema v${FEATURE_VERSION} — parked, discipline-only gates in force`);
+                siteFeatureModel = null;
+            } else if (siteFeatureModel) {
+                logger.info(`Feature model [${key}]: DEPLOYED @${siteFeatureModel.meta.target}x — calibrated model probabilities drive the entry gate ` +
+                    `(OOS Brier skill ${modelVerdict.brierSkill} vs best simple null, model-approved hit rate ${modelVerdict.entryHitRate}, EV/bet ${modelVerdict.evPerBet})`);
             }
         } else if (modelVerdict && modelVerdict.verdict) {
-            logger.info(`Feature model [${key}]: ${modelVerdict.verdict} (${modelVerdict.reason}) — discipline-only gates remain in force`);
+            logger.info(`Feature model [${key}]: ${modelVerdict.verdict}${modelVerdict.stale ? ' (STALE — parked)' : ''} (${modelVerdict.reason}) — discipline-only gates remain in force`);
         } else {
             logger.info(`Feature model [${key}]: no training verdict yet — run "npm run train:model" after observation grows`);
         }
@@ -1407,36 +1446,71 @@ async function main() {
             const pending = engine.pendingPrediction;
             if (pending && Number.isFinite(pending.prob)) {
                 const won = crash >= pending.target;
+                // Calibration bookkeeping measures the probability that was
+                // ACTUALLY shipped for this round (feature-model prob when a
+                // model is driving, statistical prob otherwise).
                 engine.calibration.record(pending.prob, won ? 1 : 0);
                 // The engine learning from its own track record: every settled
-                // prediction refines the confidence-correction map.
+                // prediction refines the confidence-correction map. The
+                // recalibrator corrects the STATISTICAL estimator only — feed
+                // it the raw statistical probability even when a feature model
+                // made the decision (mixing sources would corrupt the map).
                 if (engine.recalibrator) {
-                    engine.recalibrator.update(pending.prob, won ? 1 : 0);
+                    const recalProb = Number.isFinite(pending.rawProb) ? pending.rawProb : pending.prob;
+                    engine.recalibrator.update(recalProb, won ? 1 : 0);
                     if (engine.recalibrator.total % 25 === 0) engine.recalibrator.save();
                 }
                 engine.predictionLog.logOutcome({
                     site: engine.siteId, target: pending.target,
-                    prob: pending.prob, crash, won
+                    prob: pending.prob, crash, won,
+                    rawProb: Number.isFinite(pending.rawProb) ? pending.rawProb : null,
+                    probSource: pending.probSource || 'statistical'
                 });
             }
-            let prob = null;
+            let prob = null;               // probability that DRIVES the decision
+            let rawProb = null;            // statistical estimator output
+            let featureModelProb = null;   // deployed model output (calibrated)
             let threshold = null;
             let allowed = false;
             let regime = '';
             if (engine.predictor) {
-                prob = engine.predictor.blendedProbability(target);
+                rawProb = engine.predictor.blendedProbability(target);
+                prob = rawProb;
                 threshold = engine.predictor.entryProbability;
                 const gate = engine.predictor.shouldAllowBet();
                 allowed = !!gate.allowed;
                 regime = typeof engine.predictor.regime === 'function' ? engine.predictor.regime() : '';
             }
-            engine.pendingPrediction = { target, prob, threshold, allowed, tier: engine.brain.tier, regime };
+            // Review #8: log BOTH probabilities. When a deployed feature model
+            // drives the entry gate, the research log must say so — otherwise
+            // post-trade analysis cannot answer "which component caused this
+            // bet?". Same target/version guard the Brain applies.
+            let probSource = 'statistical';
+            let modelTarget = null;
+            const activeModel = engine.brain && engine.brain.featureModelFor
+                ? engine.brain.featureModelFor(target) : null;
+            if (activeModel) {
+                const fmProb = activeModel.predict(extractFeatures(engine.store.values, target));
+                if (Number.isFinite(fmProb)) {
+                    featureModelProb = fmProb;
+                    prob = fmProb;
+                    probSource = 'feature-model';
+                    modelTarget = activeModel.meta.target;
+                }
+            }
+            engine.pendingPrediction = {
+                target, prob, threshold, allowed, tier: engine.brain.tier, regime,
+                rawProb, featureModelProb, probSource, modelTarget
+            };
             // Snapshot the correction map in force NOW, so the audit scores
-            // the probability that was actually used for this round.
-            if (engine.recalibrator && Number.isFinite(prob)) engine.recalibrator.notePending(prob);
+            // the STATISTICAL probability for this round (the recalibrator's
+            // training source, whether or not a model made the decision).
+            if (engine.recalibrator && Number.isFinite(rawProb)) engine.recalibrator.notePending(rawProb);
             engine.predictionLog.logPrediction({
                 site: engine.siteId, target, prob, threshold, allowed,
                 tier: engine.brain.tier, regime,
+                rawProb, featureModelProb, probSource, modelTarget,
+                featureVersion: FEATURE_VERSION,
                 // Feature snapshot of the stream state — raw material for
                 // future error analysis (which, if any, feature carries signal).
                 features: extractFeatures(engine.store.values, target)

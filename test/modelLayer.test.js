@@ -4,9 +4,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
-    fitLogistic, logisticToJson, logisticFromJson,
+    fitLogistic, fitPlatt, logisticToJson, logisticFromJson,
     brierScore, brierSkill, bootstrapSkillCi, hitRatePValue, normCdf,
-    lookElsewherePenalty,
+    lookElsewherePenalty, recentWindowNullPreds, modelStaleness,
     writeModelVerdict, readModelVerdict, saveFeatureModel, loadFeatureModel
 } = require('../game/modelLayer');
 
@@ -124,4 +124,96 @@ test('verdict + model persistence round-trips per site', () => {
     assert.ok(live.predict({ signal: 1 }) > live.predict({ signal: 0 }));
     assert.strictEqual(loadFeatureModel(dir, 'missing-site'), null);
     fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('fitPlatt corrects a systematically overconfident model', () => {
+    // Raw probabilities are a distorted view of the truth: raw = 0.15 + 0.7*q
+    // where q is the true probability. The true mapping raw -> outcome is NOT
+    // identity. Platt must recover a map closer to the truth.
+    const rng = makeRng(29);
+    const probs = [], outcomes = [];
+    for (let i = 0; i < 2000; i++) {
+        const q = rng();                        // true probability
+        const raw = 0.15 + 0.7 * q;             // miscalibrated reading
+        outcomes.push(rng() < q ? 1 : 0);
+        probs.push(raw);
+    }
+    const platt = fitPlatt(probs, outcomes);
+    assert.ok(platt, 'Platt fit must succeed');
+    // At raw = 0.5 the true probability is (0.5-0.15)/0.7 = 0.5; but the
+    // miscalibration compresses the scale — check the fitted map moves the
+    // extremes in the right direction vs identity.
+    const calLow = platt.calibrate(0.2);   // true q ~ 0.07
+    const calHigh = platt.calibrate(0.8);  // true q ~ 0.93
+    assert.ok(calLow < 0.2, `low end must be pulled down (got ${calLow})`);
+    assert.ok(calHigh > 0.8, `high end must be pulled up (got ${calHigh})`);
+});
+
+test('calibration survives the model JSON round-trip', () => {
+    const rng = makeRng(41);
+    const X = [], y = [];
+    for (let i = 0; i < 200; i++) {
+        const s = rng();
+        X.push([s]);
+        y.push(rng() < 0.2 + 0.7 * s ? 1 : 0);
+    }
+    const model = fitLogistic(X, y, [0]);
+    const platt = fitPlatt(X.map((r) => model.predict(r)), y);
+    assert.ok(platt);
+    const json = logisticToJson(model, [0], ['signal'], { target: 1.3 }, platt);
+    const restored = logisticFromJson(json);
+    assert.ok(restored.calibrate, 'restored model must carry the calibrator');
+    // predict() = calibrated(raw): differs from the raw output in general
+    const raw = restored.rawPredict({ signal: 0.9 });
+    const cal = restored.predict({ signal: 0.9 });
+    assert.ok(Number.isFinite(cal) && cal > 0 && cal < 1);
+    assert.ok(Math.abs(cal - platt.calibrate(raw)) < 1e-9, 'predict must apply Platt on top of raw');
+    // A model saved WITHOUT a calibrator keeps identity behaviour.
+    const plain = logisticFromJson(logisticToJson(model, [0], ['signal'], {}));
+    assert.strictEqual(plain.calibrate, null);
+    assert.ok(Math.abs(plain.predict({ signal: 0.9 }) - raw) < 1e-9);
+});
+
+test('recentWindowNullPreds is strictly online', () => {
+    const prior = [1, 1, 1, 0, 0];
+    const hold = [1, 0, 1, 1, 0];
+    const preds = recentWindowNullPreds(prior, hold, 3);
+    assert.strictEqual(preds.length, hold.length);
+    // First prediction sees only the last 3 of `prior`: [1,0,0] -> 1/3
+    assert.ok(Math.abs(preds[0] - 1 / 3) < 1e-9);
+    // Second sees [0,0,1] (window advanced with hold[0]=1) -> 1/3
+    assert.ok(Math.abs(preds[1] - 1 / 3) < 1e-9);
+    // Third sees [0,1,0] -> 1/3 ... fourth [1,0,1] -> 2/3
+    assert.ok(Math.abs(preds[3] - 2 / 3) < 1e-9);
+});
+
+test('modelStaleness flags verdicts outgrown by the data', () => {
+    const verdict = { verdict: 'DEPLOY', rowsAtTraining: 1000 };
+    const fresh = modelStaleness(verdict, 1200, 1000);
+    assert.strictEqual(fresh.stale, false);
+    assert.strictEqual(fresh.newRows, 200);
+    const stale = modelStaleness(verdict, 2001, 1000);
+    assert.strictEqual(stale.stale, true);
+    assert.strictEqual(stale.newRows, 1001);
+    // Missing metadata = cannot judge staleness -> treat as not stale
+    assert.strictEqual(modelStaleness({}, 9999, 1000).stale, false);
+});
+
+test('bootstrapSkillCi with multiple nulls measures skill vs the BEST null', () => {
+    const rng = makeRng(61);
+    const n = 400;
+    const outcomes = [], modelPreds = [], weakNull = [], strongNull = [];
+    for (let i = 0; i < n; i++) {
+        const s = rng();
+        const won = rng() < 0.2 + 0.75 * s ? 1 : 0;
+        outcomes.push(won);
+        modelPreds.push(0.2 + 0.75 * s);
+        weakNull.push(0.5);                       // crude average
+        strongNull.push(0.2 + 0.75 * s + 0.001);  // near-perfect "simple" rival
+    }
+    const ciVsWeak = bootstrapSkillCi(modelPreds, [weakNull], outcomes, { iters: 200, rng: makeRng(42) });
+    const ciVsBest = bootstrapSkillCi(modelPreds, [weakNull, strongNull], outcomes, { iters: 200, rng: makeRng(42) });
+    assert.ok(ciVsWeak.lo > 0, 'model clearly beats the weak null');
+    assert.ok(ciVsBest.point < ciVsWeak.point, 'vs best null the skill must shrink');
+    assert.ok(ciVsBest.lo <= 0, 'a near-perfect rival must wipe out the skill claim');
 });

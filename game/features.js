@@ -15,6 +15,12 @@
 
 const r3 = (x) => (Number.isFinite(x) ? Number(x.toFixed(3)) : null);
 
+/** Bump whenever the feature set below changes shape or meaning: deployed
+ *  models carry the version they were trained on, and the Brain refuses a
+ *  model whose version differs (a stale feature mapping would silently feed
+ *  the model the wrong inputs). */
+const FEATURE_VERSION = 1;
+
 /** L/M/H symbols, same bins as the pattern detector. */
 function symbolOf(v) {
     if (v < 1.5) return 'L';
@@ -123,4 +129,4 @@ function extractFeatures(values, target = 1.3) {
     return f;
 }
 
-module.exports = { extractFeatures, symbolOf };
+module.exports = { extractFeatures, symbolOf, FEATURE_VERSION };

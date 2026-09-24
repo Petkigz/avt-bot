@@ -188,8 +188,18 @@ function renderLearning(b) {
   const fm = b.featureModel;
   const fmEl = document.getElementById('featureModelVerdict');
   if (fmEl) {
-    if (fm && fm.deployed && fm.verdict) {
-      fmEl.textContent = `🔓 DEPLOYED @${fm.verdict.target}x — model drives entries (skill ${fm.verdict.brierSkill}, EV ${fm.verdict.evPerBet})`;
+    if (fm && fm.verdict && fm.verdict.stale) {
+      fmEl.textContent = `⏳ STALE @${fm.verdict.target}x — new data outgrew the training corpus; re-run "npm run train:model" to re-validate`;
+      fmEl.className = 'value small';
+      fmEl.style.color = '#e2b93b';
+      fmEl.style.fontWeight = '700';
+    } else if (fm && fm.deployed && fm.verdict && !fm.matched) {
+      fmEl.textContent = `⚠ model trained @${fm.modelTarget}x but strategy targets a different multiplier — parked (statistical gate in force)`;
+      fmEl.className = 'value small';
+      fmEl.style.color = '#e2b93b';
+      fmEl.style.fontWeight = '700';
+    } else if (fm && fm.deployed && fm.verdict) {
+      fmEl.textContent = `🔓 DEPLOYED @${fm.verdict.target}x — calibrated model drives entries (skill ${fm.verdict.brierSkill}, EV ${fm.verdict.evPerBet})`;
       fmEl.className = 'value small';
       fmEl.style.color = '#38c172';
       fmEl.style.fontWeight = '700';

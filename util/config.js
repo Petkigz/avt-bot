@@ -89,7 +89,13 @@ const config = {
         //   strict   — a site may only bet after its OWN out-of-sample
         //              validation has found predictive signal ("I don't know
         //              -> don't bet").
-        SIGNAL_POLICY: (process.env.MODEL_SIGNAL_POLICY || 'advisory').toLowerCase()
+        SIGNAL_POLICY: (process.env.MODEL_SIGNAL_POLICY || 'advisory').toLowerCase(),
+        // Phase-3 feature-model lifecycle: a deployed model is only trusted on
+        // data like what it was trained on. Once the prediction log grows by
+        // this many rounds BEYOND the training corpus, the model is declared
+        // STALE and the Brain falls back to discipline-only until
+        // "npm run train:model" re-validates on the fresh data.
+        RETRAIN_AFTER_ROUNDS: num(process.env.MODEL_RETRAIN_AFTER_ROUNDS, 1000)
     },
 
     // Pattern mining over recent round clusters. See game/patternDetector.js.

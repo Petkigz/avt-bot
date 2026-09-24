@@ -1,5 +1,5 @@
 const logger = require('../util/logger');
-const { extractFeatures } = require('./features');
+const { extractFeatures, FEATURE_VERSION } = require('./features');
 const { lookElsewherePenalty } = require('./modelLayer');
 
 /** Wilson score lower bound for a binomial proportion (95%). The honest way
@@ -126,6 +126,33 @@ class Brain {
         if (this.patterns && Number.isFinite(strategy.targetMultiplier)) {
             this.patterns.targetMultiplier = strategy.targetMultiplier;
         }
+        // Target-safe model versioning (review #8): a deployed model was
+        // trained and validated for ONE target. If the strategy moves to a
+        // different target, the model must NOT be reused — its probabilities
+        // would be meaningless for the new break-even. The Brain falls back to
+        // the statistical gate until "npm run train:model" re-validates.
+        if (this.featureModel && this.featureModel.meta &&
+            Number.isFinite(strategy.targetMultiplier) &&
+            Number.isFinite(this.featureModel.meta.target) &&
+            Math.abs(this.featureModel.meta.target - strategy.targetMultiplier) > 1e-6) {
+            logger.info(`Feature model was trained for ${this.featureModel.meta.target}x but strategy now targets ${strategy.targetMultiplier}x — model parked, statistical gate in force (run "npm run train:model" to re-validate)`);
+        }
+    }
+
+    /**
+     * The deployed feature model IF AND ONLY IF it is valid for the current
+     * target and feature version. A model trained for 1.3x must never answer
+     * a 2.0x question, and a model trained on an old feature schema must
+     * never read new features. Returns null otherwise — the caller then falls
+     * back to the statistical gate (discipline-only for that target).
+     */
+    featureModelFor(target) {
+        const fm = this.featureModel;
+        if (!fm || !fm.meta) return null;
+        if (!Number.isFinite(target) || !Number.isFinite(fm.meta.target)) return null;
+        if (Math.abs(fm.meta.target - target) > 1e-6) return null;
+        if (Number.isFinite(fm.meta.featureVersion) && fm.meta.featureVersion !== FEATURE_VERSION) return null;
+        return fm;
     }
 
     /**
@@ -245,17 +272,22 @@ class Brain {
 
             // ---- Confidence source ---------------------------------------
             // Phase-3 feature model: when a DEPLOY verdict loaded one, its
-            // probability REPLACES the raw estimator (it beat that estimator's
-            // null out-of-sample with positive EV — that is what deployment
-            // means). With NO_SIGNAL verdict nothing is loaded and the Brain
-            // stays discipline-only: the model's "NO SIGNAL" is honored.
+            // CALIBRATED probability REPLACES the raw estimator (it beat the
+            // best simple null out-of-sample with positive EV — that is what
+            // deployment means). The model is only used if it matches the
+            // CURRENT target and feature version (target-safe versioning);
+            // otherwise the Brain falls back to the statistical gate. With a
+            // NO_SIGNAL verdict nothing is loaded and the Brain stays
+            // discipline-only: the model's "NO SIGNAL" is honored.
             let fromFeatureModel = false;
-            if (this.featureModel) {
+            const activeModel = this.featureModelFor(this.strategy.targetMultiplier);
+            if (activeModel) {
                 const feats = extractFeatures(this.predictor.history, this.strategy.targetMultiplier);
-                const fmProb = this.featureModel.predict(feats);
+                const fmProb = activeModel.predict(feats);
                 if (Number.isFinite(fmProb)) {
                     confidence = fmProb;
                     fromFeatureModel = true;
+                    decision.modelTarget = activeModel.meta.target;
                 }
             }
             if (!fromFeatureModel) {
@@ -268,8 +300,9 @@ class Brain {
                 // Intelligence upgrade #1: recalibrated confidence — the engine's
                 // own settled track record corrects systematic over/under-
                 // confidence before it is compared against the entry threshold.
-                // (Applied to the estimator only — the feature model arrives
-                // already calibrated by its OOS training evaluation.)
+                // (Applied to the estimator only — the deployed feature model
+                // ships its own Platt calibrator fitted before the untouched
+                // holdout, so re-correcting it here would double-adjust.)
                 if (this.recalibrator && confidence !== null) {
                     confidence = this.recalibrator.adjust(confidence);
                 }
@@ -524,9 +557,14 @@ class Brain {
                 })()
             } : null,
             // Phase-3 feature model: deployed (drives entries) or the verdict
-            // that keeps the engine discipline-only. NO SIGNAL is visible here.
+            // that keeps the engine discipline-only. NO SIGNAL is visible here,
+            // as are target-mismatch and staleness parking.
             featureModel: {
                 deployed: !!this.featureModel,
+                matched: !!(this.featureModel && this.featureModelFor(
+                    this.strategy ? this.strategy.targetMultiplier : NaN)),
+                modelTarget: this.featureModel && this.featureModel.meta
+                    ? this.featureModel.meta.target : null,
                 verdict: this.modelVerdict ? {
                     verdict: this.modelVerdict.verdict,
                     reason: this.modelVerdict.reason || '',
@@ -535,6 +573,7 @@ class Brain {
                     entryHitRate: this.modelVerdict.entryHitRate,
                     evPerBet: this.modelVerdict.evPerBet,
                     n: this.modelVerdict.n,
+                    stale: !!this.modelVerdict.stale,
                     ts: this.modelVerdict.ts
                 } : null
             }

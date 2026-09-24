@@ -10,9 +10,12 @@
  *   - CONDITIONED ON TARGET: rounds settled at different targets are never
  *     pooled (pooling targets fakes skill — see scripts/error-analysis.js);
  *     the dominant target is trained, the rest are reported;
- *   - time-series split: first two thirds train, newest third is an
- *     UNTOUCHED holdout — the model sees nothing from it during fitting;
- *   - the model must beat the base-rate NULL on the holdout with:
+ *   - time-series split into three strictly ordered segments: MODEL-TRAIN /
+ *     CALIBRATION / UNTOUCHED HOLDOUT — the fitter sees only the first, the
+ *     Platt calibrator only the second, and the deployment verdict judges the
+ *     calibrated model only on the third;
+ *   - the model must beat the BEST simple null (historical base rate or
+ *     walking recent-window base rate) on the holdout with:
  *       * bootstrap CI of Brier skill entirely above zero, AND
  *       * significant hit-rate lift on model-approved entries (p < 0.05), AND
  *       * positive economic EV at the target (hit rate above break-even);
@@ -27,15 +30,20 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../util/config');
 const PredictionLogger = require('../game/predictionLogger');
+const { FEATURE_VERSION } = require('../game/features');
 const { pairRecords } = require('./error-analysis');
 const {
-    fitLogistic, logisticToJson,
+    fitLogistic, fitPlatt, logisticToJson,
     brierScore, brierSkill, bootstrapSkillCi, hitRatePValue, normCdf,
+    recentWindowNullPreds,
     writeModelVerdict, saveFeatureModel
 } = require('../game/modelLayer');
 
 const MIN_HOLDOUT = 150;      // holdout rounds required before any verdict
 const ENTRY_MARGIN = 0.02;    // model must bet this above break-even to count
+const RECENT_NULL_WINDOW = 50; // window for the recency persistence null
+const CALIB_FRAC = 0.17;      // share of the train corpus reserved for Platt
+const MIN_CALIB = 100;        // below this the calibrator is skipped
 
 // Deterministic RNG so the bootstrap is reproducible run-to-run.
 function makeRng(seed = 42) {
@@ -69,10 +77,21 @@ function trainAndEvaluate(rows, opts = {}) {
     const trainRows = rows.slice(0, split);
     const holdoutRows = rows.slice(split);
 
+    // Three time segments, strictly ordered (review #8):
+    //   MODEL-TRAIN  — the logistic fitter sees only this;
+    //   CALIBRATION  — Platt scaling is fit on the model's predictions HERE,
+    //                  a segment the fitter never touched (fitting the
+    //                  calibrator in-sample collapses overfit probabilities);
+    //   HOLDOUT      — untouched; the calibrated model is judged only here.
+    const calibCount = trainRows.length >= 3 * MIN_CALIB
+        ? Math.floor(trainRows.length * CALIB_FRAC) : 0;
+    const modelTrainRows = calibCount > 0 ? trainRows.slice(0, -calibCount) : trainRows;
+    const calibRows = calibCount > 0 ? trainRows.slice(-calibCount) : [];
+
     const trainBase = trainRows.reduce((s, r) => s + (r.won ? 1 : 0), 0) / trainRows.length;
 
-    // Impute NaNs with TRAIN column means before fitting/evaluating.
-    const Xtrain = buildMatrix(trainRows, names);
+    // Impute NaNs with MODEL-TRAIN column means before fitting/evaluating.
+    const Xtrain = buildMatrix(modelTrainRows, names);
     const means = names.map((_, j) => {
         let s = 0, c = 0;
         for (let i = 0; i < Xtrain.length; i++) {
@@ -84,10 +103,13 @@ function trainAndEvaluate(rows, opts = {}) {
         if (!Number.isFinite(v)) row[j] = means[j];
     }));
     impute(Xtrain);
+    const Xcalib = buildMatrix(calibRows, names);
+    impute(Xcalib);
     const Xhold = buildMatrix(holdoutRows, names);
     impute(Xhold);
 
-    const yTrain = trainRows.map((r) => (r.won ? 1 : 0));
+    const yTrain = modelTrainRows.map((r) => (r.won ? 1 : 0));
+    const yCalib = calibRows.map((r) => (r.won ? 1 : 0));
     const yHold = holdoutRows.map((r) => (r.won ? 1 : 0));
     const cols = names.map((_, j) => j);
 
@@ -96,18 +118,64 @@ function trainAndEvaluate(rows, opts = {}) {
         return { error: `training failed (n=${trainRows.length})` };
     }
 
-    const modelPreds = Xhold.map((row) => model.predict(row));
-    const nullPreds = Xhold.map(() => trainBase);
+    // ---- Probability calibration (review #8) -----------------------------
+    // Brier evaluation measures accuracy; it does NOT calibrate. Fit a Platt
+    // map raw-p -> outcome on the CALIBRATION segment — one the fitter never
+    // saw, strictly earlier than the untouched holdout — and judge the
+    // CALIBRATED output. The live Brain receives the calibrator in the model
+    // file.
+    //
+    // "First, do no harm": a small/noisy calibration sample can make a Platt
+    // fit actively WORSE than the raw model (rotating well-calibrated
+    // probabilities into a compressed range). We therefore ADOPT the
+    // calibrator only if it reduces Brier on the calibration segment itself;
+    // otherwise we ship the identity map and say so. The untouched holdout
+    // remains the honest final judge either way.
+    let platt = null;
+    let calibNote = 'identity (no calibration segment reserved)';
+    if (calibRows.length >= MIN_CALIB) {
+        const calibRaw = Xcalib.map((row) => model.predict(row));
+        const candidate = fitPlatt(calibRaw, yCalib);
+        if (candidate) {
+            const brierRaw = brierScore(calibRaw, yCalib);
+            const brierCal = brierScore(calibRaw.map(candidate.calibrate), yCalib);
+            if (Number.isFinite(brierCal) && Number.isFinite(brierRaw) && brierCal < brierRaw) {
+                platt = candidate;
+                calibNote = `Platt adopted (calib Brier ${brierRaw.toFixed(4)} -> ${brierCal.toFixed(4)})`;
+            } else {
+                calibNote = `identity (Platt worsened calib Brier ${brierRaw.toFixed(4)} -> ${brierCal.toFixed(4)})`;
+            }
+        } else {
+            calibNote = 'identity (calibrator failed to fit)';
+        }
+    }
+    const applyCalib = platt ? platt.calibrate : (p) => p;
+
+    const rawHold = Xhold.map((row) => model.predict(row));
+    const modelPreds = rawHold.map(applyCalib);
+
+    // ---- Comparators ------------------------------------------------------
+    // Null 1: historical base rate (the crude average).
+    // Null 2: walking recent-window base rate — the strongest simple
+    // statistical estimator, the one recency walk-forward variants already
+    // field. The deployed model must beat the BEST of these, not just the
+    // crude one.
+    const priorOutcomes = trainRows.map((r) => (r.won ? 1 : 0));
+    const nullBase = Xhold.map(() => trainBase);
+    const nullRecent = recentWindowNullPreds(priorOutcomes, yHold, RECENT_NULL_WINDOW);
 
     const modelBrier = brierScore(modelPreds, yHold);
-    const nullBrier = brierScore(nullPreds, yHold);
-    const skill = brierSkill(modelBrier, nullBrier);
-    const ci = bootstrapSkillCi(modelPreds, nullPreds, yHold, { iters: 600, rng: makeRng() });
+    const nullBaseBrier = brierScore(nullBase, yHold);
+    const nullRecentBrier = brierScore(nullRecent, yHold);
+    const bestNullBrier = Math.min(nullBaseBrier, nullRecentBrier);
+    const bestNull = bestNullBrier === nullBaseBrier ? 'base-rate' : 'recent-window';
+    const skill = brierSkill(modelBrier, bestNullBrier);
+    const ci = bootstrapSkillCi(modelPreds, [nullBase, nullRecent], yHold, { iters: 600, rng: makeRng() });
 
-    // Economic read: rounds the model would actually enter (its probability
-    // clears break-even plus a margin). A deployed model must show realized
-    // EV > 0 on precisely these entries — otherwise its "confidence" has no
-    // economic content, whatever the Brier score says.
+    // Economic read: rounds the model would actually enter (its CALIBRATED
+    // probability clears break-even plus a margin). A deployed model must show
+    // realized EV > 0 on precisely these entries — otherwise its "confidence"
+    // has no economic content, whatever the Brier score says.
     const breakEven = 1 / target;
     const entryProb = breakEven + ENTRY_MARGIN;
     const entries = [];
@@ -138,12 +206,18 @@ function trainAndEvaluate(rows, opts = {}) {
         verdict,
         target,
         n: rows.length,
-        nTrain: trainRows.length,
+        nTrain: modelTrainRows.length,
+        nCalib: calibRows.length,
         nHoldout: holdoutRows.length,
         trainBase: Number(trainBase.toFixed(4)),
         holdoutBase: Number(holdoutBase.toFixed(4)),
         brierModel: Number(modelBrier.toFixed(5)),
-        brierNull: Number(nullBrier.toFixed(5)),
+        brierNullBase: Number(nullBaseBrier.toFixed(5)),
+        brierNullRecent: Number(nullRecentBrier.toFixed(5)),
+        brierNull: Number(bestNullBrier.toFixed(5)),
+        bestNull,
+        calibrated: !!platt,
+        calibNote,
         brierSkill: skill === null ? null : Number(skill.toFixed(4)),
         bootstrapCi: ci ? { lo: Number(ci.lo.toFixed(4)), point: Number(ci.point.toFixed(4)), hi: Number(ci.hi.toFixed(4)) } : null,
         entryProbThreshold: Number(entryProb.toFixed(4)),
@@ -152,7 +226,7 @@ function trainAndEvaluate(rows, opts = {}) {
         entryPValue: Number(pEntry.toFixed(4)),
         evPerBet: evPerBet === null ? null : Number(evPerBet.toFixed(4)),
         breakEven: Number(breakEven.toFixed(4)),
-        model, cols, names
+        model, platt, cols, names
     };
 }
 
@@ -180,25 +254,36 @@ function runSite(siteId, opts = {}) {
     const result = trainAndEvaluate(rows, opts);
     if (result.error) return { site: siteId, error: result.error };
 
-    const { model, cols, names, ...report } = result;
+    const { model, platt, cols, names, ...report } = result;
+    // Lifecycle metadata (review #8): lets the live bot detect that the
+    // model's evidence has gone stale and must be re-validated.
+    const trainedAt = new Date().toISOString();
+    const trainingEndTs = rows[rows.length - 1].ts || null;
+    const rowsAtTraining = all.length; // paired feature rows for this site
     const reason = report.verdict === 'DEPLOY'
-        ? 'model beat the base-rate null out-of-sample with positive economic value'
+        ? `model beat the best simple null (${report.bestNull}) out-of-sample with positive economic value`
         : report.verdict === 'NO_SIGNAL'
-            ? 'no out-of-sample edge over the base-rate null (Brier CI, hit-rate and EV gates refused deployment)'
+            ? 'no out-of-sample edge over the best simple null (Brier CI, hit-rate and EV gates refused deployment)'
             : `need >= ${MIN_HOLDOUT} holdout rounds before any verdict (have ${report.nHoldout})`;
     const summary = {
         site: siteId,
         dominantTarget: Number(domTarget),
         droppedTargets: targets.slice(1).map(([t, rs]) => ({ target: Number(t), rows: rs.length })),
         reason,
+        trainedAt,
+        trainingEndTs,
+        rowsAtTraining,
+        featureVersion: FEATURE_VERSION,
         ...report
     };
 
     writeModelVerdict(config.DATA_DIR, siteId, summary);
     if (summary.verdict === 'DEPLOY') {
         saveFeatureModel(config.DATA_DIR, siteId, logisticToJson(model, cols, names, {
-            site: siteId, target: summary.target, brierSkill: summary.brierSkill, trained: new Date().toISOString()
-        }));
+            site: siteId, target: summary.target, brierSkill: summary.brierSkill,
+            trained: trainedAt, trainingEndTs, rowsAtTraining,
+            featureVersion: FEATURE_VERSION
+        }, platt));
     }
     return summary;
 }
@@ -228,10 +313,11 @@ function main() {
             console.log(`  skipped: ${r.error}`);
             continue;
         }
-        console.log(`  rows: ${r.n} (train ${r.nTrain} / untouched holdout ${r.nHoldout}) @ target ${r.target}x` +
+        console.log(`  rows: ${r.n} (train ${r.nTrain} / calibration ${r.nCalib} / untouched holdout ${r.nHoldout}) @ target ${r.target}x` +
             (r.droppedTargets.length ? ` — other targets excluded: ${r.droppedTargets.map((d) => `${d.target}x(${d.rows})`).join(', ')}` : ''));
         console.log(`  base rate: train ${r.trainBase} | holdout ${r.holdoutBase}`);
-        console.log(`  Brier skill vs null: ${r.brierSkill} (bootstrap 95% CI ${r.bootstrapCi ? `[${r.bootstrapCi.lo}, ${r.bootstrapCi.hi}]` : 'n/a'})`);
+        console.log(`  calibration: ${r.calibNote} | best simple null: ${r.bestNull} (Brier base ${r.brierNullBase}, recent ${r.brierNullRecent})`);
+        console.log(`  Brier skill vs best null: ${r.brierSkill} (bootstrap 95% CI ${r.bootstrapCi ? `[${r.bootstrapCi.lo}, ${r.bootstrapCi.hi}]` : 'n/a'})`);
         console.log(`  model-approved entries: ${r.entries} @ P >= ${r.entryProbThreshold} — hit rate ${r.entryHitRate ?? 'n/a'} vs break-even ${r.breakEven} (p=${r.entryPValue}, EV/bet=${r.evPerBet})`);
         console.log(`  VERDICT: ${r.verdict}` +
             (r.verdict === 'DEPLOY'

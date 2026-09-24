@@ -72,8 +72,61 @@ function fitLogistic(X, y, colIdx, opts = {}) {
     return { predict, mean, std, w, b };
 }
 
+// ---------------------------------------------------------------------------
+// Platt calibration — the deployment layer's probability corrector.
+// Brier evaluation MEASURES accuracy; it does not CALIBRATE. A model can
+// systematically say 0.82 when the true frequency is 0.77 and still look
+// decent on skill scores. Platt scaling fits a 1-parameter+intercept logistic
+// map raw-p -> outcome on a time segment EARLIER than the untouched holdout,
+// so the holdout judges the CALIBRATED output.
+// ---------------------------------------------------------------------------
+
+function fitPlatt(probs, outcomes, opts = {}) {
+    const { lr = 0.1, iters = 500, l2 = 5e-3 } = opts;
+    const n = probs.length;
+    if (n < 30) return null;
+    // Platt scaling operates in LOGIT space: calibrate(p) = sigmoid(a*logit(p)+b).
+    // (Fitting the affine map on raw probability cannot spread a compressed
+    // distribution back out — the logit is the correct working scale.)
+    const EPS = 1e-6;
+    const logits = probs.map((p) => {
+        const c = Math.min(1 - EPS, Math.max(EPS, p));
+        return Math.log(c / (1 - c));
+    });
+    // Platt's Bayesian targets (Platt 1999, sec. 2.2): shrink the 0/1 targets
+    // toward the interior so a small calibration sample cannot drag the map
+    // around by chance. Combined with an L2 pull toward the identity map
+    // (a=1, b=0), the calibrator only moves when the data DEMANDS it —
+    // "first, do no harm" for a well-calibrated model.
+    const nPlus = outcomes.reduce((s, v) => s + (v ? 1 : 0), 0);
+    const nMinus = n - nPlus;
+    const hiTarget = (nPlus + 1) / (nPlus + 2);
+    const loTarget = 1 / (nMinus + 2);
+    let a = 1, b = 0;
+    for (let it = 0; it < iters; it++) {
+        let ga = 0, gb = 0;
+        for (let i = 0; i < n; i++) {
+            const t = outcomes[i] ? hiTarget : loTarget;
+            const s = a * logits[i] + b;
+            const p = 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, s))));
+            const err = p - t;
+            ga += err * logits[i];
+            gb += err;
+        }
+        a -= lr * (ga / n + l2 * (a - 1));
+        b -= lr * (gb / n + l2 * b);
+    }
+    const calibrate = (p) => {
+        const c = Math.min(1 - EPS, Math.max(EPS, p));
+        const z = Math.log(c / (1 - c));
+        const s = a * z + b;
+        return 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, s))));
+    };
+    return { a, b, calibrate };
+}
+
 /** Serialize a fitted model together with its feature-column mapping. */
-function logisticToJson(model, colIdx, featureNames, meta = {}) {
+function logisticToJson(model, colIdx, featureNames, meta = {}, platt = null) {
     return {
         kind: 'logistic-v1',
         mean: model.mean,
@@ -82,18 +135,21 @@ function logisticToJson(model, colIdx, featureNames, meta = {}) {
         b: model.b,
         colIdx,
         featureNames,
+        platt: platt ? { a: platt.a, b: platt.b } : null,
         meta
     };
 }
 
 /**
  * Restore a model whose predict() takes a FEATURE OBJECT ({name: value})
- * instead of a raw row — that is the shape the live Brain produces.
+ * instead of a raw row — that is the shape the live Brain produces. If the
+ * model was saved with a Platt calibrator, predict() returns the CALIBRATED
+ * probability (raw logit -> raw p -> calibrated p).
  */
 function logisticFromJson(json) {
     if (!json || json.kind !== 'logistic-v1') return null;
-    const { mean, std, w, b, colIdx, featureNames } = json;
-    const predict = (featureObj) => {
+    const { mean, std, w, b, colIdx, featureNames, platt } = json;
+    const raw = (featureObj) => {
         let s = b;
         for (let j = 0; j < colIdx.length; j++) {
             const v = Number(featureObj[featureNames[colIdx[j]]]);
@@ -102,7 +158,16 @@ function logisticFromJson(json) {
         }
         return 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, s))));
     };
-    return { predict, meta: json.meta || {}, featureNames };
+    const EPS = 1e-6;
+    const calibrate = platt && Number.isFinite(platt.a) && Number.isFinite(platt.b)
+        ? (p) => {
+            const c = Math.min(1 - EPS, Math.max(EPS, p));
+            const z = Math.log(c / (1 - c));
+            return 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, platt.a * z + platt.b))));
+        }
+        : null;
+    const predict = calibrate ? (obj) => calibrate(raw(obj)) : raw;
+    return { predict, rawPredict: raw, calibrate, meta: json.meta || {}, featureNames };
 }
 
 // ---------------------------------------------------------------------------
@@ -130,19 +195,29 @@ function brierSkill(modelBrier, nullBrier) {
  * Non-parametric bootstrap CI for Brier skill (resampling paired rows keeps
  * the model/null comparison on identical rounds). Deterministic when given a
  * seeded rng.
+ *
+ * `nullPreds` may be a SINGLE null (array of numbers) or a list of null
+ * models (array of arrays): with several nulls the skill is measured against
+ * the BEST null in each sample — i.e. the deployed model must beat the best
+ * simple statistical model, not just a crude historical average.
  */
 function bootstrapSkillCi(modelPreds, nullPreds, outcomes, { iters = 500, rng = Math.random } = {}) {
     const n = modelPreds.length;
     if (n < 20) return null;
-    const point = brierSkill(brierScore(modelPreds, outcomes), brierScore(nullPreds, outcomes));
+    const nulls = Number.isFinite(nullPreds[0]) ? [nullPreds] : nullPreds;
+    const bestNullBrier = Math.min(...nulls.map((np) => brierScore(np, outcomes)));
+    const point = brierSkill(brierScore(modelPreds, outcomes), bestNullBrier);
     const skills = [];
     for (let it = 0; it < iters; it++) {
-        const mp = [], np = [], oc = [];
+        const mp = [], oc = [];
+        const nps = nulls.map(() => []);
         for (let i = 0; i < n; i++) {
             const k = Math.floor(rng() * n);
-            mp.push(modelPreds[k]); np.push(nullPreds[k]); oc.push(outcomes[k]);
+            mp.push(modelPreds[k]); oc.push(outcomes[k]);
+            nulls.forEach((np, j) => nps[j].push(np[k]));
         }
-        const s = brierSkill(brierScore(mp, oc), brierScore(np, oc));
+        const best = Math.min(...nps.map((np) => brierScore(np, oc)));
+        const s = brierSkill(brierScore(mp, oc), best);
         if (Number.isFinite(s)) skills.push(s);
     }
     if (skills.length < 20) return null;
@@ -186,6 +261,52 @@ function lookElsewherePenalty(used, searched) {
 }
 
 // ---------------------------------------------------------------------------
+// Simple persistence nulls (review #8): the feature model must beat not just
+// a crude historical average but the BEST simple statistical estimator —
+// including recency, which the existing walk-forward variants already use.
+// ---------------------------------------------------------------------------
+
+/**
+ * Walking recent-window base-rate predictions for the holdout. Strictly
+ * online: each prediction uses only outcomes BEFORE that round (the tail of
+ * the training segment seeds the window). This is the strongest "no
+ * intelligence" comparator we can field cheaply.
+ */
+function recentWindowNullPreds(priorOutcomes, holdoutOutcomes, window = 50) {
+    const buf = priorOutcomes.slice(-window);
+    const preds = [];
+    for (let i = 0; i < holdoutOutcomes.length; i++) {
+        const base = buf.length > 0
+            ? buf.reduce((s, v) => s + v, 0) / buf.length
+            : 0.5;
+        preds.push(base);
+        buf.push(holdoutOutcomes[i]);
+        if (buf.length > window) buf.shift();
+    }
+    return preds;
+}
+
+/**
+ * Model staleness check: a deployed model is only trusted on data like what
+ * it was trained on. Once the settled record count grows past the training
+ * corpus by more than `retrainAfterRounds`, the verdict is stale and the
+ * Brain must fall back to discipline-only until retraining re-validates.
+ */
+function modelStaleness(verdict, currentSettledRows, retrainAfterRounds) {
+    if (!verdict || !Number.isFinite(verdict.rowsAtTraining)) {
+        return { stale: false, newRows: 0, reason: 'no training metadata' };
+    }
+    const newRows = Math.max(0, currentSettledRows - verdict.rowsAtTraining);
+    return {
+        stale: newRows > retrainAfterRounds,
+        newRows,
+        reason: newRows > retrainAfterRounds
+            ? `${newRows} settled rounds since training exceeds the ${retrainAfterRounds}-round freshness limit`
+            : `${newRows} settled rounds since training (limit ${retrainAfterRounds})`
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Verdict + model persistence (per site)
 // ---------------------------------------------------------------------------
 
@@ -217,6 +338,7 @@ function loadFeatureModel(dataDir, siteId) {
 
 module.exports = {
     fitLogistic,
+    fitPlatt,
     logisticToJson,
     logisticFromJson,
     brierScore,
@@ -225,6 +347,8 @@ module.exports = {
     hitRatePValue,
     normCdf,
     lookElsewherePenalty,
+    recentWindowNullPreds,
+    modelStaleness,
     writeModelVerdict,
     readModelVerdict,
     saveFeatureModel,

@@ -6,6 +6,7 @@ const Predictor = require('../game/predictor');
 const PatternDetector = require('../game/patternDetector');
 const Bankroll = require('../game/bankroll');
 const config = require('../util/config');
+const { FEATURE_VERSION } = require('../game/features');
 
 function makeBrain({ strategyOverrides = {}, bankrollBalance = 50000 } = {}) {
     const strategyConfig = { ...config.BETTING_STRATEGIES.MICRO, ...strategyOverrides };
@@ -445,6 +446,8 @@ test('ADAPTIVE stake scales with the hit probability of the drawn target', () =>
 });
 
 test('Phase-3 feature model: deployed model drives entries; NO SIGNAL stays discipline-only', () => {
+    // The strategy every stub brain runs under (MICRO -> targetMultiplier).
+    const strategyT = { ...config.BETTING_STRATEGIES.MICRO };
     // Deterministic stub predictor whose statistical estimate is NOT good
     // enough to enter (confidence 0.30 < required 0.55) — exactly the state
     // the engine has been in for the whole observation history.
@@ -490,24 +493,41 @@ test('Phase-3 feature model: deployed model drives entries; NO SIGNAL stays disc
     assert.match(dNo.reasons.join(' '), /confidence 0.30 < required/);
 
     // DEPLOY: the out-of-sample-validated model's probability REPLACES the
-    // raw estimate and drives the entry gate.
-    const deployed = mk({ predict: () => 0.92 });
+    // raw estimate and drives the entry gate. Models carry the target and
+    // feature version they were trained on (target-safe versioning).
+    const modelMeta = { target: strategyT.targetMultiplier, featureVersion: FEATURE_VERSION };
+    const deployed = mk({ predict: () => 0.92, meta: modelMeta });
     const dYes = deployed.decide({ bettingWindow: true, balance: 50000 });
     assert.strictEqual(dYes.shouldBet, true);
     assert.strictEqual(dYes.featureModel, true);
+    assert.strictEqual(dYes.modelTarget, strategyT.targetMultiplier);
     // 0.92 reaches the gate; the no-pattern penalty (0.95x) still applies, so
     // expect ~0.874. The point is the feature model's probability got through.
     assert.ok(dYes.confidence >= 0.8, `feature-model confidence ${dYes.confidence} must reach the gate`);
 
     // The model can also say "no": a low model probability vetoes the entry
     // even though the raw estimate would pass.
-    const modelVeto = mk({ predict: () => 0.4 });
+    const modelVeto = mk({ predict: () => 0.4, meta: modelMeta });
     const dVeto = modelVeto.decide({ bettingWindow: true, balance: 50000 });
     assert.strictEqual(dVeto.shouldBet, false);
     assert.match(dVeto.reasons.join(' '), /feature model/);
 
+    // TARGET-SAFE VERSIONING (review #8): a model trained for 1.3x must NOT
+    // answer when the strategy targets something else — the Brain falls back
+    // to the statistical gate (which vetoes here), and a model trained on an
+    // old feature schema is likewise parked.
+    const wrongTarget = mk({ predict: () => 0.99, meta: { target: 2.0, featureVersion: FEATURE_VERSION } });
+    const dWrongTarget = wrongTarget.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(dWrongTarget.shouldBet, false, 'wrong-target model must be parked');
+    assert.strictEqual(dWrongTarget.featureModel, undefined);
+    assert.match(dWrongTarget.reasons.join(' '), /confidence 0.30 < required/);
+
+    const wrongVersion = mk({ predict: () => 0.99, meta: { target: strategyT.targetMultiplier, featureVersion: 99 } });
+    const dWrongVer = wrongVersion.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(dWrongVer.shouldBet, false, 'stale feature-schema model must be parked');
+
     // RISK RULES STAY ABSOLUTE: the loss-streak guard beats a deployed model.
-    const pausedBrain = mk({ predict: () => 0.99 }, { paused: true });
+    const pausedBrain = mk({ predict: () => 0.99, meta: modelMeta }, { paused: true });
     const dPaused = pausedBrain.decide({ bettingWindow: true, balance: 50000 });
     assert.strictEqual(dPaused.shouldBet, false);
     assert.match(dPaused.reasons.join(' '), /loss-streak guard/);
