@@ -1603,6 +1603,8 @@ async function main() {
                     if (engine.recalibrator.total % 25 === 0) engine.recalibrator.save();
                 }
                 engine.predictionLog.logOutcome({
+                    predictionId: pending.predictionId || null,
+                    roundId: pending.roundId || null,
                     site: engine.siteId, target: pending.target,
                     prob: pending.prob, crash, won,
                     rawProb: Number.isFinite(pending.rawProb) ? pending.rawProb : null,
@@ -1640,7 +1642,10 @@ async function main() {
                     modelTarget = activeModel.meta.target;
                 }
             }
+            const predictionId = `${engine.siteId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+            const roundId = engine.store ? engine.store.size() : 0;
             engine.pendingPrediction = {
+                predictionId, roundId,
                 target, prob, threshold, allowed, tier: engine.brain.tier, regime,
                 rawProb, featureModelProb, probSource, modelTarget
             };
@@ -1649,6 +1654,7 @@ async function main() {
             // training source, whether or not a model made the decision).
             if (engine.recalibrator && Number.isFinite(rawProb)) engine.recalibrator.notePending(rawProb);
             engine.predictionLog.logPrediction({
+                predictionId, roundId,
                 site: engine.siteId, target, prob, threshold, allowed,
                 tier: engine.brain.tier, regime,
                 rawProb, featureModelProb, probSource, modelTarget,

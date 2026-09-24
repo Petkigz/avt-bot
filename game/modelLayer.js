@@ -441,7 +441,7 @@ function lookElsewherePenalty(used, searched) {
  * intelligence" comparator we can field cheaply.
  */
 function recentWindowNullPreds(priorOutcomes, holdoutOutcomes, window = 50) {
-    const buf = priorOutcomes.slice(-window);
+    const buf = (priorOutcomes || []).slice(-window);
     const preds = [];
     for (let i = 0; i < holdoutOutcomes.length; i++) {
         const base = buf.length > 0
@@ -450,6 +450,23 @@ function recentWindowNullPreds(priorOutcomes, holdoutOutcomes, window = 50) {
         preds.push(base);
         buf.push(holdoutOutcomes[i]);
         if (buf.length > window) buf.shift();
+    }
+    return preds;
+}
+
+/**
+ * Expanding-window all-time base rate null predictions. Strictly online:
+ * at index i, the predicted probability uses only outcomes strictly before
+ * i (from priorOutcomes plus currentOutcomes[0..i-1]). Zero future lookahead.
+ */
+function expandingMeanNullPreds(priorOutcomes, currentOutcomes, defaultPrior = 0.5) {
+    let sum = (priorOutcomes || []).reduce((s, v) => s + v, 0);
+    let count = (priorOutcomes || []).length;
+    const preds = [];
+    for (let i = 0; i < currentOutcomes.length; i++) {
+        preds.push(count > 0 ? sum / count : defaultPrior);
+        sum += currentOutcomes[i];
+        count++;
     }
     return preds;
 }
@@ -503,6 +520,12 @@ function loadFeatureModel(dataDir, siteId) {
         return modelFromJson(JSON.parse(fs.readFileSync(featureModelPath(dataDir, siteId), 'utf8')));
     } catch (error) { return null; }
 }
+function retireFeatureModel(dataDir, siteId) {
+    const p = featureModelPath(dataDir, siteId);
+    try {
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch (error) { /* ignore */ }
+}
 
 function tournamentVerdictPath(dataDir, siteId) {
     return path.join(dataDir, `tournament-verdict-${String(siteId).replace(/[^a-z0-9._-]/gi, '_')}.json`);
@@ -533,11 +556,13 @@ module.exports = {
     normCdf,
     lookElsewherePenalty,
     recentWindowNullPreds,
+    expandingMeanNullPreds,
     modelStaleness,
     writeModelVerdict,
     readModelVerdict,
     saveFeatureModel,
     loadFeatureModel,
+    retireFeatureModel,
     writeTournamentVerdict,
     readTournamentVerdict
 };

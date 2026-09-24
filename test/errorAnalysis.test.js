@@ -33,6 +33,28 @@ test('pairRecords joins predict->settle per site; orphan settles keep their own 
     assert.strictEqual(enriched.tier, 'MICRO');
 });
 
+test('pairRecords pairs explicitly by predictionId when present', () => {
+    const recs = [
+        { kind: 'predict', ts: 1, site: 'a', target: 1.3, prob: 0.72, predictionId: 'pid-1', roundId: 101, features: { last_1: 2.1 } },
+        { kind: 'predict', ts: 2, site: 'a', target: 2.0, prob: 0.48, predictionId: 'pid-2', roundId: 102, features: { last_1: 1.2 } },
+        // Settles arrive out of order or with target interleaving:
+        { kind: 'settle', ts: 3, site: 'a', target: 2.0, prob: 0.48, predictionId: 'pid-2', roundId: 102, crash: 2.5, won: true },
+        { kind: 'settle', ts: 4, site: 'a', target: 1.3, prob: 0.72, predictionId: 'pid-1', roundId: 101, crash: 1.1, won: false }
+    ];
+    const pairs = pairRecords(recs);
+    assert.strictEqual(pairs.length, 2);
+    const p1 = pairs.find((p) => p.predictionId === 'pid-1');
+    assert.ok(p1);
+    assert.strictEqual(p1.target, 1.3);
+    assert.strictEqual(p1.won, false);
+    assert.strictEqual(p1.features.last_1, 2.1);
+    const p2 = pairs.find((p) => p.predictionId === 'pid-2');
+    assert.ok(p2);
+    assert.strictEqual(p2.target, 2.0);
+    assert.strictEqual(p2.won, true);
+    assert.strictEqual(p2.features.last_1, 1.2);
+});
+
 test('analyzeSite: a perfectly matched model gets zero Brier skill and zero ECE', () => {
     const pairs = [];
     for (let i = 0; i < 120; i++) pairs.push({ site: 's', target: 1.3, prob: 0.75, won: i < 90 });

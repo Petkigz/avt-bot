@@ -4,10 +4,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
-    fitLogistic, fitPlatt, logisticToJson, logisticFromJson,
+    fitLogistic, fitPlatt, logisticToJson, logisticFromJson, patternModelToJson,
     brierScore, brierSkill, bootstrapSkillCi, hitRatePValue, normCdf,
-    lookElsewherePenalty, recentWindowNullPreds, modelStaleness,
-    writeModelVerdict, readModelVerdict, saveFeatureModel, loadFeatureModel
+    lookElsewherePenalty, recentWindowNullPreds, expandingMeanNullPreds, modelStaleness,
+    writeModelVerdict, readModelVerdict, saveFeatureModel, loadFeatureModel, retireFeatureModel
 } = require('../game/modelLayer');
 
 // Deterministic RNG for synthetic data.
@@ -185,6 +185,32 @@ test('recentWindowNullPreds is strictly online', () => {
     assert.ok(Math.abs(preds[1] - 1 / 3) < 1e-9);
     // Third sees [0,1,0] -> 1/3 ... fourth [1,0,1] -> 2/3
     assert.ok(Math.abs(preds[3] - 2 / 3) < 1e-9);
+});
+
+test('expandingMeanNullPreds is strictly online (zero future lookahead)', () => {
+    const prior = [1, 0];
+    const hold = [1, 1, 0, 0];
+    const preds = expandingMeanNullPreds(prior, hold, 0.5);
+    assert.strictEqual(preds.length, hold.length);
+    // index 0: uses only prior [1, 0] -> 1/2 = 0.5
+    assert.strictEqual(preds[0], 0.5);
+    // index 1: uses prior + hold[0] [1, 0, 1] -> 2/3
+    assert.ok(Math.abs(preds[1] - 2 / 3) < 1e-9);
+    // index 2: uses [1, 0, 1, 1] -> 3/4 = 0.75
+    assert.strictEqual(preds[2], 0.75);
+    // index 3: uses [1, 0, 1, 1, 0] -> 3/5 = 0.6
+    assert.strictEqual(preds[3], 0.6);
+});
+
+test('retireFeatureModel removes the deployed model file', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'model-retire-'));
+    saveFeatureModel(dir, 'site-test', patternModelToJson({ window: 3, base: 0.75, map: {} }, ['last_1'], { target: 1.3 }));
+    assert.ok(loadFeatureModel(dir, 'site-test') !== null, 'saved model should load');
+    retireFeatureModel(dir, 'site-test');
+    assert.strictEqual(loadFeatureModel(dir, 'site-test'), null, 'retired model should return null');
+    // Calling retire again on a missing file must not throw
+    assert.doesNotThrow(() => retireFeatureModel(dir, 'site-test'));
+    fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('modelStaleness flags verdicts outgrown by the data', () => {

@@ -40,22 +40,34 @@ const { normCdf, holmBonferroni } = require('./walk-forward');
 const MIN_PAIRS = 100; // below this, calibration numbers are noise
 
 // ---------------------------------------------------------------------------
-// Pairing: every 'settle' line belongs to the most recent 'predict' line
-// for the same site+target that hasn't been settled yet.
+// Pairing: every 'settle' line belongs to its matching 'predict' line.
+// Primary match: exact unique predictionId. Fallback (for legacy records
+// without predictionId): latest unresolved predict for the same site+target.
 // ---------------------------------------------------------------------------
 function pairRecords(records) {
-    const open = new Map(); // "site|target" -> latest predict record
+    const openById = new Map();  // predictionId -> predict record
+    const openByKey = new Map(); // "site|target" -> latest predict record (legacy fallback)
     const pairs = [];
     for (const r of records) {
         if (r.kind === 'predict') {
-            open.set(`${r.site}|${r.target}`, r);
+            if (r.predictionId) openById.set(r.predictionId, r);
+            openByKey.set(`${r.site}|${r.target}`, r);
         } else if (r.kind === 'settle') {
-            const key = `${r.site}|${r.target}`;
-            const pred = open.get(key);
-            open.delete(key);
+            let pred = null;
+            if (r.predictionId && openById.has(r.predictionId)) {
+                pred = openById.get(r.predictionId);
+                openById.delete(r.predictionId);
+                openByKey.delete(`${r.site}|${r.target}`);
+            } else {
+                const key = `${r.site}|${r.target}`;
+                pred = openByKey.get(key);
+                openByKey.delete(key);
+            }
             // A settle is self-contained (it carries prob + outcome); the
             // matching predict only enriches it with features/tier/regime.
             pairs.push({
+                predictionId: r.predictionId || (pred ? pred.predictionId : null),
+                roundId: r.roundId || (pred ? pred.roundId : null),
                 site: r.site,
                 target: r.target,
                 prob: Number.isFinite(r.prob) ? r.prob : (pred ? pred.prob : null),

@@ -36,7 +36,7 @@ const {
     fitLogistic, fitPlatt, logisticToJson,
     brierScore, brierSkill, bootstrapSkillCi, hitRatePValue, normCdf,
     recentWindowNullPreds,
-    writeModelVerdict, saveFeatureModel
+    writeModelVerdict, saveFeatureModel, retireFeatureModel
 } = require('../game/modelLayer');
 
 const MIN_HOLDOUT = 150;      // holdout rounds required before any verdict
@@ -284,6 +284,8 @@ function runSite(siteId, opts = {}) {
             trained: trainedAt, trainingEndTs, rowsAtTraining,
             featureVersion: FEATURE_VERSION
         }, platt));
+    } else {
+        retireFeatureModel(config.DATA_DIR, siteId);
     }
     return summary;
 }

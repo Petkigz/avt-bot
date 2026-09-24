@@ -36,7 +36,7 @@ function syntheticRows(n, seed, signal) {
 test('tournament DEPLOYs the strongest contestant when a real signal exists', () => {
     const { verdict, winner, report, deployModel } = runTournament(syntheticRows(1500, 9, true));
     assert.strictEqual(verdict, 'DEPLOY');
-    assert.ok(['logistic', 'boosting', 'pattern'].includes(winner), `unexpected winner ${winner}`);
+    assert.ok(['logistic', 'boosting-25', 'boosting-50', 'pattern-3'].includes(winner), `unexpected winner ${winner}`);
     // The selector must rank by out-of-sample Brier skill with a positive CI.
     const stand = report.standings[winner];
     assert.ok(stand.skill > 0, 'winner skill must be positive');

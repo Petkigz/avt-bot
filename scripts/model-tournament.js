@@ -49,8 +49,8 @@ const {
     fitLogistic, fitBoosting, fitPlatt,
     logisticToJson, boostingToJson, patternModelToJson,
     brierScore, brierSkill, bootstrapSkillCi, hitRatePValue,
-    recentWindowNullPreds,
-    writeModelVerdict, saveFeatureModel, writeTournamentVerdict
+    recentWindowNullPreds, expandingMeanNullPreds,
+    writeModelVerdict, saveFeatureModel, retireFeatureModel, writeTournamentVerdict
 } = require('../game/modelLayer');
 
 const MIN_HOLDOUT = 150;
@@ -87,7 +87,8 @@ function columnMeans(X) {
 // ---- Contestant fitters: each returns { predict(rowArray) } or null -------
 function fitContestant(name, Xtrain, yTrain, cols) {
     if (name === 'logistic') return fitLogistic(Xtrain, yTrain, cols);
-    if (name === 'boosting') return fitBoosting(Xtrain, yTrain, cols);
+    if (name === 'boosting-25') return fitBoosting(Xtrain, yTrain, cols, { trees: 25 });
+    if (name === 'boosting-50' || name === 'boosting') return fitBoosting(Xtrain, yTrain, cols, { trees: 50 });
     return null;
 }
 
@@ -158,7 +159,9 @@ function runTournament(rows, opts = {}) {
 
     // Out-of-sample prediction arrays aligned to walkRows (undefined outside
     // a contestant's test coverage).
-    const preds = { logistic: new Array(walkRows.length), boosting: new Array(walkRows.length), pattern: new Array(walkRows.length) };
+    const contestantNames = ['logistic', 'boosting-25', 'boosting-50', 'pattern-3'];
+    const preds = {};
+    for (const name of contestantNames) preds[name] = new Array(walkRows.length);
     const yWalk = walkRows.map((r) => (r.won ? 1 : 0));
 
     for (const seg of segments) {
@@ -170,7 +173,8 @@ function runTournament(rows, opts = {}) {
 
         const models = {
             logistic: fitContestant('logistic', Xi, yT, cols),
-            boosting: fitContestant('boosting', Xi, yT, cols)
+            'boosting-25': fitContestant('boosting-25', Xi, yT, cols),
+            'boosting-50': fitContestant('boosting-50', Xi, yT, cols)
         };
         const pmap = buildPatternMap(seg.train, PATTERN_WINDOW);
 
@@ -178,13 +182,14 @@ function runTournament(rows, opts = {}) {
         seg.test.forEach((r, i) => {
             const gi = seg.testStart + i;
             if (models.logistic) preds.logistic[gi] = models.logistic.predict(Xtest[i]);
-            if (models.boosting) preds.boosting[gi] = models.boosting.predict(Xtest[i]);
-            preds.pattern[gi] = patternPredict(pmap, r, segBase, PATTERN_WINDOW);
+            if (models['boosting-25']) preds['boosting-25'][gi] = models['boosting-25'].predict(Xtest[i]);
+            if (models['boosting-50']) preds['boosting-50'][gi] = models['boosting-50'].predict(Xtest[i]);
+            preds['pattern-3'][gi] = patternPredict(pmap, r, segBase, PATTERN_WINDOW);
         });
     }
 
-    // Persistence nulls, strictly online across the walk zone.
-    const nullBase = walkRows.map(() => yWalk.reduce((a, b) => a + b, 0) / yWalk.length);
+    // Persistence nulls, strictly online across the walk zone (zero lookahead).
+    const nullBase = expandingMeanNullPreds([], yWalk, 1 / Number(target));
     const nullRecent = recentWindowNullPreds([], yWalk, RECENT_NULL_WINDOW);
 
     // Test-covered indices (where model contestants have OOS predictions).
@@ -196,15 +201,16 @@ function runTournament(rows, opts = {}) {
     const yOOS = pick(yWalk);
     const contestants = {
         logistic: pick(preds.logistic),
-        boosting: pick(preds.boosting),
-        pattern: pick(preds.pattern),
+        'boosting-25': pick(preds['boosting-25']),
+        'boosting-50': pick(preds['boosting-50']),
+        'pattern-3': pick(preds['pattern-3']),
         statistical: pick(nullRecent),
         null: pick(nullBase)
     };
 
     // ---- Calibrate each model contestant on its own OOS walk predictions --
     const calibrators = {};
-    for (const name of ['logistic', 'boosting', 'pattern']) {
+    for (const name of contestantNames) {
         const cand = fitPlatt(contestants[name], yOOS);
         if (cand) {
             const bRaw = brierScore(contestants[name], yOOS);
@@ -217,7 +223,7 @@ function runTournament(rows, opts = {}) {
     // ---- Selector: rank by Brier skill vs the BEST persistence null -------
     const bestNullOOS = Math.min(brierScore(contestants.null, yOOS), brierScore(contestants.statistical, yOOS));
     const standings = {};
-    for (const name of ['logistic', 'boosting', 'pattern']) {
+    for (const name of contestantNames) {
         const cal = applyCal(name, contestants[name]);
         const brier = brierScore(cal, yOOS);
         const skill = brierSkill(brier, bestNullOOS);
@@ -259,22 +265,22 @@ function runTournament(rows, opts = {}) {
 
     let holdModel = null;       // serializable if DEPLOY
     let holdPreds = null;
-    if (winnerName === 'logistic' || winnerName === 'boosting') {
+    if (winnerName === 'logistic' || winnerName.startsWith('boosting')) {
         const fit = fitContestant(winnerName, Xw, yWalk, cols);
         if (!fit) return { verdict: 'NO_SIGNAL', winner: null, report };
         const raw = Xh.map((row) => fit.predict(row));
         holdPreds = calibrators[winnerName] ? raw.map(calibrators[winnerName].calibrate) : raw;
         const jsonFn = winnerName === 'logistic' ? logisticToJson : boostingToJson;
         holdModel = { json: jsonFn(fit, cols, names, {}, calibrators[winnerName]), fit };
-    } else { // pattern
+    } else { // pattern-3
         const pmap = buildPatternMap(walkRows, PATTERN_WINDOW);
         holdPreds = holdoutRows.map((r) => patternPredict(pmap, r, walkBase, PATTERN_WINDOW));
-        if (calibrators.pattern) holdPreds = holdPreds.map(calibrators.pattern.calibrate);
+        if (calibrators['pattern-3']) holdPreds = holdPreds.map(calibrators['pattern-3'].calibrate);
         holdModel = { json: patternModelToJson({ window: PATTERN_WINDOW, base: walkBase, map: pmap }, names, {}), fit: null };
     }
 
-    // Persistence nulls on the holdout (online continuation).
-    const holdNullBase = holdoutRows.map(() => walkBase);
+    // Persistence nulls on the holdout (strictly online continuation).
+    const holdNullBase = expandingMeanNullPreds(yWalk, yHold, 1 / Number(target));
     const holdNullRecent = recentWindowNullPreds(yWalk, yHold, RECENT_NULL_WINDOW);
     const bestNullHold = Math.min(brierScore(holdNullBase, yHold), brierScore(holdNullRecent, yHold));
     const holdBrier = brierScore(holdPreds, yHold);
@@ -372,6 +378,25 @@ function runSite(siteId, opts = {}) {
             entryHitRate: summary.holdout ? summary.holdout.entryHitRate : null,
             evPerBet: summary.holdout ? summary.holdout.evPerBet : null,
             n: summary.n, nHoldout: summary.nHoldout
+        });
+    } else {
+        // Critical fix (review #10): when the tournament produces NO_SIGNAL
+        // or INSUFFICIENT_DATA, it must immediately retire any old deployed
+        // feature model and update model-verdict-<site>.json so the live
+        // Brain falls back to discipline-only right away.
+        retireFeatureModel(config.DATA_DIR, siteId);
+        writeModelVerdict(config.DATA_DIR, siteId, {
+            site: siteId,
+            target: summary.dominantTarget,
+            verdict: result.verdict,
+            winner: null,
+            source: 'tournament',
+            reason: summary.reason,
+            rowsAtTraining: all.length,
+            featureVersion: FEATURE_VERSION,
+            n: summary.n,
+            nHoldout: summary.nHoldout,
+            ts: Date.now()
         });
     }
     return summary;
