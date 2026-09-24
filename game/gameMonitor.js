@@ -273,10 +273,11 @@ class GameMonitor extends EventEmitter {
                 }
 
                 if (rec.overlapped) {
-                    // Confirmed strip alignment: these are verified historical rounds.
-                    // Bypass wall-clock jitter guard so no batch round is dropped.
-                    for (const crash of rec.newRounds) {
-                        this.onRoundEnded(crash, state);
+                    // Confirmed strip alignment: intermediate rounds are recovered, newest is the current round
+                    for (let i = 0; i < rec.newRounds.length; i++) {
+                        const crash = rec.newRounds[i];
+                        const isIntermediate = i < rec.newRounds.length - 1;
+                        this.onRoundEnded(crash, state, { recovered: isIntermediate });
                     }
                     this.lastBubble = rec.newRounds[rec.newRounds.length - 1];
                     this.lastRoundEndedAt = Date.now();
@@ -314,6 +315,9 @@ class GameMonitor extends EventEmitter {
             this.flightEndedAt = null;
             this.roundStartTime = Date.now();
             this.currentFlightTrace = [{ t: 0, v: state.liveMultiplier || 1.00 }];
+            if (marker && marker.frame) {
+                this.startFlightSampler(marker.frame);
+            }
             const bet = this.betManager.currentBet;
             if (bet && !bet.armed) {
                 bet.armed = true;
@@ -321,15 +325,17 @@ class GameMonitor extends EventEmitter {
             }
             this.emit('roundStarted', { roundId: this.roundId + 1 });
         } else if (inflight && this.roundInFlight) {
-            if (Number.isFinite(state.liveMultiplier)) {
-                this.currentFlightTrace.push({
-                    t: this.roundStartTime ? Date.now() - this.roundStartTime : 0,
-                    v: state.liveMultiplier
-                });
+            if (Number.isFinite(state.liveMultiplier) && this.currentFlightTrace.length < 500) {
+                const elapsed = this.roundStartTime ? Date.now() - this.roundStartTime : 0;
+                const last = this.currentFlightTrace[this.currentFlightTrace.length - 1];
+                if (!last || Math.abs(last.t - elapsed) >= 40) {
+                    this.currentFlightTrace.push({ t: elapsed, v: state.liveMultiplier });
+                }
             }
         } else if (!inflight && this.roundInFlight) {
             this.roundInFlight = false;
             this.flightEndedAt = Date.now();
+            this.stopFlightSampler();
         }
 
         // ---- Balance into the bankroll manager ----
@@ -525,14 +531,81 @@ class GameMonitor extends EventEmitter {
         logger.info(`[${scope}] standing down this round: ${key}`);
     }
 
-    onRoundEnded(crashValue, state) {
+    startFlightSampler(frame) {
+        this.stopFlightSampler();
+        if (!frame || typeof frame.evaluate !== 'function') return;
+        const selector = this.selectors.GAME.LIVE_MULTIPLIER;
+        this.flightSamplerTimer = setInterval(async () => {
+            if (!this.roundInFlight || !this.roundStartTime || this.currentFlightTrace.length >= 500) {
+                this.stopFlightSampler();
+                return;
+            }
+            try {
+                const val = await frame.evaluate((sel) => {
+                    const el = document.querySelector(sel);
+                    if (!el) return null;
+                    const txt = (el.textContent || '').replace(/x/gi, '').trim();
+                    const num = parseFloat(txt);
+                    return Number.isFinite(num) ? num : null;
+                }, selector);
+                if (Number.isFinite(val) && this.roundStartTime) {
+                    const elapsed = Date.now() - this.roundStartTime;
+                    const last = this.currentFlightTrace[this.currentFlightTrace.length - 1];
+                    if (!last || Math.abs(last.t - elapsed) >= 40) {
+                        this.currentFlightTrace.push({ t: elapsed, v: val });
+                    }
+                }
+            } catch (err) {
+                // Frame might be busy or navigating
+            }
+        }, 60);
+    }
+
+    stopFlightSampler() {
+        if (this.flightSamplerTimer) {
+            clearInterval(this.flightSamplerTimer);
+            this.flightSamplerTimer = null;
+        }
+    }
+
+    onRoundEnded(crashValue, state, meta = {}) {
+        const isRecovered = !!meta.recovered;
         const now = Date.now();
-        const interRoundIntervalMs = this.lastRoundEndedAt ? now - this.lastRoundEndedAt : null;
         this.roundId++;
+        this.lastBubble = crashValue;
+
+        if (isRecovered) {
+            // Recovered historical rounds: do NOT modify current in-flight state or currentFlightTrace
+            logger.info(`Round #${this.roundId} [RECOVERED] ended at ${crashValue}x [${this.site}${this.account ? ' / ' + this.account : ''}]`);
+            const nowDate = new Date(now);
+            const trace = {
+                roundId: this.roundId,
+                site: this.site,
+                crash: crashValue,
+                durationMs: null,
+                samples: [],
+                samplesCount: 0,
+                timeTo12: null,
+                timeTo15: null,
+                timeTo20: null,
+                interRoundIntervalMs: null,
+                recovered: true,
+                hourUtc: nowDate.getUTCHours(),
+                minuteUtc: nowDate.getUTCMinutes(),
+                dayOfWeek: nowDate.getUTCDay(),
+                ts: now
+            };
+            this.emit('roundTrace', trace);
+            if (this.historyStore) this.historyStore.append(crashValue);
+            this.brain.onRoundEnded(crashValue);
+            return;
+        }
+
+        this.stopFlightSampler();
+        const interRoundIntervalMs = this.lastRoundEndedAt ? now - this.lastRoundEndedAt : null;
         this.roundInFlight = false;
         this.flightEndedAt = null;
         this.lastRoundEndedAt = now;
-        this.lastBubble = crashValue;
         logger.info(`Round #${this.roundId} ended at ${crashValue}x [${this.site}${this.account ? ' / ' + this.account : ''}]`);
 
         // ---- Flight Trajectory & Microstructure Record ----
@@ -553,6 +626,7 @@ class GameMonitor extends EventEmitter {
             timeTo15: findTimeTo(1.50),
             timeTo20: findTimeTo(2.00),
             interRoundIntervalMs,
+            recovered: false,
             hourUtc: nowDate.getUTCHours(),
             minuteUtc: nowDate.getUTCMinutes(),
             dayOfWeek: nowDate.getUTCDay(),

@@ -1,6 +1,7 @@
 const logger = require('../util/logger');
 const { extractFeatures, FEATURE_VERSION } = require('./features');
 const { lookElsewherePenalty } = require('./modelLayer');
+const { blendEnsemble } = require('./ensemble');
 
 /** Wilson score lower bound for a binomial proportion (95%). The honest way
  *  to say "this pattern's live win rate beats X": the lower edge of the
@@ -276,37 +277,57 @@ class Brain {
                 return this.finish(decision);
             }
 
-            // ---- Confidence source ---------------------------------------
-            // Phase-3 feature model: when a DEPLOY verdict loaded one, its
-            // CALIBRATED probability REPLACES the raw estimator (it beat the
-            // best simple null out-of-sample with positive EV — that is what
-            // deployment means). The model is only used if it matches the
-            // CURRENT target and feature version (target-safe versioning);
-            // otherwise the Brain falls back to the statistical gate. With a
-            // NO_SIGNAL verdict nothing is loaded and the Brain stays
-            // discipline-only: the model's "NO SIGNAL" is honored.
-            let fromFeatureModel = false;
-            let fromHypothesisSignal = false;
+            // ---- Multi-Source Calibrated Ensemble -------------------------
+            // Combines statistical estimator, supervised feature models, and
+            // confirmed hypothesis signals into an optimal log-odds ensemble.
+            const ensembleSources = [];
+
+            // 1. Statistical Estimator (with self-repair recalibration)
+            let statProb = gate.probability;
+            if (this.recalibrator && statProb !== null) {
+                statProb = this.recalibrator.adjust(statProb);
+            }
+            if (Number.isFinite(statProb) && gate.allowed) {
+                ensembleSources.push({
+                    name: 'statistical',
+                    prob: statProb,
+                    weight: 1.0,
+                    kind: 'statistical'
+                });
+            }
+
+            // 2. Phase-3 Supervised Feature Model (Logistic / Boosting)
             const activeModel = this.featureModelFor(this.strategy.targetMultiplier);
             if (activeModel) {
                 const feats = extractFeatures(this.predictor.history, this.strategy.targetMultiplier);
                 const fmProb = activeModel.predict(feats);
                 if (Number.isFinite(fmProb)) {
-                    confidence = fmProb;
-                    fromFeatureModel = true;
+                    ensembleSources.push({
+                        name: 'feature_model',
+                        prob: fmProb,
+                        weight: 1.5,
+                        kind: 'feature_model'
+                    });
                     decision.modelTarget = activeModel.meta.target;
                 }
             }
 
-            // Research Hypothesis Signal Bridge: evaluate confirmed signals
-            if (!fromFeatureModel && this.signalLifecycle && this.predictor && this.predictor.history) {
+            // 3. Research Hypothesis Signal Bridge
+            let fromHypothesisSignal = false;
+            if (this.signalLifecycle && this.predictor && this.predictor.history) {
                 const matched = this.signalLifecycle.matchActiveSignals(this.predictor.history);
                 const activeMatch = matched.find((m) =>
                     (m.status === 'LIVE_MICRO' || m.status === 'HOLDOUT_CONFIRMED') &&
                     Math.abs(m.target - this.strategy.targetMultiplier) < 0.05
                 );
                 if (activeMatch && Number.isFinite(activeMatch.holdoutHitRate)) {
-                    confidence = activeMatch.holdoutHitRate;
+                    const hypWeight = 1.2 + (activeMatch.holdoutEv ? Math.max(0, activeMatch.holdoutEv) : 0.2);
+                    ensembleSources.push({
+                        name: `hyp_${activeMatch.id}`,
+                        prob: activeMatch.holdoutHitRate,
+                        weight: hypWeight,
+                        kind: 'hypothesis'
+                    });
                     fromHypothesisSignal = true;
                     decision.activeHypothesisSignal = activeMatch;
                     decision.reasons.push(
@@ -315,22 +336,17 @@ class Brain {
                 }
             }
 
-            if (!fromFeatureModel && !fromHypothesisSignal) {
+            // Blend active sources into ensemble confidence
+            const ensemble = blendEnsemble(ensembleSources);
+            if (ensemble.probability !== null) {
+                confidence = ensemble.probability;
+                decision.ensemble = ensemble;
+            } else {
                 if (!gate.allowed) {
                     reasons.push(`model: ${gate.reason}`);
                     return this.finish(decision);
                 }
-                confidence = gate.probability;
-
-                // Intelligence upgrade #1: recalibrated confidence — the engine's
-                // own settled track record corrects systematic over/under-
-                // confidence before it is compared against the entry threshold.
-                // (Applied to the estimator only — the deployed feature model
-                // ships its own Platt calibrator fitted before the untouched
-                // holdout, so re-correcting it here would double-adjust.)
-                if (this.recalibrator && confidence !== null) {
-                    confidence = this.recalibrator.adjust(confidence);
-                }
+                confidence = statProb;
             }
 
             // Volatility risk evaluation: wild recent rounds demand MORE confidence.
@@ -340,12 +356,12 @@ class Brain {
                 reasons.push(
                     `confidence ${confidence.toFixed(2)} < required ${required.toFixed(2)}` +
                     (volPenalty > 0 ? ' (volatility penalty)' : '') +
-                    (fromFeatureModel ? ' (feature model)' : '') +
-                    (fromHypothesisSignal ? ' (hypothesis signal)' : '')
+                    (activeModel ? ' (feature model blended)' : '') +
+                    (fromHypothesisSignal ? ' (hypothesis signal blended)' : '')
                 );
                 return this.finish(decision);
             }
-            if (fromFeatureModel) decision.featureModel = true;
+            if (activeModel) decision.featureModel = true;
         }
 
         // ---- Pattern gate (freeze → test → promote → statistical evidence) ----

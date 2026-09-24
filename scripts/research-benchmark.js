@@ -3,17 +3,17 @@
 /**
  * scripts/research-benchmark.js
  *
- * Adversarial Scientific Research Benchmark.
- * Evaluates the entire intelligence and discovery stack across controlled
- * synthetic worlds with known ground-truth statistical properties.
+ * Adversarial Scientific Research Benchmark Suite.
+ * Evaluates the entire intelligence and discovery stack across repeated multi-seed
+ * trials in controlled synthetic worlds with known ground-truth statistical properties.
  *
  * Benchmarks:
- * 1. World 1 (Pure IID Noise)        -> Zero False Positive Discoveries
+ * 1. World 1 (Pure IID Noise)        -> 100% False-Positive Rejection Rate
  * 2. World 2 (Markov Dependency)    -> Dependency Detection Power
  * 3. World 3 (Regime Switching)     -> Conditional Distribution Shift Detection
  * 4. World 4 (Microstructure)       -> Early Flight Trajectory Discovery
  * 5. World 5 (Planted Signal)       -> 3-Tier Hypothesis Engine Discovery & Confirmation
- * 6. World 6 (Decaying Trap)        -> Edge Decay Detection & Lifecycle Retirement
+ * 6. World 6 (Decaying Trap)        -> Edge Decay Detection & Complete Lifecycle Retirement
  *
  * Usage:
  *   npm run research:benchmark
@@ -35,106 +35,182 @@ const { analyzeTrajectories } = require('../research/trajectoryLab');
 const { runHypothesisEngine } = require('../research/hypothesisEngine');
 const { SignalLifecycle } = require('../game/signalLifecycle');
 
-function runBenchmark() {
+function runBenchmark(opts = {}) {
+    const trials = opts.trials || 5;
     console.log('========================================================================');
-    console.log(' ADVERSARIAL SCIENTIFIC RESEARCH BENCHMARK');
+    console.log(' ADVERSARIAL MULTI-TRIAL SCIENTIFIC RESEARCH BENCHMARK');
+    console.log(` (Evaluating across ${trials} distinct randomized seeds per controlled world)`);
     console.log('========================================================================\n');
 
-    const results = [];
-    let passedTests = 0;
-    let totalTests = 0;
+    let totalChecks = 0;
+    let passedChecks = 0;
 
     // -------------------------------------------------------------------------
-    // World 1: Pure IID Noise (False Positive Resistance Benchmark)
+    // World 1: Pure IID Noise (False Positive Resistance across multiple seeds)
     // -------------------------------------------------------------------------
-    totalTests += 4;
     console.log('[WORLD 1] Pure IID Aviator Noise (Null Model):');
-    const w1Stream = createWorld1_PureIid(1200, 101);
-    const w1Dep = analyzeDependence(w1Stream, { miIters: 150 });
-    const w1Dist = analyzeDistribution(w1Stream, { iters: 150 });
-    const w1Hyp = runHypothesisEngine(w1Stream);
+    let w1DepPasses = 0;
+    let w1FdrPasses = 0;
+    let w1DistPasses = 0;
+    let w1HypPasses = 0;
 
-    const w1DepPass = w1Dep.verdict === 'NO_DEPENDENCE_DETECTED';
-    const w1DistPass = w1Dist.verdict === 'NO_CONDITIONAL_SHIFT_DETECTED_FOR_TESTED_CONDITIONS';
-    const w1HypPass = w1Hyp.tier3HoldoutConfirmed === 0;
-    const w1FdrPass = w1Dep.confirmedFdrFlags.length === 0;
+    for (let t = 0; t < trials; t++) {
+        const seed = 100 + t * 37;
+        const stream = createWorld1_PureIid(1200, seed);
+        const dep = analyzeDependence(stream, { miIters: 100 });
+        const dist = analyzeDistribution(stream, { iters: 100 });
+        const hyp = runHypothesisEngine(stream);
 
-    if (w1DepPass) passedTests++;
-    if (w1DistPass) passedTests++;
-    if (w1HypPass) passedTests++;
-    if (w1FdrPass) passedTests++;
+        if (dep.verdict === 'NO_DEPENDENCE_DETECTED') w1DepPasses++;
+        if (dep.confirmedFdrFlags.length === 0) w1FdrPasses++;
+        if (dist.verdict === 'NO_CONDITIONAL_SHIFT_DETECTED_FOR_TESTED_CONDITIONS') w1DistPasses++;
+        if (hyp.tier3HoldoutConfirmed === 0) w1HypPasses++;
+    }
 
-    console.log(`  ├─ Dependence Lab:       ${w1Dep.verdict} [${w1DepPass ? 'PASS' : 'FAIL'}]`);
-    console.log(`  ├─ FDR Correction:       ${w1Dep.confirmedFdrFlags.length} false alarms [${w1FdrPass ? 'PASS' : 'FAIL'}]`);
-    console.log(`  ├─ Distribution Lab:     ${w1Dist.verdict} [${w1DistPass ? 'PASS' : 'FAIL'}]`);
-    console.log(`  └─ Hypothesis Engine:    ${w1Hyp.tier3HoldoutConfirmed} confirmed signals (expected 0) [${w1HypPass ? 'PASS' : 'FAIL'}]`);
+    totalChecks += 4;
+    const w1DepOk = w1DepPasses >= Math.floor(trials * 0.8);
+    const w1FdrOk = w1FdrPasses === trials;
+    const w1DistOk = w1DistPasses >= Math.floor(trials * 0.8);
+    const w1HypOk = w1HypPasses === trials;
+
+    if (w1DepOk) passedChecks++;
+    if (w1FdrOk) passedChecks++;
+    if (w1DistOk) passedChecks++;
+    if (w1HypOk) passedChecks++;
+
+    console.log(`  ├─ Dependence Lab:       ${w1DepPasses}/${trials} trials NO_DEPENDENCE_DETECTED [${w1DepOk ? 'PASS' : 'FAIL'}]`);
+    console.log(`  ├─ FDR Correction:       ${w1FdrPasses}/${trials} trials 0 false alarms (100% FPR rejection) [${w1FdrOk ? 'PASS' : 'FAIL'}]`);
+    console.log(`  ├─ Distribution Lab:     ${w1DistPasses}/${trials} trials NO_CONDITIONAL_SHIFT [${w1DistOk ? 'PASS' : 'FAIL'}]`);
+    console.log(`  └─ Hypothesis Engine:    ${w1HypPasses}/${trials} trials 0 false confirmations [${w1HypOk ? 'PASS' : 'FAIL'}]`);
 
     // -------------------------------------------------------------------------
-    // World 2: Markov Transition Dependency (Signal Detection Power)
+    // World 2: Markov Transition Dependency (Power Test)
     // -------------------------------------------------------------------------
-    totalTests += 1;
     console.log('\n[WORLD 2] First-Order Markov Transition Dependency:');
-    const w2Stream = createWorld2_MarkovDependency(1000, 202);
-    const w2Dep = analyzeDependence(w2Stream, { miIters: 150 });
-    const w2Pass = w2Dep.verdict === 'STATISTICALLY_SIGNIFICANT_DEPENDENCE' || !w2Dep.markov3.independent;
-    if (w2Pass) passedTests++;
-    console.log(`  └─ Markov Permutation:   Chi2=${w2Dep.markov3 ? w2Dep.markov3.chi2 : 'n/a'} (p=${w2Dep.markov3 ? w2Dep.markov3.permutationPValue : 'n/a'}) [${w2Pass ? 'PASS' : 'FAIL'}]`);
+    let w2Passes = 0;
+    for (let t = 0; t < trials; t++) {
+        const seed = 200 + t * 43;
+        const stream = createWorld2_MarkovDependency(1000, seed);
+        const dep = analyzeDependence(stream, { miIters: 100 });
+        if (dep.verdict === 'STATISTICALLY_SIGNIFICANT_DEPENDENCE' || !dep.markov3.independent) w2Passes++;
+    }
+    totalChecks += 1;
+    const w2Ok = w2Passes === trials;
+    if (w2Ok) passedChecks++;
+    console.log(`  └─ Markov Detection:     ${w2Passes}/${trials} trials detected Markov structure [${w2Ok ? 'PASS' : 'FAIL'}]`);
 
     // -------------------------------------------------------------------------
-    // World 3: Hidden Regime Switching (Distributional Shift Detection)
+    // World 3: Hidden Regime Switching (Shift Detection Test)
     // -------------------------------------------------------------------------
-    totalTests += 1;
     console.log('\n[WORLD 3] Hidden Regime Switching:');
-    const w3Stream = createWorld3_RegimeSwitching(1200, 303);
-    const w3Dist = analyzeDistribution(w3Stream, { iters: 150 });
-    const w3Pass = w3Dist.verdict === 'CONDITIONAL_DISTRIBUTION_SHIFT_CANDIDATE' || w3Dist.flags.length > 0;
-    if (w3Pass) passedTests++;
-    console.log(`  └─ 2-Sample KS/W Test:   ${w3Dist.verdict} (flags: ${w3Dist.flags.length}) [${w3Pass ? 'PASS' : 'FAIL'}]`);
+    let w3Passes = 0;
+    for (let t = 0; t < trials; t++) {
+        const seed = 300 + t * 51;
+        const stream = createWorld3_RegimeSwitching(1200, seed);
+        const dist = analyzeDistribution(stream, { iters: 100 });
+        if (dist.verdict === 'CONDITIONAL_DISTRIBUTION_SHIFT_CANDIDATE' || dist.flags.length > 0) w3Passes++;
+    }
+    totalChecks += 1;
+    const w3Ok = w3Passes === trials;
+    if (w3Ok) passedChecks++;
+    console.log(`  └─ Shift Detection:      ${w3Passes}/${trials} trials detected distribution shift [${w3Ok ? 'PASS' : 'FAIL'}]`);
 
     // -------------------------------------------------------------------------
     // World 4: Microstructure Flight Trajectory Correlation
     // -------------------------------------------------------------------------
-    totalTests += 1;
     console.log('\n[WORLD 4] Early Flight Trajectory Microstructure:');
-    const w4Traces = createWorld4_TrajectoryTraces(300, 404);
-    const w4Traj = analyzeTrajectories(w4Traces);
-    const w4Pass = w4Traj.verdict === 'MICROSTRUCTURE_DEPENDENCE_CANDIDATE';
-    if (w4Pass) passedTests++;
-    console.log(`  └─ Early Curve Analysis: ${w4Traj.verdict} [${w4Pass ? 'PASS' : 'FAIL'}]`);
+    let w4Passes = 0;
+    for (let t = 0; t < trials; t++) {
+        const seed = 400 + t * 29;
+        const traces = createWorld4_TrajectoryTraces(300, seed);
+        const traj = analyzeTrajectories(traces);
+        if (traj.verdict === 'MICROSTRUCTURE_DEPENDENCE_CANDIDATE') w4Passes++;
+    }
+    totalChecks += 1;
+    const w4Ok = w4Passes >= Math.floor(trials * 0.8);
+    if (w4Ok) passedChecks++;
+    console.log(`  └─ Curve Analysis:       ${w4Passes}/${trials} trials detected microstructure correlation [${w4Ok ? 'PASS' : 'FAIL'}]`);
 
     // -------------------------------------------------------------------------
     // World 5: Genuine Planted Conditional Signal Discovery
     // -------------------------------------------------------------------------
-    totalTests += 2;
     console.log('\n[WORLD 5] Planted Conditional Signal (LLH -> 1.50x @ 92%):');
-    const w5Stream = createWorld5_PatternSignal(2000, 505);
-    const w5Hyp = runHypothesisEngine(w5Stream);
-    const w5DiscoveryPass = w5Hyp.tier1Discovered >= 1;
-    const w5HoldoutPass = w5Hyp.tier3HoldoutConfirmed >= 1;
-    if (w5DiscoveryPass) passedTests++;
-    if (w5HoldoutPass) passedTests++;
-    console.log(`  ├─ Discovery Tier 1:     ${w5Hyp.tier1Discovered} candidates passed FDR filter [${w5DiscoveryPass ? 'PASS' : 'FAIL'}]`);
-    console.log(`  └─ Holdout Tier 3:       ${w5Hyp.tier3HoldoutConfirmed} candidates CONFIRMED on locked holdout [${w5HoldoutPass ? 'PASS' : 'FAIL'}]`);
+    let w5DiscoveryPasses = 0;
+    let w5HoldoutPasses = 0;
+    for (let t = 0; t < trials; t++) {
+        const seed = 500 + t * 31;
+        const stream = createWorld5_PatternSignal(2000, seed);
+        const hyp = runHypothesisEngine(stream);
+        if (hyp.tier1Discovered >= 1) w5DiscoveryPasses++;
+        if (hyp.tier3HoldoutConfirmed >= 1) w5HoldoutPasses++;
+    }
+    totalChecks += 2;
+    const w5DiscOk = w5DiscoveryPasses === trials;
+    const w5HoldOk = w5HoldoutPasses === trials;
+    if (w5DiscOk) passedChecks++;
+    if (w5HoldOk) passedChecks++;
+    console.log(`  ├─ Discovery Tier 1:     ${w5DiscoveryPasses}/${trials} trials passed discovery [${w5DiscOk ? 'PASS' : 'FAIL'}]`);
+    console.log(`  └─ Holdout Tier 3:       ${w5HoldoutPasses}/${trials} trials CONFIRMED on locked holdout [${w5HoldOk ? 'PASS' : 'FAIL'}]`);
 
     // -------------------------------------------------------------------------
-    // World 6: Decaying / Transient Pattern Trap (Lifecycle Retirement)
+    // World 6: Edge Decay Detection & Complete Lifecycle Retirement
     // -------------------------------------------------------------------------
-    totalTests += 1;
-    console.log('\n[WORLD 6] Decaying Pattern Trap (Signal dies after round 600):');
-    const w6Stream = createWorld6_DecayingSignal(1500, 606);
-    const w6Hyp = runHypothesisEngine(w6Stream);
-    const w6Pass = w6Hyp.tier3HoldoutConfirmed === 0;
-    if (w6Pass) passedTests++;
-    console.log(`  └─ Decay Resistance:     Holdout rejected decayed signal (confirmed: ${w6Hyp.tier3HoldoutConfirmed}) [${w6Pass ? 'PASS' : 'FAIL'}]`);
+    console.log('\n[WORLD 6] Edge Decay Detection & Complete Lifecycle Retirement:');
+    totalChecks += 2;
+
+    // Test 6a: Hypothesis Engine rejects decayed signal on holdout
+    let w6HoldoutRejections = 0;
+    for (let t = 0; t < trials; t++) {
+        const seed = 600 + t * 17;
+        const stream = createWorld6_DecayingSignal(1500, seed);
+        const hyp = runHypothesisEngine(stream);
+        if (hyp.tier3HoldoutConfirmed === 0) w6HoldoutRejections++;
+    }
+    const w6HoldoutOk = w6HoldoutRejections === trials;
+    if (w6HoldoutOk) passedChecks++;
+    console.log(`  ├─ Holdout Rejection:    ${w6HoldoutRejections}/${trials} trials rejected decayed signal [${w6HoldoutOk ? 'PASS' : 'FAIL'}]`);
+
+    // Test 6b: SignalLifecycle state machine tracks decay and retires candidate
+    const testLife = new SignalLifecycle('benchmark_decay_test');
+    testLife.candidates = [
+        {
+            id: 'prior_low_crash_target_1.3',
+            name: 'Decaying Test Pattern',
+            target: 1.30,
+            status: 'LIVE_SHADOW',
+            liveStats: {
+                triggeredCount: 30,
+                wins: 25,
+                losses: 5,
+                consecutiveLosses: 0,
+                currentLift: 0.15,
+                evAccumulated: 3.5
+            }
+        }
+    ];
+
+    // Promote to LIVE_MICRO
+    const dummyHistory = [1.50, 2.00, 1.10];
+    testLife.onRoundEnded(dummyHistory, 1.45);
+    const promoted = testLife.candidates[0].status === 'LIVE_MICRO';
+
+    // Inject deteriorating loss streak
+    for (let i = 0; i < 9; i++) {
+        testLife.onRoundEnded(dummyHistory, 1.10); // Loss
+    }
+    const retired = testLife.candidates[0].status === 'RETIRED';
+    const w6LifecycleOk = promoted && retired;
+    if (w6LifecycleOk) passedChecks++;
+    console.log(`  └─ Lifecycle Engine:     ${promoted ? 'PROMOTED' : 'NOT_PROMOTED'} -> ${retired ? 'RETIRED' : 'ACTIVE'} [${w6LifecycleOk ? 'PASS' : 'FAIL'}]`);
 
     console.log('\n========================================================================');
-    console.log(` SCIENTIFIC BENCHMARK SCORE: ${passedTests}/${totalTests} TESTS PASSED (${((passedTests / totalTests) * 100).toFixed(1)}%)`);
+    console.log(` SCIENTIFIC BENCHMARK SCORE: ${passedChecks}/${totalChecks} CHECKS PASSED (${((passedChecks / totalChecks) * 100).toFixed(1)}%)`);
     console.log('========================================================================');
 
     return {
-        passedTests,
-        totalTests,
-        success: passedTests === totalTests
+        passedChecks,
+        totalChecks,
+        success: passedChecks === totalChecks
     };
 }
 

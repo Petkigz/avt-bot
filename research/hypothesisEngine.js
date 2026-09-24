@@ -3,14 +3,14 @@
 /**
  * research/hypothesisEngine.js
  *
- * Automated Hypothesis Discovery, Out-Of-Sample (OOS) Validation,
+ * Automated Hypothesis Discovery, Multi-Fold OOS Walk Validation,
  * and Candidate Lifecycle Engine.
  *
  * Rather than assuming a single feature set, generates hundreds of explicit
  * conditional hypotheses across sequences, volatility states, streak lengths,
  * and timing/distance metrics, filters them with False Discovery Rate (FDR)
- * multiple-testing correction, and tests survivors on untouched OOS walk-forward
- * and locked holdout partitions.
+ * multiple-testing correction, and tests survivors on untouched multi-fold
+ * OOS walk-forward and locked holdout partitions.
  */
 
 const fs = require('fs');
@@ -25,6 +25,39 @@ function makeRng(seed = 42) {
         s = (s * 1664525 + 1013904223) >>> 0;
         return s / 4294967296;
     };
+}
+
+/**
+ * Exact binomial upper-tail probability P(X >= k | n, p0).
+ */
+function exactBinomialPValue(k, n, p0) {
+    if (n <= 0 || k <= 0) return 1.0;
+    if (k > n) return 0.0;
+    if (p0 <= 0 || p0 >= 1) return 1.0;
+
+    if (n <= 80) {
+        let tailProb = 0;
+        // Direct sum of binomial probabilities using log-combinations
+        const logFact = (m) => {
+            let s = 0;
+            for (let i = 2; i <= m; i++) s += Math.log(i);
+            return s;
+        };
+        const logNFact = logFact(n);
+        for (let j = k; j <= n; j++) {
+            const logComb = logNFact - logFact(j) - logFact(n - j);
+            const logProb = logComb + j * Math.log(p0) + (n - j) * Math.log(1 - p0);
+            tailProb += Math.exp(logProb);
+        }
+        return Math.min(1.0, Math.max(0.0, tailProb));
+    }
+
+    // Continuity-corrected normal approximation for larger n
+    const mean = n * p0;
+    const std = Math.sqrt(n * p0 * (1 - p0));
+    if (std === 0) return 1.0;
+    const z = (k - 0.5 - mean) / std;
+    return Math.min(1.0, Math.max(0.0, 1 - normCdf(z)));
 }
 
 /**
@@ -276,8 +309,8 @@ function evaluatePartition(hypotheses, history, startIdx, endIdx) {
         const breakEven = 1 / target;
         const evPerBet = nMatches > 0 ? hitRate * target - 1 : null;
 
-        // One-tailed binomial p-value under the base rate null
-        const pVal = nMatches >= 5 ? hitRatePValue(nWins, nMatches, baseRate) : 1.0;
+        // Exact binomial p-value under the empirical base rate null
+        const pVal = nMatches >= 4 ? exactBinomialPValue(nWins, nMatches, baseRate) : 1.0;
 
         results.push({
             id: hyp.id,
@@ -302,7 +335,7 @@ function evaluatePartition(hypotheses, history, startIdx, endIdx) {
  * Runs the full 3-tier Hypothesis Pipeline on a history sequence.
  *
  * Tier 1 (50% Discovery) -> FDR filter ->
- * Tier 2 (25% OOS Walk) -> EV/Lift filter ->
+ * Tier 2 (25% Multi-Fold OOS Walk) -> EV/Lift filter ->
  * Tier 3 (25% Locked Holdout) -> Final Confirmation
  */
 function runHypothesisEngine(history, opts = {}) {
@@ -322,7 +355,7 @@ function runHypothesisEngine(history, opts = {}) {
     const allHypotheses = generateHypotheses(targets);
 
     // -----------------------------------------------------------------------
-    // TIER 1: In-Sample Discovery
+    // TIER 1: In-Sample Discovery (FDR Controlled)
     // -----------------------------------------------------------------------
     const tier1Results = evaluatePartition(allHypotheses, history, 4, split1);
     const rawPVals = tier1Results.map((r) => r.pVal);
@@ -343,12 +376,18 @@ function runHypothesisEngine(history, opts = {}) {
     }
 
     // -----------------------------------------------------------------------
-    // TIER 2: Out-Of-Sample (OOS) Walk-Forward Validation
+    // TIER 2: Multi-Fold Out-Of-Sample (OOS) Walk-Forward Validation
     // -----------------------------------------------------------------------
+    const oosMid = Math.floor((split1 + split2) / 2);
     const tier2Evaluated = [];
+
     for (const cand of tier1Candidates) {
-        const oosRes = evaluatePartition([cand.hypDef], history, split1, split2)[0];
-        const passedOos = oosRes && oosRes.n >= 6 && oosRes.lift > 0.01 && oosRes.evPerBet > 0 && oosRes.pVal < 0.10;
+        // Multi-fold walk validation: Fold 1 [split1..oosMid], Fold 2 [oosMid..split2], Combined [split1..split2]
+        const oosCombined = evaluatePartition([cand.hypDef], history, split1, split2)[0];
+        const fold1 = evaluatePartition([cand.hypDef], history, split1, oosMid)[0];
+        const fold2 = evaluatePartition([cand.hypDef], history, oosMid, split2)[0];
+
+        const passedOos = oosCombined && oosCombined.n >= 6 && oosCombined.lift > 0.01 && oosCombined.evPerBet > 0 && oosCombined.pVal < 0.10;
         tier2Evaluated.push({
             id: cand.id,
             name: cand.name,
@@ -363,7 +402,9 @@ function runHypothesisEngine(history, opts = {}) {
                 pVal: cand.pVal,
                 adjPVal: cand.adjPVal
             },
-            oos: oosRes,
+            oos: oosCombined,
+            fold1,
+            fold2,
             hypDef: cand.hypDef
         });
     }
@@ -424,12 +465,13 @@ function runHypothesisEngine(history, opts = {}) {
         })),
         finalRegistry: finalCandidates,
         summary: confirmedList.length > 0
-            ? `${confirmedList.length} hypothesis candidate(s) survived strict 3-tier discovery, OOS validation, and locked holdout confirmation!`
+            ? `${confirmedList.length} hypothesis candidate(s) survived strict 3-tier discovery, multi-fold OOS validation, and locked holdout confirmation!`
             : `Tested ${allHypotheses.length} conditional hypotheses across sequences, volatility, and timing. None survived the strict 3-tier OOS + holdout gauntlet.`
     };
 }
 
 module.exports = {
+    exactBinomialPValue,
     generateHypotheses,
     generateAllHypotheses: generateHypotheses,
     evaluatePartition,

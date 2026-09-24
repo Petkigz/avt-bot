@@ -48,46 +48,65 @@ class SignalLifecycle {
         const lifePath = this.getFilePath();
         const candPath = this.getCandidateRegistryPath();
 
+        let loaded = [];
         if (fs.existsSync(lifePath)) {
             try {
-                this.candidates = JSON.parse(fs.readFileSync(lifePath, 'utf8'));
-                return;
+                loaded = JSON.parse(fs.readFileSync(lifePath, 'utf8'));
+                if (!Array.isArray(loaded)) loaded = [];
             } catch (err) {
                 logger.warn(`SignalLifecycle [${this.siteId}]: could not read ${path.basename(lifePath)}: ${err.message}`);
+                loaded = [];
             }
         }
 
-        // Fallback: seed from hypothesis candidate registry if available
+        this.candidates = loaded;
+
+        // Auto-synchronize newest confirmed candidates from hypothesis registry
         if (fs.existsSync(candPath)) {
             try {
                 const reg = JSON.parse(fs.readFileSync(candPath, 'utf8'));
                 if (Array.isArray(reg)) {
-                    this.candidates = reg.map((c) => ({
-                        id: c.id,
-                        name: c.name,
-                        target: c.target,
-                        status: c.status === 'HOLDOUT_CONFIRMED' || c.status === 'CONFIRMED'
-                            ? 'LIVE_SHADOW'
-                            : c.status,
-                        discovery: c.discovery || {},
-                        oos: c.oos || {},
-                        holdout: c.holdout || {},
-                        liveStats: {
-                            triggeredCount: 0,
-                            wins: 0,
-                            losses: 0,
-                            consecutiveLosses: 0,
-                            currentLift: 0,
-                            evAccumulated: 0
-                        },
-                        updatedAt: Date.now()
-                    }));
-                    this.save();
+                    let newImports = 0;
+                    for (const c of reg) {
+                        if (c.status !== 'HOLDOUT_CONFIRMED' && c.status !== 'CONFIRMED') continue;
+                        const existing = this.candidates.find((cand) => cand.id === c.id);
+                        if (!existing) {
+                            this.candidates.push({
+                                id: c.id,
+                                name: c.name,
+                                target: c.target,
+                                category: c.category || 'sequence',
+                                status: 'LIVE_SHADOW', // New discoveries enter as live shadow
+                                discovery: c.discovery || {},
+                                oos: c.oos || {},
+                                holdout: c.holdout || {},
+                                liveStats: {
+                                    triggeredCount: 0,
+                                    wins: 0,
+                                    losses: 0,
+                                    consecutiveLosses: 0,
+                                    currentLift: 0,
+                                    evAccumulated: 0
+                                },
+                                createdAt: Date.now(),
+                                updatedAt: Date.now()
+                            });
+                            newImports++;
+                        }
+                    }
+                    if (newImports > 0 || !fs.existsSync(lifePath)) {
+                        this.save();
+                    }
                 }
             } catch (err) {
-                logger.warn(`SignalLifecycle [${this.siteId}]: could not load candidates: ${err.message}`);
+                logger.warn(`SignalLifecycle [${this.siteId}]: could not auto-sync candidates: ${err.message}`);
             }
         }
+    }
+
+    refresh() {
+        this.load();
+        return this.getActiveSignals();
     }
 
     save() {

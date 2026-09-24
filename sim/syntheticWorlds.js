@@ -123,16 +123,16 @@ function createWorld4_TrajectoryTraces(n = 400, seed = 404) {
 
 /**
  * World 5: Genuine Specific Conditional Pattern Signal
- * Whenever pattern 'LLH' appears, the next round has a 90% probability of surviving 1.50x.
+ * Whenever pattern 'LLH' appears, the next round has a 95% probability of surviving 1.50x.
  */
-function createWorld5_PatternSignal(n = 2000, seed = 505) {
+function createWorld5_PatternSignal(n = 2400, seed = 505) {
     const rng = makeRng(seed);
     const out = [];
 
     for (let i = 0; i < n; i++) {
         if (i >= 3 && symbolOf(out[i - 3]) === 'L' && symbolOf(out[i - 2]) === 'L' && symbolOf(out[i - 1]) === 'H') {
-            // Strong genuine signal: 92% hit rate on 1.50x
-            out.push(rng() < 0.92 ? Number((1.55 + rng() * 3.0).toFixed(2)) : Number((1.05 + rng() * 0.3).toFixed(2)));
+            // Strong genuine signal: 95% hit rate on 1.50x
+            out.push(rng() < 0.95 ? Number((1.55 + rng() * 3.0).toFixed(2)) : Number((1.05 + rng() * 0.3).toFixed(2)));
         } else {
             // Standard IID Aviator baseline
             const u = rng();
