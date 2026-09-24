@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extractFeatures, symbolOf } = require('../game/features');
+const { extractFeatures, symbolOf, FEATURE_VERSION } = require('../game/features');
 
 test('empty history yields empty feature set', () => {
     assert.deepEqual(extractFeatures([], 1.3), {});
@@ -57,4 +57,28 @@ test('cold streak shifts recent_vs_long_low positive', () => {
     const f = extractFeatures(values, 1.3);
     assert.ok(f.recent_vs_long_low > 0.7);
     assert.equal(f.consecutive_low, 10);
+});
+
+test('features: extracts microstructure and inter-round timing when provided', () => {
+    const values = [1.50, 2.00, 1.35, 1.80];
+    const mockTraces = [
+        [
+            { t: 0, v: 1.00 },
+            { t: 300, v: 1.15 },
+            { t: 600, v: 1.35 }
+        ]
+    ];
+    const extraContext = {
+        traces: mockTraces,
+        interRoundDelaySec: 4.5,
+        timeTo12: 450,
+        timeTo15: 850
+    };
+
+    const f = extractFeatures(values, 1.3, extraContext);
+    assert.ok(Number.isFinite(f.early_slope_avg_3), 'early_slope_avg_3 should be computed');
+    assert.ok(Number.isFinite(f.early_accel_avg_3), 'early_accel_avg_3 should be computed');
+    assert.equal(f.inter_round_delay, 4.5);
+    assert.equal(f.time_to_12_last, 450);
+    assert.equal(f.time_to_15_last, 850);
 });

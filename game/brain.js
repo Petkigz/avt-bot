@@ -336,8 +336,9 @@ class Brain {
                 }
             }
 
-            // Blend active sources into ensemble confidence
-            const ensemble = blendEnsemble(ensembleSources);
+            // Blend active sources into ensemble confidence (using learned meta-weights if available)
+            const learnedWeights = (this.modelVerdict && this.modelVerdict.ensembleWeights) || {};
+            const ensemble = blendEnsemble(ensembleSources, learnedWeights);
             if (ensemble.probability !== null) {
                 confidence = ensemble.probability;
                 decision.ensemble = ensemble;

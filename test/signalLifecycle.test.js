@@ -194,3 +194,33 @@ test('Brain: evaluates active confirmed hypothesis signals in evaluateEntry', ()
 
     cleanFile(life.getFilePath());
 });
+
+test('signalLifecycle: automatically hot-syncs new candidates written to disk', () => {
+    const site = 'test_site_lifecycle_hotsync';
+    const life = new SignalLifecycle(site);
+    cleanFile(life.getFilePath());
+    cleanFile(life.getCandidateRegistryPath());
+
+    assert.strictEqual(life.getActiveSignals().length, 0);
+
+    // Simulate external research process writing a confirmed candidate to disk
+    const newCand = [
+        {
+            id: 'prior_low_crash_target_1.3',
+            name: 'Prior low crash candidate',
+            target: 1.30,
+            status: 'HOLDOUT_CONFIRMED',
+            holdout: { hitRate: 0.88, evPerBet: 0.14 }
+        }
+    ];
+    fs.writeFileSync(life.getCandidateRegistryPath(), JSON.stringify(newCand, null, 2));
+
+    // Calling getActiveSignals should auto-detect file mtime and hot-sync candidate
+    const active = life.getActiveSignals();
+    assert.strictEqual(active.length, 1);
+    assert.strictEqual(active[0].id, 'prior_low_crash_target_1.3');
+    assert.strictEqual(active[0].status, 'LIVE_SHADOW');
+
+    cleanFile(life.getFilePath());
+    cleanFile(life.getCandidateRegistryPath());
+});

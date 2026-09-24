@@ -26,6 +26,7 @@ class SignalLifecycle {
     constructor(siteId = 'default') {
         this.siteId = siteId;
         this.candidates = [];
+        this.lastCandRegistryMtime = 0;
         this.hypothesisCatalog = generateHypotheses();
         this.hypMap = new Map();
         for (const h of this.hypothesisCatalog) {
@@ -42,6 +43,20 @@ class SignalLifecycle {
     getCandidateRegistryPath() {
         const safeSite = String(this.siteId).replace(/[^a-z0-9._-]/gi, '_');
         return path.join(config.DATA_DIR, `hypothesis-candidates-${safeSite}.json`);
+    }
+
+    checkHotReload() {
+        const candPath = this.getCandidateRegistryPath();
+        if (fs.existsSync(candPath)) {
+            try {
+                const stat = fs.statSync(candPath);
+                if (stat.mtimeMs > this.lastCandRegistryMtime) {
+                    this.load();
+                }
+            } catch (err) {
+                // Ignore stat errors
+            }
+        }
     }
 
     load() {
@@ -64,6 +79,8 @@ class SignalLifecycle {
         // Auto-synchronize newest confirmed candidates from hypothesis registry
         if (fs.existsSync(candPath)) {
             try {
+                const stat = fs.statSync(candPath);
+                this.lastCandRegistryMtime = stat.mtimeMs;
                 const reg = JSON.parse(fs.readFileSync(candPath, 'utf8'));
                 if (Array.isArray(reg)) {
                     let newImports = 0;
@@ -162,6 +179,7 @@ class SignalLifecycle {
      * Returns signals that are active for live evaluation or betting.
      */
     getActiveSignals() {
+        this.checkHotReload();
         return this.candidates.filter((c) =>
             c.status === 'LIVE_SHADOW' ||
             c.status === 'LIVE_MICRO' ||
@@ -208,6 +226,7 @@ class SignalLifecycle {
      * Updates live shadow & micro tracking upon round completion.
      */
     onRoundEnded(historyBeforeRound, crashValue) {
+        this.checkHotReload();
         if (!Array.isArray(historyBeforeRound) || historyBeforeRound.length < 3) return;
         const t = historyBeforeRound.length;
         let modified = false;

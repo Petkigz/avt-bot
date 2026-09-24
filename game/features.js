@@ -4,13 +4,10 @@
  * features.js — compact feature snapshot of the round stream.
  *
  * A pure function of past crash values (plus the target multiplier that
- * defines "low"). Attached to every logged prediction so that, once enough
- * rounds accumulate, error analysis can test whether ANY of these features
- * carries predictive information about the next round.
- *
- * No feature here is assumed to be useful — that is exactly what the
- * walk-forward harness and the prediction log exist to decide. Until then
- * this module just makes the recorded evidence richer.
+ * defines "low") and causal microstructural trajectory measurements.
+ * Attached to every logged prediction so that error analysis and the model
+ * tournament can rigorously test whether ANY of these features carries
+ * predictive out-of-sample edge.
  */
 
 const r3 = (x) => (Number.isFinite(x) ? Number(x.toFixed(3)) : null);
@@ -19,7 +16,7 @@ const r3 = (x) => (Number.isFinite(x) ? Number(x.toFixed(3)) : null);
  *  models carry the version they were trained on, and the Brain refuses a
  *  model whose version differs (a stale feature mapping would silently feed
  *  the model the wrong inputs). */
-const FEATURE_VERSION = 1;
+const FEATURE_VERSION = 2;
 
 /** L/M/H symbols, same bins as the pattern detector. */
 function symbolOf(v) {
@@ -29,14 +26,14 @@ function symbolOf(v) {
 }
 
 function mean(values) {
-    if (values.length === 0) return null;
+    if (!values || values.length === 0) return null;
     let s = 0;
     for (const v of values) s += v;
     return s / values.length;
 }
 
 function std(values) {
-    if (values.length < 2) return null;
+    if (!values || values.length < 2) return null;
     const m = mean(values);
     let s = 0;
     for (const v of values) s += (v - m) * (v - m);
@@ -44,21 +41,21 @@ function std(values) {
 }
 
 function median(values) {
-    if (values.length === 0) return null;
+    if (!values || values.length === 0) return null;
     const sorted = [...values].sort((a, b) => a - b);
     const mid = Math.floor(sorted.length / 2);
     return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
 function rate(values, predicate) {
-    if (values.length === 0) return null;
+    if (!values || values.length === 0) return null;
     let hits = 0;
     for (const v of values) if (predicate(v)) hits += 1;
     return hits / values.length;
 }
 
 function shannonEntropy(symbols) {
-    if (symbols.length === 0) return null;
+    if (!symbols || symbols.length === 0) return null;
     const counts = {};
     for (const s of symbols) counts[s] = (counts[s] || 0) + 1;
     let h = 0;
@@ -72,8 +69,10 @@ function shannonEntropy(symbols) {
 /**
  * Extract the feature vector for the stream's current state.
  * `values` = chronological crash history (oldest first).
+ * `target` = current strategy target multiplier.
+ * `extraContext` = optional trajectory traces & inter-round metadata.
  */
-function extractFeatures(values, target = 1.3) {
+function extractFeatures(values, target = 1.3, extraContext = {}) {
     const f = {};
     if (!Array.isArray(values) || values.length === 0) return f;
     const n = values.length;
@@ -125,6 +124,49 @@ function extractFeatures(values, target = 1.3) {
     const shortLow = rate(w10, isLow);
     const longLow = rate(w100, isLow);
     f.recent_vs_long_low = (shortLow === null || longLow === null) ? null : r3(shortLow - longLow);
+
+    // Microstructure & Trajectory features (populated when real traces/timing are available)
+    const ctx = extraContext || {};
+    const traces = ctx.traces || ctx.trajectoryHistory || [];
+    if (Array.isArray(traces) && traces.length > 0) {
+        const validTraces = traces.filter((t) => Array.isArray(t) && t.length >= 2);
+        const recentTraces = validTraces.slice(-3);
+        if (recentTraces.length > 0) {
+            const slopes = [];
+            const accels = [];
+            for (const tr of recentTraces) {
+                const p0 = tr[0];
+                const pEarly = tr.find((p) => p && p.t >= 200 && p.t <= 500) || tr[tr.length - 1];
+                if (p0 && pEarly && pEarly.t > p0.t) {
+                    const dt = (pEarly.t - p0.t) / 1000;
+                    const dv = pEarly.v - p0.v;
+                    const slope = dv / dt;
+                    slopes.push(slope);
+                    accels.push(slope / dt);
+                }
+            }
+            f.early_slope_avg_3 = slopes.length > 0 ? r3(mean(slopes)) : 0;
+            f.early_accel_avg_3 = accels.length > 0 ? r3(mean(accels)) : 0;
+        } else {
+            f.early_slope_avg_3 = 0;
+            f.early_accel_avg_3 = 0;
+        }
+    } else {
+        f.early_slope_avg_3 = 0;
+        f.early_accel_avg_3 = 0;
+    }
+
+    // Inter-round timing features
+    if (Number.isFinite(ctx.interRoundDelaySec)) {
+        f.inter_round_delay = r3(ctx.interRoundDelaySec);
+    } else if (Number.isFinite(ctx.interRoundIntervalMs)) {
+        f.inter_round_delay = r3(ctx.interRoundIntervalMs / 1000);
+    } else {
+        f.inter_round_delay = 0;
+    }
+
+    f.time_to_12_last = Number.isFinite(ctx.timeTo12) ? r3(ctx.timeTo12) : 0;
+    f.time_to_15_last = Number.isFinite(ctx.timeTo15) ? r3(ctx.timeTo15) : 0;
 
     return f;
 }

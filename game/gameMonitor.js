@@ -534,7 +534,9 @@ class GameMonitor extends EventEmitter {
     startFlightSampler(frame) {
         this.stopFlightSampler();
         if (!frame || typeof frame.evaluate !== 'function') return;
-        const selector = this.selectors.GAME.LIVE_MULTIPLIER;
+        const selector = (this.selectors && this.selectors.CASHOUT_MULTIPLIER) ||
+                         (this.selectors && this.selectors.GAME && this.selectors.GAME.CASHOUT_MULTIPLIER) ||
+                         '.amount span:first-child, .stage-board .font-weight-bold, .bubble-multiplier';
         this.flightSamplerTimer = setInterval(async () => {
             if (!this.roundInFlight || !this.roundStartTime || this.currentFlightTrace.length >= 500) {
                 this.stopFlightSampler();
@@ -544,9 +546,11 @@ class GameMonitor extends EventEmitter {
                 const val = await frame.evaluate((sel) => {
                     const el = document.querySelector(sel);
                     if (!el) return null;
-                    const txt = (el.textContent || '').replace(/x/gi, '').trim();
+                    let txt = (el.textContent || '').replace(/x/gi, '').trim();
+                    if (txt.includes(',') && txt.includes('.')) txt = txt.replace(/,/g, '');
+                    else txt = txt.replace(',', '.');
                     const num = parseFloat(txt);
-                    return Number.isFinite(num) ? num : null;
+                    return Number.isFinite(num) && num >= 1.0 ? num : null;
                 }, selector);
                 if (Number.isFinite(val) && this.roundStartTime) {
                     const elapsed = Date.now() - this.roundStartTime;

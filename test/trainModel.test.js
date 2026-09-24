@@ -6,6 +6,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { trainAndEvaluate, rowsForSite } = require('../scripts/train-model');
 const { logisticFromJson } = require('../game/modelLayer');
+const { FEATURE_VERSION } = require('../game/features');
 
 function makeRng(seed = 9) {
     let s = seed >>> 0;
@@ -170,7 +171,7 @@ test('train-model CLI end-to-end: DEPLOY writes verdict + model, conditions on d
     assert.strictEqual(verdict.dominantTarget, 1.3);
     assert.deepStrictEqual(verdict.droppedTargets, [{ target: 2, rows: 100 }], 'non-dominant target must be excluded, not pooled');
     // Lifecycle metadata (review #8): staleness detection depends on these.
-    assert.strictEqual(verdict.featureVersion, 1);
+    assert.strictEqual(verdict.featureVersion, FEATURE_VERSION);
     assert.ok(Number.isFinite(verdict.rowsAtTraining), 'rowsAtTraining must be recorded');
     assert.ok(Number.isFinite(verdict.trainingEndTs), 'trainingEndTs must be recorded');
     assert.ok(verdict.trainedAt, 'trainedAt must be recorded');
@@ -178,7 +179,7 @@ test('train-model CLI end-to-end: DEPLOY writes verdict + model, conditions on d
     const modelJson = JSON.parse(fs.readFileSync(path.join(dir, 'feature-model-unit.test.json'), 'utf8'));
     assert.ok('platt' in modelJson, 'model file must carry the calibration decision (platt field present)');
     assert.strictEqual(modelJson.meta.target, 1.3, 'model must record the target it was trained for');
-    assert.strictEqual(modelJson.meta.featureVersion, 1, 'model must record the feature schema version');
+    assert.strictEqual(modelJson.meta.featureVersion, FEATURE_VERSION, 'model must record the feature schema version');
     const live = logisticFromJson(modelJson);
     assert.ok(live, 'deployed model must load');
     assert.ok(live.predict({ signal: 1 }) > live.predict({ signal: 0 }), 'deployed model must reproduce the signal');
