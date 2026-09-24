@@ -930,6 +930,10 @@ async function main() {
                                 if (s.monitor.betManager) {
                                     s.monitor.betManager.setStrategy(s.monitor.strategy);
                                 }
+                                // Fresh strategy = fresh risk ledger: stop-loss /
+                                // take-profit commitments belong to the NEW
+                                // progression, not the previous strategy's losses.
+                                if (s.monitor.statsTracker) s.monitor.statsTracker.reset();
                             }
                         }
                         // Keep the shared strategy config in sync so stake

@@ -315,3 +315,50 @@ test('ADAPTIVE paper cycle: per-round model targets flow into placement and sett
     // Next armed bet may carry a DIFFERENT target (model re-picks each round)
     assert.ok(m.betManager.currentBet && !m.betManager.currentBet.settled);
 });
+
+test('enforceRiskGates: bankroll halt lifts once the bankroll is reset (silent-session bug)', () => {
+    const strategyConfig = { ...config.BETTING_STRATEGIES.MODERATE };
+    const strategy = new BettingStrategy(strategyConfig);
+    const predictor = new Predictor({ targetMultiplier: strategyConfig.targetMultiplier, minSampleSize: 5 });
+    const bankroll = new Bankroll({
+        sessionLossLimit: 1000, dailyLossLimit: 1000000,
+        maxStakeFraction: 0.5, microStakeFraction: 0.1, minStake: strategyConfig.minBet
+    });
+    bankroll.setPaperReference(10000);
+    const brain = new Brain({ config, strategy, predictor, patterns: null, bankroll });
+    const monitor = makeMonitor(brain);
+
+    // Lose past the session limit -> the guard halts trading.
+    bankroll.recordTrade({ won: false, loss: -1500 });
+    assert.strictEqual(monitor.enforceRiskGates(), true, 'bankroll halt must latch');
+    assert.strictEqual(monitor.tradingHalted, true);
+
+    // Dashboard reset: fresh bankroll clears the session halt.
+    bankroll.setPaperReference(100000);
+    assert.strictEqual(monitor.enforceRiskGates(), false, 'halt must lift once the cause is gone');
+    assert.strictEqual(monitor.tradingHalted, false);
+    assert.strictEqual(monitor.haltReason, null);
+});
+
+test('enforceRiskGates: strategy stop-loss halt lifts after a fresh progression', () => {
+    const strategyConfig = { ...config.BETTING_STRATEGIES.MODERATE, stopLoss: 100 };
+    const strategy = new BettingStrategy(strategyConfig);
+    const predictor = new Predictor({ targetMultiplier: strategyConfig.targetMultiplier, minSampleSize: 5 });
+    const bankroll = new Bankroll({
+        sessionLossLimit: 1000000, dailyLossLimit: 1000000,
+        maxStakeFraction: 0.5, microStakeFraction: 0.1, minStake: strategyConfig.minBet
+    });
+    bankroll.setPaperReference(10000);
+    const brain = new Brain({ config, strategy, predictor, patterns: null, bankroll });
+    const monitor = makeMonitor(brain);
+
+    // Simulate losses through the stats tracker -> strategy halt.
+    monitor.statsTracker.addTrade({ won: false, loss: -200 });
+    assert.strictEqual(monitor.enforceRiskGates(), true, 'strategy halt must latch');
+
+    // Strategy switch semantics: fresh progression (stats reset + new limits).
+    monitor.statsTracker.reset();
+    monitor.strategy = new BettingStrategy({ ...config.BETTING_STRATEGIES.MODERATE });
+    assert.strictEqual(monitor.enforceRiskGates(), false, 'halt must lift on a fresh progression');
+    assert.strictEqual(monitor.tradingHalted, false);
+});

@@ -96,6 +96,18 @@ class Bankroll {
         this.paperReference = amount;
         this.balance = amount;
         this.startingBalance = amount;
+        // An explicit bankroll reset from the dashboard is a deliberate
+        // "fresh session" act: clear the session loss ledger and any SESSION
+        // halt with it. Otherwise the guard latches forever — the reset
+        // button would look like it worked while trading stays silently dead.
+        // A DAILY halt survives: that commitment is date-bound, not
+        // bankroll-bound.
+        this.sessionPnl = 0;
+        if (this.halted && typeof this.haltReason === 'string' && this.haltReason.startsWith('session')) {
+            this.halted = false;
+            this.haltReason = null;
+            logger.info('Bankroll guard: session halt cleared by bankroll reset (daily limits still stand)');
+        }
         logger.info(`Paper bankroll reference set: ${amount} (real balance ignored for sizing/gates)`);
     }
 

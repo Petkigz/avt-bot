@@ -112,3 +112,32 @@ test('approveStake and canBet refuse to act on an unknown bankroll (live safety)
     assert.strictEqual(b.hasReference(), true);
     assert.ok(b.approveStake(500, 'ARMED') > 0);
 });
+
+test('bankroll reset clears a SESSION halt (2026-09-24 silent-session bug)', () => {
+    const b = new Bankroll({ minStake: 100, sessionLossLimit: 1000, dailyLossLimit: 1000000 });
+    b.setPaperReference(10000);
+    // Bleed through the session loss limit -> guard halts.
+    b.recordTrade({ won: false, loss: -1500 });
+    assert.strictEqual(b.halted, true);
+    assert.match(b.haltReason, /session loss limit/);
+    assert.strictEqual(b.approveStake(500, 'ARMED'), 0, 'halted bankroll must refuse sizing');
+    // The dashboard "reset" is a deliberate fresh session: it must clear the
+    // session ledger AND the session halt, or trading stays silently dead.
+    b.setPaperReference(100000);
+    assert.strictEqual(b.sessionPnl, 0, 'session P/L must reset with the bankroll');
+    assert.strictEqual(b.halted, false, 'session halt must clear on bankroll reset');
+    assert.strictEqual(b.haltReason, null);
+    assert.ok(b.approveStake(500, 'ARMED') > 0, 'sizing must resume after reset');
+});
+
+test('bankroll reset does NOT clear a DAILY loss-limit halt', () => {
+    const b = new Bankroll({ minStake: 100, sessionLossLimit: 1000000, dailyLossLimit: 1000 });
+    b.setPaperReference(10000);
+    b.recordTrade({ won: false, loss: -1500 });
+    assert.strictEqual(b.halted, true);
+    assert.match(b.haltReason, /daily loss limit/);
+    // A bankroll reset must not lift the date-bound daily commitment.
+    b.setPaperReference(100000);
+    assert.strictEqual(b.halted, true, 'daily halt must survive a bankroll reset');
+    assert.match(b.haltReason, /daily loss limit/);
+});

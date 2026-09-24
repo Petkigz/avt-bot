@@ -439,7 +439,12 @@ class Brain {
             const capCheck = this.bankroll ? this.bankroll.approveStake(this.strategy.minBet, this.tier) : this.strategy.minBet;
             if (capCheck >= this.strategy.minBet) stake = this.strategy.minBet;
             else {
-                reasons.push('bankroll too small for minimum stake');
+                // Distinguish "bankroll guard is latched" from "capital really
+                // is too small" — the old message said "too small" even when a
+                // healthy bankroll was simply halted, which was misleading.
+                reasons.push(this.bankroll && this.bankroll.halted && this.bankroll.haltReason
+                    ? `bankroll guard active: ${this.bankroll.haltReason}`
+                    : 'bankroll too small for minimum stake');
                 return this.finish(decision);
             }
         }

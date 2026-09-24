@@ -325,14 +325,9 @@ class GameMonitor extends EventEmitter {
             await this.betManager.checkCashout(marker.frame, state.liveMultiplier);
         }
 
-        // ---- Risk enforcement (strategy-level stop-loss / take-profit / streak) ----
-        const stats = this.statsTracker.getStats();
-        if (!this.tradingHalted && this.strategy.shouldStopTrading(stats)) {
-            this.haltTrading('strategy risk limits reached (stop-loss / take-profit / loss streak)');
-        }
-        if (!this.tradingHalted && this.brain.bankroll && this.brain.bankroll.halted) {
-            this.haltTrading(`bankroll guard: ${this.brain.bankroll.haltReason}`);
-        }
+        // ---- Risk enforcement + halt recovery (both directions live in one
+        // state machine so a halt can never latch past its own cause) ----
+        this.enforceRiskGates();
 
         // ---- THE decision (all gates live inside Brain.decide) ----
         // Paper mode never clicks, so it must not depend on the real bet
@@ -604,6 +599,36 @@ class GameMonitor extends EventEmitter {
         if (rounds <= 0) return;
         this.cooldownRounds = Math.max(this.cooldownRounds, rounds);
         logger.warn(`Entering cooldown for ${this.cooldownRounds} round(s): ${reason}`);
+    }
+
+    /**
+     * Risk-gate state machine, run every cycle. Applies strategy-level
+     * stop-loss / take-profit / streak halts and the bankroll guard — and,
+     * symmetrically, LIFTS a halt once every condition that caused it has
+     * been cleared (fresh bankroll after a dashboard reset, reset
+     * progression after a strategy switch).
+     *
+     * This exists because of the 2026-09-24 silent-session bug: a halt used
+     * to latch forever, so the user could reset the paper bankroll and switch
+     * strategy from the dashboard while the engine stayed dead silent until
+     * a restart. Recovery now needs no restart — and always logs.
+     */
+    enforceRiskGates() {
+        const stats = this.statsTracker.getStats();
+        if (!this.tradingHalted && this.strategy.shouldStopTrading(stats)) {
+            this.haltTrading('strategy risk limits reached (stop-loss / take-profit / loss streak)');
+        }
+        if (!this.tradingHalted && this.brain.bankroll && this.brain.bankroll.halted) {
+            this.haltTrading(`bankroll guard: ${this.brain.bankroll.haltReason}`);
+        }
+        if (this.tradingHalted &&
+            !this.strategy.shouldStopTrading(stats) &&
+            !(this.brain.bankroll && this.brain.bankroll.halted)) {
+            this.tradingHalted = false;
+            this.haltReason = null;
+            logger.info('Trading resumed — the condition that halted trading has been cleared (fresh session)');
+        }
+        return this.tradingHalted;
     }
 
     haltTrading(reason) {
