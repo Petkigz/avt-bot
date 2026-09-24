@@ -8,15 +8,16 @@
  * known marginal distribution.
  *
  * Methods:
- * 1. Probability Integral Transform (PIT) uniformization: transforms raw
- *    multipliers into U(0,1) variates under the fair null CDF and tests
- *    for serial correlation in the uniform domain.
+ * 1. Randomized Probability Integral Transform (PIT) uniformization:
+ *    transforms continuous crash outcomes into U(0,1) and properly randomizes
+ *    the discrete atom at instant crashes (1.00x) so U ~ Uniform(0,1) under null.
  * 2. Autocorrelation & Ljung-Box test across multiple representations:
  *    raw, log(X), PIT(X), 1(X >= 1.30), 1(X >= 2.00).
  * 3. Markov State Transition Matrix (3-state terciles + 5-state quintiles)
- *    with Chi-Square Independence Tests.
+ *    with time-series permutation test for independence.
  * 4. Shannon Mutual Information & Conditional Entropy with Permutation Test.
  * 5. Wald-Wolfowitz Runs Test for non-random clustering.
+ * 6. Benjamini-Hochberg False Discovery Rate (FDR) Multiple-Testing Correction.
  */
 
 function makeRng(seed = 42) {
@@ -28,14 +29,17 @@ function makeRng(seed = 42) {
 }
 
 // ---------------------------------------------------------------------------
-// 1. PIT Transform: x -> u in (0, 1) under fair survival curve S(x) = (1-r)/x
+// 1. Randomized PIT Transform: continuous U(0,1) under null S(x) = (1-r)/x
 // ---------------------------------------------------------------------------
-function pitTransform(values, instantCrashRate = 0.04) {
+function pitTransform(values, instantCrashRate = 0.04, rng = makeRng(88)) {
     const r = Math.min(0.2, Math.max(0.01, instantCrashRate));
     return values.map((x) => {
-        if (!Number.isFinite(x) || x <= 1.001) return r / 2; // instant crash region
-        const survival = Math.min(1 - r, (1 - r) / x);
-        const cdf = 1 - survival;
+        if (!Number.isFinite(x) || x <= 1.001) {
+            // Properly randomized discrete atom: uniform within [0, r)
+            return Math.min(0.9999, Math.max(0.0001, r * rng()));
+        }
+        // Continuous part: F(x) = r + (1-r)*(1 - 1/x)
+        const cdf = r + (1 - r) * (1 - 1 / x);
         return Math.min(0.9999, Math.max(0.0001, cdf));
     });
 }
@@ -62,10 +66,9 @@ function autocorrelation(arr, maxLag = 10) {
     return acf;
 }
 
-// Chi-Square survival function (upper tail) via gamma approximation
+// Chi-Square survival function (upper tail) via Wilson-Hilferty approximation
 function chiSquarePValue(x, df) {
     if (x <= 0 || df <= 0) return 1.0;
-    // Wilson-Hilferty normal approximation to chi-square CDF
     const z = (Math.pow(x / df, 1 / 3) - (1 - 2 / (9 * df))) / Math.sqrt(2 / (9 * df));
     return 1 - normCdf(z);
 }
@@ -101,13 +104,12 @@ function ljungBoxTest(arr, lags = [1, 2, 3, 5, 10]) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Markov State Transitions & Chi-Square Independence Test
+// 3. Markov State Transitions & Permutation Independence Test
 // ---------------------------------------------------------------------------
-function markovAnalysis(values, stateCount = 3) {
+function markovAnalysis(values, stateCount = 3, iters = 400) {
     const n = values.length;
     if (n < 30) return null;
 
-    // Discretize into stateCount quantile bins
     const sorted = [...values].sort((a, b) => a - b);
     const thresholds = [];
     for (let s = 1; s < stateCount; s++) {
@@ -121,57 +123,73 @@ function markovAnalysis(values, stateCount = 3) {
         return thresholds.length;
     };
 
-    // Transition counts: N[i][j] = count of state i -> state j
-    const N = Array.from({ length: stateCount }, () => new Array(stateCount).fill(0));
-    const rowSums = new Array(stateCount).fill(0);
-    const colSums = new Array(stateCount).fill(0);
-    let totalTransitions = 0;
+    const states = values.map(stateOf);
+    const computeChi2 = (seq) => {
+        const N = Array.from({ length: stateCount }, () => new Array(stateCount).fill(0));
+        const rowSums = new Array(stateCount).fill(0);
+        const colSums = new Array(stateCount).fill(0);
+        let total = 0;
+        for (let t = 0; t < seq.length - 1; t++) {
+            N[seq[t]][seq[t + 1]]++;
+            rowSums[seq[t]]++;
+            colSums[seq[t + 1]]++;
+            total++;
+        }
+        let chi2 = 0;
+        for (let i = 0; i < stateCount; i++) {
+            for (let j = 0; j < stateCount; j++) {
+                const expected = (rowSums[i] * colSums[j]) / (total || 1);
+                if (expected > 0) {
+                    const diff = N[i][j] - expected;
+                    chi2 += (diff * diff) / expected;
+                }
+            }
+        }
+        return { chi2, N, rowSums, colSums, total };
+    };
 
-    for (let t = 0; t < n - 1; t++) {
-        const from = stateOf(values[t]);
-        const to = stateOf(values[t + 1]);
-        N[from][to]++;
-        rowSums[from]++;
-        colSums[to]++;
-        totalTransitions++;
+    const { chi2: observedChi2, N, rowSums } = computeChi2(states);
+    const df = (stateCount - 1) * (stateCount - 1);
+    const asymptoticP = chiSquarePValue(observedChi2, df);
+
+    // Permutation test to account for time-series overlap dependencies
+    const rng = makeRng(55);
+    const shuffled = [...states];
+    let exceedCount = 0;
+    for (let it = 0; it < iters; it++) {
+        for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(rng() * (i + 1));
+            const tmp = shuffled[i];
+            shuffled[i] = shuffled[j];
+            shuffled[j] = tmp;
+        }
+        const { chi2: nullChi2 } = computeChi2(shuffled);
+        if (nullChi2 >= observedChi2) exceedCount++;
     }
+    const permutationP = (exceedCount + 1) / (iters + 1);
 
-    // Transition probabilities
     const matrix = N.map((row, i) =>
         row.map((cnt) => (rowSums[i] > 0 ? Number((cnt / rowSums[i]).toFixed(3)) : 0))
     );
-
-    // Chi-square test of independence: H0: P(to | from) = P(to)
-    let chi2 = 0;
-    for (let i = 0; i < stateCount; i++) {
-        for (let j = 0; j < stateCount; j++) {
-            const expected = (rowSums[i] * colSums[j]) / (totalTransitions || 1);
-            if (expected > 0) {
-                const diff = N[i][j] - expected;
-                chi2 += (diff * diff) / expected;
-            }
-        }
-    }
-
-    const df = (stateCount - 1) * (stateCount - 1);
-    const pValue = chiSquarePValue(chi2, df);
 
     return {
         stateCount,
         thresholds: thresholds.map((t) => Number(t.toFixed(2))),
         counts: N,
         transitionMatrix: matrix,
-        chi2: Number(chi2.toFixed(3)),
+        chi2: Number(observedChi2.toFixed(3)),
         df,
-        pValue: Number(pValue.toFixed(4)),
-        independent: pValue >= 0.05
+        asymptoticPValue: Number(asymptoticP.toFixed(4)),
+        permutationPValue: Number(permutationP.toFixed(4)),
+        pValue: Number(permutationP.toFixed(4)),
+        independent: permutationP >= 0.05
     };
 }
 
 // ---------------------------------------------------------------------------
 // 4. Shannon Mutual Information & Conditional Entropy
 // ---------------------------------------------------------------------------
-function mutualInformationAnalysis(values, stateCount = 3, iters = 500) {
+function mutualInformationAnalysis(values, stateCount = 3, iters = 400) {
     const n = values.length;
     if (n < 40) return null;
 
@@ -220,7 +238,6 @@ function mutualInformationAnalysis(values, stateCount = 3, iters = 500) {
 
     const { mi: observedMI, hX } = computeMI(states);
 
-    // Permutation test: shuffle states to break temporal order and measure null MI distribution
     const rng = makeRng(101);
     let nullSum = 0;
     let exceedCount = 0;
@@ -247,6 +264,7 @@ function mutualInformationAnalysis(values, stateCount = 3, iters = 500) {
         excessMIBits: Number(Math.max(0, observedMI - meanNullMI).toFixed(4)),
         nmi: Number((hX > 0 ? observedMI / hX : 0).toFixed(4)),
         permutationPValue: Number(permutationPValue.toFixed(4)),
+        pValue: Number(permutationPValue.toFixed(4)),
         significant: permutationPValue < 0.05
     };
 }
@@ -260,7 +278,6 @@ function runsTest(values) {
     const sorted = [...values].sort((a, b) => a - b);
     const median = sorted[Math.floor(n / 2)];
 
-    // Binary sequence: +1 if >= median, 0 if < median
     const bits = values.map((v) => (v >= median ? 1 : 0));
     const n1 = bits.filter((b) => b === 1).length;
     const n0 = n - n1;
@@ -289,6 +306,26 @@ function runsTest(values) {
 }
 
 // ---------------------------------------------------------------------------
+// 6. Benjamini-Hochberg False Discovery Rate (FDR) Multi-Testing Correction
+// ---------------------------------------------------------------------------
+function adjustBenjaminiHochberg(pValues) {
+    const m = pValues.length;
+    if (m === 0) return [];
+    const indexed = pValues.map((p, idx) => ({ p: Math.min(1.0, Math.max(0.0, p)), idx }))
+        .sort((a, b) => a.p - b.p);
+
+    const adjusted = new Array(m);
+    let minCum = 1.0;
+    for (let i = m - 1; i >= 0; i--) {
+        const rank = i + 1;
+        const rawAdj = (indexed[i].p * m) / rank;
+        minCum = Math.min(minCum, rawAdj);
+        adjusted[indexed[i].idx] = Math.min(1.0, Number(minCum.toFixed(4)));
+    }
+    return adjusted;
+}
+
+// ---------------------------------------------------------------------------
 // Main Laboratory Analysis Pipeline
 // ---------------------------------------------------------------------------
 function analyzeDependence(values, opts = {}) {
@@ -300,42 +337,56 @@ function analyzeDependence(values, opts = {}) {
     }
 
     const n = values.length;
-    const pitValues = pitTransform(values);
+    const pitValues = pitTransform(values, 0.04);
 
-    // 1. PIT domain tests
     const pitAcf = autocorrelation(pitValues, 5);
     const pitLjungBox = ljungBoxTest(pitValues, [1, 2, 3, 5]);
 
-    // 2. Multi-representation autocorrelations
     const rawAcf = autocorrelation(values, 5);
     const logAcf = autocorrelation(values.map((v) => Math.log(Math.max(1.0, v))), 5);
     const ind13Acf = autocorrelation(values.map((v) => (v >= 1.30 ? 1 : 0)), 5);
     const ind20Acf = autocorrelation(values.map((v) => (v >= 2.00 ? 1 : 0)), 5);
 
-    // 3. Markov transition tests
     const markov3 = markovAnalysis(values, 3);
     const markov5 = markovAnalysis(values, 5);
-
-    // 4. Mutual information & conditional entropy
     const mi = mutualInformationAnalysis(values, 3, opts.miIters ?? 400);
-
-    // 5. Runs test
     const runs = runsTest(values);
 
-    // Aggregate verdict: does ANY test find statistically significant non-random dependence?
-    const flags = [];
-    if (pitLjungBox.significant) flags.push(`PIT autocorrelation Q=${pitLjungBox.q} (p=${pitLjungBox.pValue})`);
-    if (markov3 && !markov3.independent) flags.push(`Markov 3-state transition chi2=${markov3.chi2} (p=${markov3.pValue})`);
-    if (markov5 && !markov5.independent) flags.push(`Markov 5-state transition chi2=${markov5.chi2} (p=${markov5.pValue})`);
-    if (mi && mi.significant) flags.push(`Mutual information excess=${mi.excessMIBits} bits (p=${mi.permutationPValue})`);
-    if (runs && !runs.random) flags.push(`Runs test z=${runs.zScore} (p=${runs.pValue})`);
+    // Multi-testing FDR correction across hypothesis tests
+    const testNames = ['PIT Ljung-Box', 'Markov 3-State', 'Markov 5-State', 'Mutual Information', 'Runs Test'];
+    const rawPVals = [
+        pitLjungBox.pValue,
+        markov3 ? markov3.pValue : 1.0,
+        markov5 ? markov5.pValue : 1.0,
+        mi ? mi.pValue : 1.0,
+        runs ? runs.pValue : 1.0
+    ];
+    const adjustedPVals = adjustBenjaminiHochberg(rawPVals);
 
-    const verdict = flags.length > 0 ? 'NON_RANDOM_DEPENDENCE_DETECTED' : 'INDEPENDENT_RANDOM_STREAM';
+    const fdrTests = testNames.map((name, i) => ({
+        name,
+        rawP: rawPVals[i],
+        adjustedP: adjustedPVals[i],
+        significantFdr: adjustedPVals[i] < 0.05,
+        nominalDiscovery: rawPVals[i] < 0.05
+    }));
+
+    const confirmedFdrFlags = fdrTests.filter((t) => t.significantFdr);
+    const nominalFlags = fdrTests.filter((t) => t.nominalDiscovery && !t.significantFdr);
+
+    let verdict = 'NO_DEPENDENCE_DETECTED';
+    if (confirmedFdrFlags.length > 0) {
+        verdict = 'STATISTICALLY_SIGNIFICANT_DEPENDENCE';
+    } else if (nominalFlags.length > 0) {
+        verdict = 'DISCOVERY_CANDIDATE_UNCONFIRMED';
+    }
 
     return {
         n,
         verdict,
-        flags,
+        fdrTests,
+        confirmedFdrFlags: confirmedFdrFlags.map((t) => `${t.name} (adj p=${t.adjustedP})`),
+        nominalFlags: nominalFlags.map((t) => `${t.name} (raw p=${t.rawP}, adj p=${t.adjustedP})`),
         pit: {
             autocorrLags: [1, 2, 3, 4, 5],
             autocorr: pitAcf.map((v) => Number(v.toFixed(4))),
@@ -351,9 +402,11 @@ function analyzeDependence(values, opts = {}) {
         markov5,
         mutualInformation: mi,
         runsTest: runs,
-        summary: verdict === 'INDEPENDENT_RANDOM_STREAM'
-            ? `All 5 statistical tests (PIT Ljung-Box, Markov 3/5, Mutual Information, Runs) confirm the series is consistent with an independent random process (p > 0.05).`
-            : `Non-random structure flagged by ${flags.length} test(s): ${flags.join('; ')}.`
+        summary: verdict === 'NO_DEPENDENCE_DETECTED'
+            ? `All 5 statistical tests confirm the series is consistent with an independent random process after Benjamini-Hochberg FDR correction (all adj p > 0.05).`
+            : verdict === 'DISCOVERY_CANDIDATE_UNCONFIRMED'
+                ? `Nominal discovery candidate (${nominalFlags.map((t) => t.name).join(', ')}) did not clear multiple-testing FDR correction. Requires out-of-sample confirmation.`
+                : `Statistically significant dependence confirmed after FDR correction: ${confirmedFdrFlags.map((t) => t.name).join(', ')}.`
     };
 }
 
@@ -364,6 +417,8 @@ module.exports = {
     markovAnalysis,
     mutualInformationAnalysis,
     runsTest,
+    adjustBenjaminiHochberg,
+    benjaminiHochberg: adjustBenjaminiHochberg,
     analyzeDependence,
     chiSquarePValue,
     normCdf

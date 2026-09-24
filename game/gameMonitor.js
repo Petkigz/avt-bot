@@ -271,8 +271,20 @@ class GameMonitor extends EventEmitter {
                     this.telemetry.roundsPossiblyMissed++;
                     logger.warn(`History strip rolled over without overlap (~${bubblesNorm.length}+ rounds elapsed)`);
                 }
-                for (const crash of rec.newRounds) {
-                    this.detectRoundEnd(crash, state);
+
+                if (rec.overlapped) {
+                    // Confirmed strip alignment: these are verified historical rounds.
+                    // Bypass wall-clock jitter guard so no batch round is dropped.
+                    for (const crash of rec.newRounds) {
+                        this.onRoundEnded(crash, state);
+                    }
+                    this.lastBubble = rec.newRounds[rec.newRounds.length - 1];
+                    this.lastRoundEndedAt = Date.now();
+                } else {
+                    // Non-overlapped fallback: apply DOM jitter guard
+                    for (const crash of rec.newRounds) {
+                        this.detectRoundEnd(crash, state);
+                    }
                 }
             }
         }
@@ -514,27 +526,37 @@ class GameMonitor extends EventEmitter {
     }
 
     onRoundEnded(crashValue, state) {
+        const now = Date.now();
+        const interRoundIntervalMs = this.lastRoundEndedAt ? now - this.lastRoundEndedAt : null;
         this.roundId++;
         this.roundInFlight = false;
         this.flightEndedAt = null;
+        this.lastRoundEndedAt = now;
+        this.lastBubble = crashValue;
         logger.info(`Round #${this.roundId} ended at ${crashValue}x [${this.site}${this.account ? ' / ' + this.account : ''}]`);
 
-        // ---- Flight Trajectory Record (Microstructure dataset) ----
-        const durationMs = this.roundStartTime ? Date.now() - this.roundStartTime : null;
+        // ---- Flight Trajectory & Microstructure Record ----
+        const durationMs = this.roundStartTime ? now - this.roundStartTime : null;
         const findTimeTo = (target) => {
             const s = this.currentFlightTrace.find((p) => p.v >= target);
             return s ? s.t : null;
         };
+        const nowDate = new Date(now);
         const trace = {
             roundId: this.roundId,
             site: this.site,
             crash: crashValue,
             durationMs,
+            samples: [...this.currentFlightTrace],
             samplesCount: this.currentFlightTrace.length,
             timeTo12: findTimeTo(1.20),
             timeTo15: findTimeTo(1.50),
             timeTo20: findTimeTo(2.00),
-            ts: Date.now()
+            interRoundIntervalMs,
+            hourUtc: nowDate.getUTCHours(),
+            minuteUtc: nowDate.getUTCMinutes(),
+            dayOfWeek: nowDate.getUTCDay(),
+            ts: now
         };
         this.emit('roundTrace', trace);
         this.currentFlightTrace = [];

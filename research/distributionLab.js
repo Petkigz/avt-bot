@@ -7,9 +7,9 @@
  * S(x) = P(X >= x) of Aviator crashes rather than a single binary target.
  *
  * Tests whether conditional crash distributions (after cold crashes, after
- * warm wins, after streaks, after high volatility) actually diverge from
- * the unconditional distribution using 2-sample Kolmogorov-Smirnov and
- * Wasserstein metric tests with exact permutation p-values.
+ * warm wins, after streaks, after high volatility) diverge from the
+ * unconditional distribution using 2-sample Kolmogorov-Smirnov ($D$) AND
+ * Wasserstein (Earth Mover's) distance tests with exact permutation p-values.
  */
 
 const TARGET_GRID = [1.01, 1.10, 1.20, 1.30, 1.40, 1.50, 1.75, 2.00, 2.50, 3.00, 5.00, 10.00, 20.00, 50.00];
@@ -55,42 +55,6 @@ function ksStatistic(sampleA, sampleB) {
     return maxD;
 }
 
-// Permutation test for KS statistic: tests H0: sampleA and sampleB come from same distribution
-function ksPermutationTest(sampleA, sampleB, iters = 500) {
-    const nA = sampleA.length;
-    const nB = sampleB.length;
-    if (nA < 10 || nB < 10) return { d: 0, pValue: 1.0, significant: false };
-
-    const observedD = ksStatistic(sampleA, sampleB);
-    const pooled = [...sampleA, ...sampleB];
-    const total = pooled.length;
-    const rng = makeRng(77);
-    let exceedCount = 0;
-
-    for (let it = 0; it < iters; it++) {
-        // In-place Fisher-Yates shuffle
-        for (let i = total - 1; i > 0; i--) {
-            const j = Math.floor(rng() * (i + 1));
-            const tmp = pooled[i];
-            pooled[i] = pooled[j];
-            pooled[j] = tmp;
-        }
-        const permA = pooled.slice(0, nA);
-        const permB = pooled.slice(nA);
-        const permD = ksStatistic(permA, permB);
-        if (permD >= observedD) exceedCount++;
-    }
-
-    const pValue = (exceedCount + 1) / (iters + 1);
-    return {
-        d: Number(observedD.toFixed(4)),
-        sampleSizeA: nA,
-        sampleSizeB: nB,
-        pValue: Number(pValue.toFixed(4)),
-        significant: pValue < 0.05
-    };
-}
-
 // 1D Wasserstein distance (Earth Mover's Distance)
 function wassersteinDistance(sampleA, sampleB) {
     if (sampleA.length === 0 || sampleB.length === 0) return 0;
@@ -105,6 +69,59 @@ function wassersteinDistance(sampleA, sampleB) {
         dist += Math.abs(qa - qb);
     }
     return dist / n;
+}
+
+// Permutation test for both KS statistic and Wasserstein Distance
+function twoSamplePermutationTest(sampleA, sampleB, iters = 400) {
+    const nA = sampleA.length;
+    const nB = sampleB.length;
+    if (nA < 10 || nB < 10) {
+        return {
+            ksD: 0,
+            ksPValue: 1.0,
+            wassersteinDistance: 0,
+            wassersteinPValue: 1.0,
+            sampleSizeA: nA,
+            sampleSizeB: nB,
+            significant: false
+        };
+    }
+
+    const observedD = ksStatistic(sampleA, sampleB);
+    const observedW = wassersteinDistance(sampleA, sampleB);
+    const pooled = [...sampleA, ...sampleB];
+    const total = pooled.length;
+    const rng = makeRng(77);
+
+    let ksExceed = 0;
+    let wExceed = 0;
+
+    for (let it = 0; it < iters; it++) {
+        const copy = [...pooled];
+        for (let i = total - 1; i > 0; i--) {
+            const j = Math.floor(rng() * (i + 1));
+            const tmp = copy[i];
+            copy[i] = copy[j];
+            copy[j] = tmp;
+        }
+        const permA = copy.slice(0, nA);
+        const permB = copy.slice(nA);
+        if (ksStatistic(permA, permB) >= observedD) ksExceed++;
+        if (wassersteinDistance(permA, permB) >= observedW) wExceed++;
+    }
+
+    const ksPValue = (ksExceed + 1) / (iters + 1);
+    const wPValue = (wExceed + 1) / (iters + 1);
+
+    return {
+        ksD: Number(observedD.toFixed(4)),
+        ksPValue: Number(ksPValue.toFixed(4)),
+        wassersteinDistance: Number(observedW.toFixed(3)),
+        wassersteinPValue: Number(wPValue.toFixed(4)),
+        sampleSizeA: nA,
+        sampleSizeB: nB,
+        significant: ksPValue < 0.01 || (ksPValue < 0.05 && wPValue < 0.05)
+    };
 }
 
 function analyzeDistribution(values, opts = {}) {
@@ -129,42 +146,43 @@ function analyzeDistribution(values, opts = {}) {
         theoreticalNull[t] = Number((Math.min(1 - operatorEdge, (1 - operatorEdge) / t)).toFixed(4));
     }
 
-    // Conditional splits:
     // 1. After low crash (< 1.30x) vs after warm win (>= 2.00x)
     const afterLow = [];
     const afterHigh = [];
+    const afterMedium = [];
     for (let t = 1; t < n; t++) {
         if (values[t - 1] < 1.30) afterLow.push(values[t]);
-        if (values[t - 1] >= 2.00) afterHigh.push(values[t]);
+        else if (values[t - 1] >= 2.00) afterHigh.push(values[t]);
+        else afterMedium.push(values[t]);
     }
 
     // 2. After cold streak (3 consecutive < 1.50x) vs after warm streak (2 consecutive >= 2.00x)
-    const afterColdStreak = [];
-    const afterWarmStreak = [];
+    const afterColdStreak3 = [];
+    const afterWarmStreak2 = [];
     for (let t = 3; t < n; t++) {
         if (values[t - 3] < 1.50 && values[t - 2] < 1.50 && values[t - 1] < 1.50) {
-            afterColdStreak.push(values[t]);
+            afterColdStreak3.push(values[t]);
         }
         if (values[t - 2] >= 2.00 && values[t - 1] >= 2.00) {
-            afterWarmStreak.push(values[t]);
+            afterWarmStreak2.push(values[t]);
         }
     }
 
-    const ksAfterLowVsHigh = ksPermutationTest(afterLow, afterHigh, opts.ksIters ?? 500);
-    const ksAfterStreak = ksPermutationTest(afterColdStreak, afterWarmStreak, opts.ksIters ?? 500);
-    const wassersteinLowVsHigh = Number(wassersteinDistance(afterLow, afterHigh).toFixed(3));
+    const iters = opts.ksIters ?? 400;
+    const testLowVsHigh = twoSamplePermutationTest(afterLow, afterHigh, iters);
+    const testColdVsWarm = twoSamplePermutationTest(afterColdStreak3, afterWarmStreak2, iters);
 
     const flags = [];
-    if (ksAfterLowVsHigh.significant) {
-        flags.push(`Distribution after Low (<1.3x) vs High (>=2x) differs significantly (KS D=${ksAfterLowVsHigh.d}, p=${ksAfterLowVsHigh.pValue})`);
+    if (testLowVsHigh.significant) {
+        flags.push(`Distribution after Low (<1.3x) vs High (>=2x) differs significantly (KS p=${testLowVsHigh.ksPValue}, Wasserstein p=${testLowVsHigh.wassersteinPValue})`);
     }
-    if (ksAfterStreak.significant) {
-        flags.push(`Distribution after 3-Cold streak vs 2-Warm streak differs significantly (KS D=${ksAfterStreak.d}, p=${ksAfterStreak.pValue})`);
+    if (testColdVsWarm.significant) {
+        flags.push(`Distribution after 3-Cold streak vs 2-Warm streak differs significantly (KS p=${testColdVsWarm.ksPValue}, Wasserstein p=${testColdVsWarm.wassersteinPValue})`);
     }
 
     const verdict = flags.length > 0
-        ? 'CONDITIONAL_DISTRIBUTION_SHIFT_DETECTED'
-        : 'STATIONARY_INDEPENDENT_DISTRIBUTION';
+        ? 'CONDITIONAL_DISTRIBUTION_SHIFT_CANDIDATE'
+        : 'NO_CONDITIONAL_SHIFT_DETECTED_FOR_TESTED_CONDITIONS';
 
     return {
         n,
@@ -176,19 +194,17 @@ function analyzeDistribution(values, opts = {}) {
         conditionalSurvivals: {
             afterLow: survivalCurve(afterLow, grid),
             afterHigh: survivalCurve(afterHigh, grid),
-            afterColdStreak3: survivalCurve(afterColdStreak, grid),
-            afterWarmStreak2: survivalCurve(afterWarmStreak, grid)
+            afterMedium: survivalCurve(afterMedium, grid),
+            afterColdStreak3: survivalCurve(afterColdStreak3, grid),
+            afterWarmStreak2: survivalCurve(afterWarmStreak2, grid)
         },
         tests: {
-            afterLowVsHigh: {
-                ...ksAfterLowVsHigh,
-                wassersteinDistance: wassersteinLowVsHigh
-            },
-            afterColdVsWarmStreak: ksAfterStreak
+            afterLowVsHigh: testLowVsHigh,
+            afterColdVsWarmStreak: testColdVsWarm
         },
-        summary: verdict === 'STATIONARY_INDEPENDENT_DISTRIBUTION'
-            ? `Two-sample Kolmogorov-Smirnov and Wasserstein tests confirm that future crash distributions do not shift conditionally on past crashes or loss streaks (p > 0.05).`
-            : `Distributional shift detected: ${flags.join('; ')}.`
+        summary: verdict === 'NO_CONDITIONAL_SHIFT_DETECTED_FOR_TESTED_CONDITIONS'
+            ? `Two-sample Kolmogorov-Smirnov and Wasserstein permutation tests show no statistically significant distribution shifts for the tested conditional groups (p > 0.05).`
+            : `Conditional distribution shift candidate flagged: ${flags.join('; ')}.`
     };
 }
 
@@ -196,7 +212,7 @@ module.exports = {
     TARGET_GRID,
     survivalCurve,
     ksStatistic,
-    ksPermutationTest,
     wassersteinDistance,
+    twoSamplePermutationTest,
     analyzeDistribution
 };
