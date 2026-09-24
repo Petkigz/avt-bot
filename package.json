@@ -20,7 +20,8 @@
     "research:dependence": "node scripts/research-dependence.js",
     "research:distribution": "node scripts/research-distribution.js",
     "research:trajectory": "node scripts/research-trajectory.js",
-    "research:hypotheses": "node scripts/research-hypotheses.js"
+    "research:hypotheses": "node scripts/research-hypotheses.js",
+    "research:benchmark": "node scripts/research-benchmark.js"
   },
   "engines": {
     "node": ">=18"

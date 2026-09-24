@@ -32,6 +32,7 @@ const {
     analyze: pfAnalyze
 } = require('./game/provablyFair');
 const Bankroll = require('./game/bankroll');
+const { SignalLifecycle } = require('./game/signalLifecycle');
 const { readModelVerdict, loadFeatureModel, modelStaleness, readTournamentVerdict } = require('./game/modelLayer');
 const { runSite: trainModelForSite, rowsForSite } = require('./scripts/train-model');
 const Brain = require('./game/brain');
@@ -1477,12 +1478,19 @@ async function main() {
             logger.info(`Model tournament [${key}]: last run → ${tourVerdict.verdict}${tourVerdict.winner ? ` (winner: ${tourVerdict.winner})` : ''} — ${tourVerdict.reason || ''}`.trim());
         }
 
+        const siteLifecycle = new SignalLifecycle(key);
+        const activeSignals = siteLifecycle.getActiveSignals();
+        if (activeSignals.length > 0) {
+            logger.info(`Signal Lifecycle [${key}]: ${activeSignals.length} active hypothesis signal(s) loaded (${activeSignals.map((s) => `${s.name} [${s.status}]`).join(', ')})`);
+        }
+
         let engineRef = null; // lets the brain read this engine's live verdict
         const siteBrain = new Brain({
             config, strategy: siteStrategy, predictor: sitePredictor, patterns: sitePatterns, bankroll: siteBankroll,
             recalibrator: siteRecalibrator,
             featureModel: siteFeatureModel,
             modelVerdict: modelVerdict || null,
+            signalLifecycle: siteLifecycle,
             signal: {
                 policy: config.MODEL.SIGNAL_POLICY,
                 getVerdict: () => (engineRef ? engineRef.signalVerdict : null)
@@ -1494,6 +1502,7 @@ async function main() {
             predictor: sitePredictor,
             patterns: sitePatterns,
             brain: siteBrain,
+            signalLifecycle: siteLifecycle,
             // Per-site strategy + bankroll handles (dashboard strategy switch
             // hot-swaps these without touching the OTHER sites' books).
             strategy: siteStrategy,

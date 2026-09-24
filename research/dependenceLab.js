@@ -377,8 +377,6 @@ function analyzeDependence(values, opts = {}) {
     let verdict = 'NO_DEPENDENCE_DETECTED';
     if (confirmedFdrFlags.length > 0) {
         verdict = 'STATISTICALLY_SIGNIFICANT_DEPENDENCE';
-    } else if (nominalFlags.length > 0) {
-        verdict = 'DISCOVERY_CANDIDATE_UNCONFIRMED';
     }
 
     return {

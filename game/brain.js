@@ -33,7 +33,7 @@ function wilsonLower(wins, n, z = 1.96) {
  *   (with volatility penalty), pattern check OK, bankroll policy OK.
  */
 class Brain {
-    constructor({ config, strategy, predictor, patterns, bankroll, microOnly, signal, recalibrator, featureModel, modelVerdict }) {
+    constructor({ config, strategy, predictor, patterns, bankroll, microOnly, signal, recalibrator, featureModel, modelVerdict, signalLifecycle }) {
         this.config = config;
         this.strategy = strategy;
         this.predictor = predictor;       // may be null (model disabled)
@@ -55,6 +55,9 @@ class Brain {
         // 'strict' refuses bets until this site has a positive OUT-OF-SAMPLE
         // signal verdict; 'advisory' (default) only reports it.
         this.signal = signal || null;
+        // Candidate Hypothesis Signal Lifecycle Engine: evaluates confirmed
+        // research signals online, manages shadow tracking, and retires decayed edges.
+        this.signalLifecycle = signalLifecycle || null;
         // Strict safety profile: never promote beyond the MICRO tier.
         this.microOnly = microOnly ?? !!(config.MICRO_ONLY);
 
@@ -80,6 +83,9 @@ class Brain {
         // picks a different one each round); fall back to the nominal target.
         const betTarget = this.pendingTarget ?? (this.strategy ? this.strategy.targetMultiplier : null);
         this.pendingTarget = null;
+        if (this.signalLifecycle && this.predictor && this.predictor.history) {
+            this.signalLifecycle.onRoundEnded(this.predictor.history, crash);
+        }
         if (this.predictor) this.predictor.addRound(crash, betTarget);
         if (this.patterns) this.patterns.observe(crash);
         this.updateTier();
@@ -280,6 +286,7 @@ class Brain {
             // NO_SIGNAL verdict nothing is loaded and the Brain stays
             // discipline-only: the model's "NO SIGNAL" is honored.
             let fromFeatureModel = false;
+            let fromHypothesisSignal = false;
             const activeModel = this.featureModelFor(this.strategy.targetMultiplier);
             if (activeModel) {
                 const feats = extractFeatures(this.predictor.history, this.strategy.targetMultiplier);
@@ -290,7 +297,25 @@ class Brain {
                     decision.modelTarget = activeModel.meta.target;
                 }
             }
-            if (!fromFeatureModel) {
+
+            // Research Hypothesis Signal Bridge: evaluate confirmed signals
+            if (!fromFeatureModel && this.signalLifecycle && this.predictor && this.predictor.history) {
+                const matched = this.signalLifecycle.matchActiveSignals(this.predictor.history);
+                const activeMatch = matched.find((m) =>
+                    (m.status === 'LIVE_MICRO' || m.status === 'HOLDOUT_CONFIRMED') &&
+                    Math.abs(m.target - this.strategy.targetMultiplier) < 0.05
+                );
+                if (activeMatch && Number.isFinite(activeMatch.holdoutHitRate)) {
+                    confidence = activeMatch.holdoutHitRate;
+                    fromHypothesisSignal = true;
+                    decision.activeHypothesisSignal = activeMatch;
+                    decision.reasons.push(
+                        `confirmed hypothesis signal "${activeMatch.name}" active (holdout hit: ${(activeMatch.holdoutHitRate * 100).toFixed(1)}%)`
+                    );
+                }
+            }
+
+            if (!fromFeatureModel && !fromHypothesisSignal) {
                 if (!gate.allowed) {
                     reasons.push(`model: ${gate.reason}`);
                     return this.finish(decision);
@@ -315,7 +340,8 @@ class Brain {
                 reasons.push(
                     `confidence ${confidence.toFixed(2)} < required ${required.toFixed(2)}` +
                     (volPenalty > 0 ? ' (volatility penalty)' : '') +
-                    (fromFeatureModel ? ' (feature model)' : '')
+                    (fromFeatureModel ? ' (feature model)' : '') +
+                    (fromHypothesisSignal ? ' (hypothesis signal)' : '')
                 );
                 return this.finish(decision);
             }

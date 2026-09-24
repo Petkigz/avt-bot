@@ -7,9 +7,10 @@
  * and Candidate Lifecycle Engine.
  *
  * Rather than assuming a single feature set, generates hundreds of explicit
- * conditional hypotheses across sequences, volatility states, and timing,
- * filters them with False Discovery Rate (FDR) multiple-testing correction,
- * and tests survivors on untouched OOS walk-forward and holdout partitions.
+ * conditional hypotheses across sequences, volatility states, streak lengths,
+ * and timing/distance metrics, filters them with False Discovery Rate (FDR)
+ * multiple-testing correction, and tests survivors on untouched OOS walk-forward
+ * and locked holdout partitions.
  */
 
 const fs = require('fs');
@@ -27,61 +28,134 @@ function makeRng(seed = 42) {
 }
 
 /**
- * Generates the hypothesis search space.
- * Each hypothesis is a predicate function (history, t) => boolean
+ * Generates the extensive hypothesis search space (300+ hypotheses).
+ * Each hypothesis is a predicate function (history, t) => boolean.
  */
-function generateHypotheses(targets = [1.30, 1.50, 2.00]) {
+function generateHypotheses(targets = [1.20, 1.30, 1.50, 1.80, 2.00, 3.00, 5.00]) {
     const list = [];
 
     for (const target of targets) {
-        // 1. Single prior state hypotheses
-        list.push({
-            id: `prior_low_crash_target_${target}`,
-            name: `Previous crash was < 1.30x (Target ${target}x)`,
-            target,
-            predicate: (h, t) => t >= 1 && h[t - 1] < 1.30
-        });
-        list.push({
-            id: `prior_high_win_target_${target}`,
-            name: `Previous crash was >= 2.00x (Target ${target}x)`,
-            target,
-            predicate: (h, t) => t >= 1 && h[t - 1] >= 2.00
-        });
+        // 1. Single Prior Crash Hypotheses
         list.push({
             id: `prior_instant_crash_target_${target}`,
             name: `Previous crash was instant (<= 1.05x) (Target ${target}x)`,
             target,
+            category: 'prior_state',
             predicate: (h, t) => t >= 1 && h[t - 1] <= 1.05
         });
+        list.push({
+            id: `prior_low_crash_target_${target}`,
+            name: `Previous crash was low (< 1.30x) (Target ${target}x)`,
+            target,
+            category: 'prior_state',
+            predicate: (h, t) => t >= 1 && h[t - 1] < 1.30
+        });
+        list.push({
+            id: `prior_medium_target_${target}`,
+            name: `Previous crash was medium (1.30x-2.00x) (Target ${target}x)`,
+            target,
+            category: 'prior_state',
+            predicate: (h, t) => t >= 1 && h[t - 1] >= 1.30 && h[t - 1] < 2.00
+        });
+        list.push({
+            id: `prior_high_win_target_${target}`,
+            name: `Previous crash was high (>= 2.00x) (Target ${target}x)`,
+            target,
+            category: 'prior_state',
+            predicate: (h, t) => t >= 1 && h[t - 1] >= 2.00
+        });
+        list.push({
+            id: `prior_super_rocket_target_${target}`,
+            name: `Previous crash was super-rocket (>= 5.00x) (Target ${target}x)`,
+            target,
+            category: 'prior_state',
+            predicate: (h, t) => t >= 1 && h[t - 1] >= 5.00
+        });
 
-        // 2. Streak hypotheses
+        // 2. Streak Hypotheses (Cold vs Warm)
         list.push({
             id: `cold_streak_2_target_${target}`,
             name: `2 consecutive crashes < 1.40x (Target ${target}x)`,
             target,
+            category: 'streak',
             predicate: (h, t) => t >= 2 && h[t - 2] < 1.40 && h[t - 1] < 1.40
         });
         list.push({
             id: `cold_streak_3_target_${target}`,
             name: `3 consecutive crashes < 1.50x (Target ${target}x)`,
             target,
+            category: 'streak',
             predicate: (h, t) => t >= 3 && h[t - 3] < 1.50 && h[t - 2] < 1.50 && h[t - 1] < 1.50
+        });
+        list.push({
+            id: `cold_streak_4_target_${target}`,
+            name: `4 consecutive crashes < 1.50x (Target ${target}x)`,
+            target,
+            category: 'streak',
+            predicate: (h, t) => t >= 4 && h[t - 4] < 1.50 && h[t - 3] < 1.50 && h[t - 2] < 1.50 && h[t - 1] < 1.50
         });
         list.push({
             id: `warm_streak_2_target_${target}`,
             name: `2 consecutive crashes >= 2.00x (Target ${target}x)`,
             target,
+            category: 'streak',
             predicate: (h, t) => t >= 2 && h[t - 2] >= 2.00 && h[t - 1] >= 2.00
         });
-
-        // 3. Volatility regime hypotheses
         list.push({
-            id: `volatility_spike_target_${target}`,
+            id: `warm_streak_3_target_${target}`,
+            name: `3 consecutive crashes >= 2.00x (Target ${target}x)`,
+            target,
+            category: 'streak',
+            predicate: (h, t) => t >= 3 && h[t - 3] >= 2.00 && h[t - 2] >= 2.00 && h[t - 1] >= 2.00
+        });
+
+        // 3. Timing & Distance Hypotheses
+        list.push({
+            id: `time_since_rocket_le_3_target_${target}`,
+            name: `Super-rocket (>=5.0x) occurred within last 3 rounds (Target ${target}x)`,
+            target,
+            category: 'timing_distance',
+            predicate: (h, t) => t >= 3 && (h[t - 1] >= 5.0 || h[t - 2] >= 5.0 || h[t - 3] >= 5.0)
+        });
+        list.push({
+            id: `time_since_rocket_ge_10_target_${target}`,
+            name: `No rocket (>=5.0x) in the last 10 rounds (Target ${target}x)`,
+            target,
+            category: 'timing_distance',
+            predicate: (h, t) => {
+                if (t < 10) return false;
+                for (let k = 1; k <= 10; k++) if (h[t - k] >= 5.0) return false;
+                return true;
+            }
+        });
+        list.push({
+            id: `time_since_instant_le_2_target_${target}`,
+            name: `Instant crash (<=1.05x) within last 2 rounds (Target ${target}x)`,
+            target,
+            category: 'timing_distance',
+            predicate: (h, t) => t >= 2 && (h[t - 1] <= 1.05 || h[t - 2] <= 1.05)
+        });
+        list.push({
+            id: `time_since_instant_ge_8_target_${target}`,
+            name: `No instant crash in last 8 rounds (Target ${target}x)`,
+            target,
+            category: 'timing_distance',
+            predicate: (h, t) => {
+                if (t < 8) return false;
+                for (let k = 1; k <= 8; k++) if (h[t - k] <= 1.05) return false;
+                return true;
+            }
+        });
+
+        // 4. Volatility Regime Hypotheses
+        list.push({
+            id: `volatility_spike_20_target_${target}`,
             name: `Recent 20-round volatility > 1.5x long-run volatility (Target ${target}x)`,
             target,
+            category: 'volatility',
             predicate: (h, t) => {
                 if (t < 40) return false;
-                const rec = h.slice(Math.max(0, t - 20), t);
+                const rec = h.slice(t - 20, t);
                 const long = h.slice(0, t);
                 const recMean = rec.reduce((s, v) => s + v, 0) / rec.length;
                 const longMean = long.reduce((s, v) => s + v, 0) / long.length;
@@ -90,8 +164,36 @@ function generateHypotheses(targets = [1.30, 1.50, 2.00]) {
                 return longStd > 0 && recStd > 1.5 * longStd;
             }
         });
+        list.push({
+            id: `volatility_compression_10_target_${target}`,
+            name: `Recent 10-round volatility < 0.6x long-run volatility (Target ${target}x)`,
+            target,
+            category: 'volatility',
+            predicate: (h, t) => {
+                if (t < 30) return false;
+                const rec = h.slice(t - 10, t);
+                const long = h.slice(0, t);
+                const recMean = rec.reduce((s, v) => s + v, 0) / rec.length;
+                const longMean = long.reduce((s, v) => s + v, 0) / long.length;
+                const recStd = Math.sqrt(rec.reduce((s, v) => s + (v - recMean) ** 2, 0) / rec.length);
+                const longStd = Math.sqrt(long.reduce((s, v) => s + (v - longMean) ** 2, 0) / long.length);
+                return longStd > 0 && recStd < 0.6 * longStd;
+            }
+        });
+        list.push({
+            id: `mean_reversion_compression_target_${target}`,
+            name: `Recent 5-round mean < 1.35x vs long-run mean (Target ${target}x)`,
+            target,
+            category: 'volatility',
+            predicate: (h, t) => {
+                if (t < 20) return false;
+                const rec = h.slice(t - 5, t);
+                const recMean = rec.reduce((s, v) => s + v, 0) / rec.length;
+                return recMean < 1.35;
+            }
+        });
 
-        // 4. Full 3-symbol pattern permutations (27 states)
+        // 5. Full 3-Symbol Pattern Permutations (27 States)
         const symbols = ['L', 'M', 'H'];
         for (const s1 of symbols) {
             for (const s2 of symbols) {
@@ -101,6 +203,7 @@ function generateHypotheses(targets = [1.30, 1.50, 2.00]) {
                         id: `pattern_${pattern}_target_${target}`,
                         name: `3-Round Pattern "${pattern}" (Target ${target}x)`,
                         target,
+                        category: 'sequence',
                         predicate: (h, t) => {
                             if (t < 3) return false;
                             return symbolOf(h[t - 3]) === s1 &&
@@ -110,6 +213,24 @@ function generateHypotheses(targets = [1.30, 1.50, 2.00]) {
                     });
                 }
             }
+        }
+
+        // 6. 4-Symbol Sequence Permutations
+        const special4 = ['LLLL', 'HHHH', 'LLLH', 'HHHL', 'LHLH', 'HLHL'];
+        for (const pat of special4) {
+            list.push({
+                id: `pattern4_${pat}_target_${target}`,
+                name: `4-Round Pattern "${pat}" (Target ${target}x)`,
+                target,
+                category: 'sequence4',
+                predicate: (h, t) => {
+                    if (t < 4) return false;
+                    return symbolOf(h[t - 4]) === pat[0] &&
+                           symbolOf(h[t - 3]) === pat[1] &&
+                           symbolOf(h[t - 2]) === pat[2] &&
+                           symbolOf(h[t - 1]) === pat[3];
+                }
+            });
         }
     }
 
@@ -121,21 +242,31 @@ function generateHypotheses(targets = [1.30, 1.50, 2.00]) {
  */
 function evaluatePartition(hypotheses, history, startIdx, endIdx) {
     const results = [];
-    const nTotal = endIdx - startIdx;
-    if (nTotal < 10) return results;
 
     for (const hyp of hypotheses) {
         let nMatches = 0;
         let nWins = 0;
         let totalBaseWins = 0;
+        let nTotal = 0;
         const target = hyp.target;
 
-        for (let t = startIdx; t < endIdx; t++) {
-            const won = history[t] >= target ? 1 : 0;
-            if (won) totalBaseWins++;
-            if (hyp.predicate(history, t)) {
+        for (let t = Math.max(4, startIdx); t < endIdx; t++) {
+            const nextValue = history[t];
+            if (!Number.isFinite(nextValue)) continue;
+
+            nTotal++;
+            if (nextValue >= target) totalBaseWins++;
+
+            let triggered = false;
+            try {
+                triggered = hyp.predicate(history, t);
+            } catch (err) {
+                triggered = false;
+            }
+
+            if (triggered) {
                 nMatches++;
-                if (won) nWins++;
+                if (nextValue >= target) nWins++;
             }
         }
 
@@ -152,6 +283,7 @@ function evaluatePartition(hypotheses, history, startIdx, endIdx) {
             id: hyp.id,
             name: hyp.name,
             target: hyp.target,
+            category: hyp.category,
             n: nMatches,
             nWins,
             baseRate: Number(baseRate.toFixed(4)),
@@ -186,12 +318,13 @@ function runHypothesisEngine(history, opts = {}) {
     const split1 = Math.floor(n * 0.50); // 50% Discovery
     const split2 = Math.floor(n * 0.75); // 25% OOS Walk, 25% Final Holdout
 
-    const allHypotheses = generateHypotheses(opts.targets || [1.30, 1.50, 2.00]);
+    const targets = opts.targets || [1.20, 1.30, 1.50, 1.80, 2.00, 3.00, 5.00];
+    const allHypotheses = generateHypotheses(targets);
 
     // -----------------------------------------------------------------------
     // TIER 1: In-Sample Discovery
     // -----------------------------------------------------------------------
-    const tier1Results = evaluatePartition(allHypotheses, history, 3, split1);
+    const tier1Results = evaluatePartition(allHypotheses, history, 4, split1);
     const rawPVals = tier1Results.map((r) => r.pVal);
     const adjPVals = adjustBenjaminiHochberg(rawPVals);
 
@@ -220,6 +353,7 @@ function runHypothesisEngine(history, opts = {}) {
             id: cand.id,
             name: cand.name,
             target: cand.target,
+            category: cand.category,
             status: passedOos ? 'OOS_CONFIRMED' : 'FAILED_OOS',
             discovery: {
                 n: cand.n,
@@ -247,6 +381,7 @@ function runHypothesisEngine(history, opts = {}) {
             id: cand.id,
             name: cand.name,
             target: cand.target,
+            category: cand.category,
             status: confirmed ? 'HOLDOUT_CONFIRMED' : 'REJECTED_ON_HOLDOUT',
             discovery: cand.discovery,
             oos: cand.oos,
@@ -270,6 +405,7 @@ function runHypothesisEngine(history, opts = {}) {
             id: c.id,
             name: c.name,
             target: c.target,
+            category: c.category,
             n: c.n,
             hitRate: c.hitRate,
             lift: c.lift,
@@ -280,6 +416,7 @@ function runHypothesisEngine(history, opts = {}) {
             id: c.id,
             name: c.name,
             target: c.target,
+            category: c.category,
             status: c.status,
             discoveryLift: c.discovery.lift,
             oosLift: c.oos ? c.oos.lift : null,
