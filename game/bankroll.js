@@ -132,17 +132,25 @@ class Bankroll {
     /**
      * Caps a proposed stake by policy. Returns 0 when betting is not allowed.
      */
+    /** True once a bankroll reference exists (real balance seen, or paper
+     *  reference set). Live betting must never run without one. */
+    hasReference() {
+        return Number.isFinite(this.startingBalance) || Number.isFinite(this.balance);
+    }
+
     approveStake(stake, tier) {
         if (this.halted || tier === 'OBSERVING') return 0;
         if (!Number.isFinite(stake) || stake <= 0) return 0;
 
         const bankrollRef = this.startingBalance ?? this.balance;
-        let cap = Number.isFinite(bankrollRef) ? bankrollRef * this.maxStakeFraction : Infinity;
+        // Never size blind: if no bankroll reference exists (live mode where
+        // the site balance was never read), approve NOTHING. Paper mode always
+        // has a reference via setPaperReference().
+        if (!Number.isFinite(bankrollRef)) return 0;
+        let cap = bankrollRef * this.maxStakeFraction;
 
         if (tier === 'MICRO') {
-            const microCap = Number.isFinite(bankrollRef)
-                ? Math.max(this.minStake, bankrollRef * this.microStakeFraction)
-                : this.minStake;
+            const microCap = Math.max(this.minStake, bankrollRef * this.microStakeFraction);
             cap = Math.min(cap, microCap);
         }
 
@@ -162,6 +170,9 @@ class Bankroll {
         this.rollDailyIfNeeded();
         if (this.daily.pnl <= -this.dailyLossLimit) {
             return { allowed: false, reason: 'daily loss limit reached' };
+        }
+        if (!this.hasReference() && !Number.isFinite(balance)) {
+            return { allowed: false, reason: 'no verified site balance yet — live bets need a known bankroll' };
         }
         const bal = Number.isFinite(balance) ? balance : this.balance;
         if (Number.isFinite(bal) && stake > bal) {

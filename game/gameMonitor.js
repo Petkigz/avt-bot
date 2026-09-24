@@ -64,6 +64,8 @@ class GameMonitor extends EventEmitter {
         this.lastBalance = null;    // last balance read from the game page
         this.currency = deps.currency || ''; // site currency, for balance scanning
         this.balanceScanCycle = 0;
+        this.balanceSeen = false;   // has ANY balance ever been read on this page
+        this.balanceWarned = false; // one-shot "balance never found" diagnostic
         this.seedEmitted = false;   // history-strip seed sent once per attach
         this.stripPath = null;      // content-discovered history strip (new Spribe layouts)
         this.stripAnnounced = false;
@@ -297,7 +299,16 @@ class GameMonitor extends EventEmitter {
             }
         }
         const balance = parseBalance(state.balanceText);
-        if (Number.isFinite(balance)) this.lastBalance = balance;
+        if (Number.isFinite(balance)) {
+            this.lastBalance = balance;
+            this.balanceSeen = true;
+        } else if (!this.balanceSeen && !this.balanceWarned && this.balanceScanCycle >= 60) {
+            this.balanceWarned = true;
+            logger.warn(
+                `${this.site}: no balance found on the game page yet — the Balance panel stays ` +
+                `empty and LIVE betting stays blocked there until it is read (paper mode is unaffected).`
+            );
+        }
         if (Number.isFinite(balance) && this.brain.bankroll) {
             this.brain.bankroll.setBalance(balance);
         }
@@ -772,14 +783,36 @@ class GameMonitor extends EventEmitter {
             try {
                 const text = await frame.evaluate((currency) => {
                     const nodes = document.querySelectorAll(
-                        '[class*="balance" i], [id*="balance" i], [data-test-id*="balance" i]'
+                        '[class*="balance" i], [id*="balance" i], [data-test-id*="balance" i], ' +
+                        '[class*="wallet" i], [class*="user-balance" i]'
                     );
-                    const rx = currency
-                        ? new RegExp(`(${currency}\\s*[\\d][\\d,]*(?:\\.\\d{1,2})?)`)
-                        : /([\d][\d,]*(?:\.\d{1,2})?)/;
+                    // Sites render currency many ways: "UGX 50,000", "USh 50,000",
+                    // "50 000 UGX", "Balance: 1,234.56". Pass 1 hunts a number
+                    // attached to a currency token (before OR after it, with space
+                    // or comma thousands); pass 2 falls back to any short
+                    // balance-ish text and lets the server-side parser strip the
+                    // letters and symbols.
+                    const tokens = currency === 'UGX'
+                        ? ['UGX', 'USh', 'UGX.', 'Shs']
+                        : (currency ? [currency] : []);
+                    if (tokens.length > 0) {
+                        const num = '([\\d][\\d, ]*(?:\\.\\d{1,2})?)';
+                        const tok = `(?:${tokens.join('|')})`;
+                        const rx = new RegExp(`(?:${tok}[.\\s]*${num})|(?:${num}[.\\s]*${tok})`);
+                        for (const el of nodes) {
+                            const m = ((el.textContent || '').trim()).match(rx);
+                            if (m) return (m[1] || m[2] || '').replace(/\s+/g, '');
+                        }
+                    } else {
+                        const rx = /([\d][\d, ]*(?:\.\d{1,2})?)/;
+                        for (const el of nodes) {
+                            const m = ((el.textContent || '').trim()).match(rx);
+                            if (m) return m[1].replace(/\s+/g, '');
+                        }
+                    }
                     for (const el of nodes) {
-                        const m = ((el.textContent || '').trim()).match(rx);
-                        if (m) return m[1];
+                        const t = (el.textContent || '').trim();
+                        if (t && t.length <= 40 && /\d/.test(t)) return t;
                     }
                     return null;
                 }, cur);

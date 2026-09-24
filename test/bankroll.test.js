@@ -97,3 +97,18 @@ test('paper reference bankroll ignores the real account balance', () => {
     // Stake sized against paper capital passes the balance gate
     assert.strictEqual(b.canBet(100).allowed, true);
 });
+
+test('approveStake and canBet refuse to act on an unknown bankroll (live safety)', () => {
+    const b = new Bankroll({ minStake: 100, maxStakeFraction: 0.02, microStakeFraction: 0.005 });
+    // No setBalance, no paper reference: bankroll unknown.
+    assert.strictEqual(b.hasReference(), false);
+    assert.strictEqual(b.approveStake(500, 'ARMED'), 0, 'ARMED must not size blind');
+    assert.strictEqual(b.approveStake(500, 'MICRO'), 0, 'MICRO must not size blind');
+    const gate = b.canBet(500);
+    assert.strictEqual(gate.allowed, false);
+    assert.match(gate.reason, /balance|bankroll/i);
+    // Paper reference (or a seen balance) restores normal sizing.
+    b.setPaperReference(10000);
+    assert.strictEqual(b.hasReference(), true);
+    assert.ok(b.approveStake(500, 'ARMED') > 0);
+});

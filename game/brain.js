@@ -314,6 +314,10 @@ class Brain {
         }
 
         // ---- Stake sizing: strategy progression -> bankroll policy ----
+        if (this.bankroll && !this.bankroll.hasReference()) {
+            reasons.push('no verified bankroll yet — waiting for the site balance to be read (required before any real bet)');
+            return this.finish(decision);
+        }
         if (this.pendingResult) {
             this.stakeCache = this.strategy.calculateNextBet(this.pendingResult);
             this.pendingResult = null;

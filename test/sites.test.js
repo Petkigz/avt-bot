@@ -100,3 +100,13 @@ test('login detection indicators are broad enough for regional builds', () => {
 test('betpawa.ug deep link is the verified casino URL', () => {
     assert.ok(getSite('betpawa.ug').gameUrl.includes('/casino/game/3187'));
 });
+
+test('selectorsFor honors a per-site balanceSelector override', () => {
+    const { selectorsFor, getSite } = require('../util/sites');
+    const fortebet = getSite('fortebet.ug');
+    const sel = selectorsFor(fortebet);
+    assert.ok(sel.BALANCE.includes('balance'), 'fortebet keeps its balance selector');
+    const betpawa = getSite('betpawa.ug');
+    const bsel = selectorsFor(betpawa);
+    assert.strictEqual(bsel.BALANCE, '.balance .amount');
+});

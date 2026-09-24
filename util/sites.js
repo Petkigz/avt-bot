@@ -115,7 +115,7 @@ const SITES = {
         gameUrl: 'https://www.fortebet.ug/aviator/game/real',
         loginFlow: 'manual', // bot waits for you to log in (once per profile)
         loginSelectors: BETPAWA_LOGIN, // generic hints; login is manual anyway
-        balanceSelector: '[class*="balance"]', // generic guess; refines once observed
+        balanceSelector: '[class*="balance"], [id*="balance"], [class*="wallet"]', // generic guess; refines once observed
         minStake: 100,
         selectorSet: 'spribe',
         notes: 'Log in once with your phone + PIN — the profile is remembered.'
@@ -151,7 +151,13 @@ function listSites() {
 }
 
 function selectorsFor(site) {
-    return SELECTOR_SETS[site.selectorSet] || SELECTOR_SETS.spribe;
+    const base = SELECTOR_SETS[site.selectorSet] || SELECTOR_SETS.spribe;
+    // Per-site override (fortebet + user-defined sites): a site-specific
+    // balance selector beats the generic set default when it differs.
+    if (site && site.balanceSelector && site.balanceSelector !== base.BALANCE) {
+        return { ...base, BALANCE: site.balanceSelector };
+    }
+    return base;
 }
 
 // ---------------------------------------------------------------------------
