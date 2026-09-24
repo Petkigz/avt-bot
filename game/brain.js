@@ -192,6 +192,7 @@ class Brain {
         // ---- Model confidence gate (+ volatility risk adjustment) ----
         let confidence = null;
         const adaptive = !!(this.strategy && this.strategy.adaptiveTarget) && this.predictor;
+        let adaptiveHitProb = null; // raw model P(hit) of the drawn target — sizes the stake
         if (adaptive) {
             // ADAPTIVE mode: the model picks this round's target from its
             // live distribution read instead of betting a fixed multiplier.
@@ -210,9 +211,12 @@ class Brain {
             }
             const pick = this.predictor.adaptiveTarget({
                 minTarget: this.strategy.adaptiveMin,
-                maxTarget: this.strategy.adaptiveMax
+                maxTarget: this.strategy.adaptiveMax,
+                minProb: this.config.RISK.ADAPTIVE_PROB_MIN,
+                maxProb: this.config.RISK.ADAPTIVE_PROB_MAX
             });
             decision.targetMultiplier = pick.target;
+            adaptiveHitProb = pick.confidence;
             confidence = pick.confidence;
             if (this.recalibrator && confidence !== null) {
                 confidence = this.recalibrator.adjust(confidence);
@@ -320,13 +324,29 @@ class Brain {
         // Confidence-proportional sizing: marginal-confidence entries bet
         // smaller, strong-confidence entries bet full — never below 50% of
         // the approved stake. Only applies when a confidence exists.
-        // (Adaptive mode: confidence is the hit probability of a variable
-        // target, not comparable against the fixed entry window — skipped.)
+        // (Adaptive mode has its own rule below: its confidence is the hit
+        // probability of a VARIABLE target, not comparable against the fixed
+        // entry window.)
         if (!adaptive && this.config.RISK.CONFIDENCE_SCALING && this.predictor && Number.isFinite(confidence)) {
             const base = this.predictor.baseEntryProbability;
             const span = Math.max(0.01, this.predictor.maxEntryProbability - base);
             const f = Math.min(1, Math.max(0, (confidence - base) / span));
             stake = Math.round(stake * (0.5 + 0.5 * f) * 100) / 100;
+        }
+
+        // ADAPTIVE stake sizing: the stake follows the model's own read of
+        // THIS bet — safe picks (small target, high P(hit)) stake near the
+        // approved amount, longshot picks (big target, low P(hit)) stake a
+        // reduced share, never below ADAPTIVE_MIN_STAKE_FRACTION of it. Uses
+        // the RAW hit probability: the recalibrator is trained on fixed-target
+        // predictions and would distort the variable-target scale.
+        if (adaptive && Number.isFinite(adaptiveHitProb)) {
+            const pMin = this.config.RISK.ADAPTIVE_PROB_MIN;
+            const pMax = this.config.RISK.ADAPTIVE_PROB_MAX;
+            const norm = Math.min(1, Math.max(0, (adaptiveHitProb - pMin) / Math.max(0.01, pMax - pMin)));
+            const minFrac = Math.min(1, Math.max(0, this.config.RISK.ADAPTIVE_MIN_STAKE_FRACTION));
+            const frac = minFrac + (1 - minFrac) * norm;
+            stake = Math.round(stake * frac * 100) / 100;
         }
 
         if (stake < this.strategy.minBet) {

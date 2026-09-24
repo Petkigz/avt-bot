@@ -934,6 +934,15 @@ async function main() {
                         // sizing, ledger resets and the UI reflect the switch.
                         strategyConfig = { ...preset };
                         pendingStrategyName = preset.name;
+                        // The sizing bankroll must track the SAME paper capital
+                        // the ledgers are reset to — otherwise stakes keep
+                        // getting capped by the PREVIOUS strategy's bankroll
+                        // (e.g. ADAPTIVE's 50,000 sim sized from MICRO's 10,000).
+                        if (config.MODE.PAPER) {
+                            const paperCapital = config.MODE.PAPER_BANKROLL > 0
+                                ? config.MODE.PAPER_BANKROLL : preset.initialBet * 100;
+                            bankroll.setPaperReference(paperCapital);
+                        }
                         // The paper simulation restarts on the NEW strategy's
                         // capital and stake ("assume the capital from the
                         // selected strategy").

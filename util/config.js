@@ -132,7 +132,16 @@ const config = {
         // std-dev (heavy tails), so only a recent-window spike well above the
         // stream's own long-run norm demands extra entry confidence.
         VOLATILITY_SPIKE_RATIO: num(process.env.VOLATILITY_SPIKE_RATIO, 1.5),
-        VOLATILITY_CONFIDENCE_PENALTY: num(process.env.VOLATILITY_CONFIDENCE_PENALTY, 0.07)
+        VOLATILITY_CONFIDENCE_PENALTY: num(process.env.VOLATILITY_CONFIDENCE_PENALTY, 0.07),
+        // ADAPTIVE strategy: the stake follows the model's hit probability for
+        // the target it drew this round — safe picks stake near the approved
+        // amount, longshots stake down to this fraction of it (never below the
+        // site's minimum stake).
+        ADAPTIVE_MIN_STAKE_FRACTION: num(process.env.ADAPTIVE_MIN_STAKE_FRACTION, 0.25),
+        // Probability window ADAPTIVE draws its target from (shared by the
+        // target picker and the stake scaler — keep them in one place).
+        ADAPTIVE_PROB_MIN: num(process.env.ADAPTIVE_PROB_MIN, 0.08),
+        ADAPTIVE_PROB_MAX: num(process.env.ADAPTIVE_PROB_MAX, 0.75)
     },
 
     MODE: {

@@ -401,3 +401,34 @@ test('volatility gate fires only on a genuine recent spike above the long-run no
         'test setup: recent window must register as a spike');
     assert.strictEqual(brain.volatilityPenalty(), config.RISK.VOLATILITY_CONFIDENCE_PENALTY);
 });
+
+test('ADAPTIVE stake scales with the hit probability of the drawn target', () => {
+    const { brain, strategy, predictor } = makeBrain({
+        strategyOverrides: {
+            adaptiveTarget: true, adaptiveMin: 1.3, adaptiveMax: 30,
+            initialBet: 1000, maxBet: 5000, minBet: 100
+        }
+    });
+    warmUp(brain, config.RISK.MIN_ROUNDS_OBSERVE, 2.0);
+    assert.strictEqual(brain.tier, 'MICRO');
+
+    // Stub the target picker: same target, different model hit probabilities.
+    const pick = (confidence) => () => ({ target: 2.5, confidence, p: confidence, adaptive: true });
+    predictor.adaptiveTarget = pick(0.72); // safe-ish pick
+    const safe = brain.decide({ bettingWindow: true, balance: 50000 });
+    predictor.adaptiveTarget = pick(0.12); // longshot pick
+    const longshot = brain.decide({ bettingWindow: true, balance: 50000 });
+
+    assert.strictEqual(safe.shouldBet, true);
+    assert.strictEqual(longshot.shouldBet, true);
+    assert.ok(safe.stake > longshot.stake,
+        `safe-pick stake ${safe.stake} should exceed longshot stake ${longshot.stake}`);
+    assert.ok(longshot.stake >= strategy.minBet,
+        'longshot stake must never drop below the site minimum stake');
+    // Bounds: never above the bankroll-approved stake, fraction never below the floor.
+    const approved = brain.bankroll.approveStake(1000, brain.tier);
+    assert.ok(safe.stake <= approved, `stake ${safe.stake} must not exceed approved ${approved}`);
+    assert.ok(longshot.stake >= approved * config.RISK.ADAPTIVE_MIN_STAKE_FRACTION - 0.01 ||
+              longshot.stake === strategy.minBet,
+        'longshot stake respects the adaptive floor (or the min-stake floor)');
+});

@@ -352,9 +352,12 @@ produced which data — while the shared model learns from all of it.
 > **ADAPTIVE** is different: instead of a fixed target it asks the model for
 > the stream's current crash distribution each round and DRAWS a target from
 > it — a hot tail produces 7x/12x/30x picks, a cold tail keeps it near 1.3x.
-> It exercises the model's distribution read, but it does NOT predict
-> individual rounds: big targets are longshots, and the house edge makes the
-> EV negative at every target. Use it to watch how the model sizes ambition.
+> The STAKE is adaptive too: it scales with the model's hit probability for
+> the target it drew — safe picks stake near the approved amount, longshots
+> stake down (never below the site minimum). It exercises the model's
+> distribution read, but it does NOT predict individual rounds: big targets
+> are longshots, and the house edge makes the EV negative at every target.
+> Use it to watch how the model sizes ambition.
 
 > **Caution-tuned for BetPawa by default:** 150-round warm-up, 0.60 entry
 > confidence, 1.5% max stake fraction, UGX 3,000 session / UGX 6,000 daily loss
