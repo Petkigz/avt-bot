@@ -14,7 +14,9 @@
     "walkforward": "node scripts/walk-forward.js",
     "feature:eval": "node scripts/feature-eval.js",
     "error:analysis": "node scripts/error-analysis.js",
-    "train:model": "node scripts/train-model.js"
+    "train:model": "node scripts/train-model.js",
+    "tournament": "node scripts/model-tournament.js",
+    "fair:audit": "node scripts/fair-audit.js"
   },
   "engines": {
     "node": ">=18"

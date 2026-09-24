@@ -125,6 +125,174 @@ function fitPlatt(probs, outcomes, opts = {}) {
     return { a, b, calibrate };
 }
 
+// ---------------------------------------------------------------------------
+// Gradient-boosted depth-2 trees (hand-rolled, log loss) — the non-linear,
+// feature-interacting contestant of the model tournament. Returns the forest
+// in JSON-safe form so a winning model can be serialized and deployed live.
+// ---------------------------------------------------------------------------
+
+function fitBoosting(X, y, colIdx, opts = {}) {
+    const { trees = 50, lr = 0.1, minChild = 10 } = opts;
+    const n = X.length;
+    const d = colIdx.length;
+    if (n < 60 || d === 0) return null;
+
+    // Standardization from training data only — never peek at the test fold.
+    const mean = new Array(d).fill(0);
+    const std = new Array(d).fill(0);
+    for (let j = 0; j < d; j++) {
+        let s = 0;
+        for (let i = 0; i < n; i++) s += X[i][colIdx[j]];
+        mean[j] = s / n;
+        let v = 0;
+        for (let i = 0; i < n; i++) v += (X[i][colIdx[j]] - mean[j]) ** 2;
+        std[j] = Math.sqrt(v / n) || 1;
+    }
+    const zOf = (row, j) => (row[colIdx[j]] - mean[j]) / std[j];
+
+    // Split candidates: terciles of each standardized feature (train only).
+    const thresholds = [];
+    for (let j = 0; j < d; j++) {
+        const vals = [];
+        for (let i = 0; i < n; i++) vals.push(zOf(X[i], j));
+        vals.sort((a, b) => a - b);
+        thresholds.push([vals[Math.floor(n / 3)], vals[Math.floor((2 * n) / 3)]]);
+    }
+
+    const sigmoid = (s) => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, s))));
+    const base = Math.max(1e-6, Math.min(1 - 1e-6, y.reduce((s, v) => s + v, 0) / n));
+    const f0 = Math.log(base / (1 - base));
+    const f = new Array(n).fill(f0);
+    const forest = [];
+
+    const sseOf = (idx, resid) => {
+        let s = 0, sq = 0;
+        for (const i of idx) { s += resid[i]; sq += resid[i] * resid[i]; }
+        return { s, sse: sq - (s * s) / idx.length };
+    };
+    const allIdx = [];
+    for (let i = 0; i < n; i++) allIdx.push(i);
+
+    for (let m = 0; m < trees; m++) {
+        const resid = new Array(n);
+        for (let i = 0; i < n; i++) resid[i] = y[i] - sigmoid(f[i]);
+        const fitNode = (idx, depth) => {
+            const here = sseOf(idx, resid);
+            const leafV = here.s / idx.length;
+            if (depth >= 2 || idx.length < 2 * minChild) return { v: leafV };
+            let best = null;
+            for (let j = 0; j < d; j++) {
+                for (const thr of thresholds[j]) {
+                    const L = [], R = [];
+                    for (const i of idx) (zOf(X[i], j) <= thr ? L : R).push(i);
+                    if (L.length < minChild || R.length < minChild) continue;
+                    const sse = sseOf(L, resid).sse + sseOf(R, resid).sse;
+                    const gain = here.sse - sse;
+                    if (gain > 1e-12 && (!best || gain > best.gain)) best = { j, thr, L, R, gain };
+                }
+            }
+            if (!best) return { v: leafV };
+            return { j: best.j, thr: best.thr, l: fitNode(best.L, depth + 1), r: fitNode(best.R, depth + 1) };
+        };
+        const tree = fitNode(allIdx, 0);
+        forest.push(tree);
+        const predictNode = (node, row) =>
+            (node.v !== undefined) ? node.v
+                : (zOf(row, node.j) <= node.thr ? predictNode(node.l, row) : predictNode(node.r, row));
+        for (let i = 0; i < n; i++) f[i] += lr * predictNode(tree, X[i]);
+    }
+
+    const predictNodeOf = (node, row) =>
+        (node.v !== undefined) ? node.v
+            : (zOf(row, node.j) <= node.thr ? predictNodeOf(node.l, row) : predictNodeOf(node.r, row));
+    const predict = (row) => {
+        let s = f0;
+        for (const tree of forest) s += lr * predictNodeOf(tree, row);
+        return sigmoid(s);
+    };
+    return { predict, mean, std, f0, lr, forest };
+}
+
+function boostingToJson(model, colIdx, featureNames, meta = {}, platt = null) {
+    return {
+        kind: 'boosting-v1',
+        mean: model.mean, std: model.std, f0: model.f0, lr: model.lr,
+        forest: model.forest, colIdx, featureNames,
+        platt: platt ? { a: platt.a, b: platt.b } : null,
+        meta
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Pattern-map model (tournament contestant): mined k-symbol sequences with a
+// live-proven record. Serialized as win/used counts; predict() falls back to
+// the base rate for any sequence without enough evidence — an unproven
+// pattern must never fake confidence.
+// ---------------------------------------------------------------------------
+
+function patternModelToJson({ window, base, map }, featureNames, meta = {}) {
+    return { kind: 'pattern-v1', window, base, map, featureNames, meta };
+}
+
+// ---------------------------------------------------------------------------
+// Universal model loading: the Brain calls .predict(featureObject) regardless
+// of which contestant won the tournament. Missing features impute to the
+// training mean; calibration (if saved) is applied last.
+// ---------------------------------------------------------------------------
+
+function modelFromJson(json) {
+    if (!json || typeof json !== 'object') return null;
+    if (json.kind === 'logistic-v1') return logisticFromJson(json);
+
+    const EPS = 1e-6;
+    const calibrate = json.platt && Number.isFinite(json.platt.a) && Number.isFinite(json.platt.b)
+        ? (p) => {
+            const c = Math.min(1 - EPS, Math.max(EPS, p));
+            const z = Math.log(c / (1 - c));
+            return 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, json.platt.a * z + json.platt.b))));
+        }
+        : null;
+
+    if (json.kind === 'boosting-v1') {
+        const { mean, std, f0, lr, forest, colIdx, featureNames } = json;
+        const sigmoid = (s) => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, s))));
+        const raw = (featureObj) => {
+            const row = colIdx.map((_, j) => {
+                const v = Number(featureObj[featureNames[colIdx[j]]]);
+                return Number.isFinite(v) ? v : mean[j];
+            });
+            const zOf = (j) => (row[j] - mean[j]) / std[j];
+            const predictNode = (node) =>
+                (node.v !== undefined) ? node.v
+                    : (zOf(node.j) <= node.thr ? predictNode(node.l) : predictNode(node.r));
+            let s = f0;
+            for (const tree of forest) s += lr * predictNode(tree);
+            return sigmoid(s);
+        };
+        const predict = calibrate ? (o) => calibrate(raw(o)) : raw;
+        return { predict, rawPredict: raw, calibrate, meta: json.meta || {}, featureNames };
+    }
+
+    if (json.kind === 'pattern-v1') {
+        const { window, base, map } = json;
+        const raw = (featureObj) => {
+            // Symbols come from last_<k> features: last_3 is OLDEST, last_1 newest.
+            const syms = [];
+            for (let k = window; k >= 1; k--) {
+                const v = Number(featureObj[`last_${k}`]);
+                if (!Number.isFinite(v)) return base;
+                syms.push(v < 1.5 ? 'L' : v < 2.5 ? 'M' : 'H');
+            }
+            const rec = map[syms.join('')];
+            if (!rec || !(rec.used >= 8)) return base;
+            return rec.wins / rec.used;
+        };
+        const predict = calibrate ? (o) => calibrate(raw(o)) : raw;
+        return { predict, rawPredict: raw, calibrate, meta: json.meta || {}, featureNames: json.featureNames || [] };
+    }
+    return null;
+}
+
 /** Serialize a fitted model together with its feature-column mapping. */
 function logisticToJson(model, colIdx, featureNames, meta = {}, platt = null) {
     return {
@@ -332,15 +500,32 @@ function saveFeatureModel(dataDir, siteId, json) {
 }
 function loadFeatureModel(dataDir, siteId) {
     try {
-        return logisticFromJson(JSON.parse(fs.readFileSync(featureModelPath(dataDir, siteId), 'utf8')));
+        return modelFromJson(JSON.parse(fs.readFileSync(featureModelPath(dataDir, siteId), 'utf8')));
+    } catch (error) { return null; }
+}
+
+function tournamentVerdictPath(dataDir, siteId) {
+    return path.join(dataDir, `tournament-verdict-${String(siteId).replace(/[^a-z0-9._-]/gi, '_')}.json`);
+}
+function writeTournamentVerdict(dataDir, siteId, verdict) {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(tournamentVerdictPath(dataDir, siteId), JSON.stringify({ ...verdict, ts: Date.now() }, null, 2));
+}
+function readTournamentVerdict(dataDir, siteId) {
+    try {
+        return JSON.parse(fs.readFileSync(tournamentVerdictPath(dataDir, siteId), 'utf8'));
     } catch (error) { return null; }
 }
 
 module.exports = {
     fitLogistic,
     fitPlatt,
+    fitBoosting,
     logisticToJson,
     logisticFromJson,
+    boostingToJson,
+    patternModelToJson,
+    modelFromJson,
     brierScore,
     brierSkill,
     bootstrapSkillCi,
@@ -352,5 +537,7 @@ module.exports = {
     writeModelVerdict,
     readModelVerdict,
     saveFeatureModel,
-    loadFeatureModel
+    loadFeatureModel,
+    writeTournamentVerdict,
+    readTournamentVerdict
 };

@@ -31,7 +31,7 @@ const {
     analyze: pfAnalyze
 } = require('./game/provablyFair');
 const Bankroll = require('./game/bankroll');
-const { readModelVerdict, loadFeatureModel, modelStaleness } = require('./game/modelLayer');
+const { readModelVerdict, loadFeatureModel, modelStaleness, readTournamentVerdict } = require('./game/modelLayer');
 const { runSite: trainModelForSite, rowsForSite } = require('./scripts/train-model');
 const Brain = require('./game/brain');
 const CsvLog = require('./util/csvLog');
@@ -844,7 +844,9 @@ async function main() {
                 }
                 return pfLogs.get(safe);
             };
-            const scanProvablyFair = async (accountId) => {
+            // opts: { auto } — auto scans run on a timer and stay silent unless
+            // they actually capture fair-panel content (no log spam).
+            const scanProvablyFair = async (accountId, opts = {}) => {
                 const s = (accountId && sessions.get(accountId)) || sessions.values().next().value;
                 if (!s || !s.page || s.page.isClosed()) return { error: 'no open session — launch one first' };
                 let frames = [];
@@ -870,12 +872,26 @@ async function main() {
                 }
                 const analysis = pfAnalyze(log.readAll());
                 if (found.length === 0) {
-                    logger.info(`Provably-fair scan [${siteId}]: no fair-panel content visible — open the shield/"Provably Fair" panel inside the game, then scan again`);
+                    if (!opts.auto) logger.info(`Provably-fair scan [${siteId}]: no fair-panel content visible — open the shield/"Provably Fair" panel inside the game, then scan again`);
                 } else {
-                    logger.info(`Provably-fair scan [${siteId}]: captured ${found.length} frame(s), ${analysis.distinctHex64} distinct 64-hex values; anomalies: ${analysis.anomalies.length || 'none'}`);
+                    logger.info(`Provably-fair scan [${siteId}${opts.auto ? ' (auto)' : ''}]: captured ${found.length} frame(s), ${analysis.distinctHex64} distinct 64-hex values; anomalies: ${analysis.anomalies.length || 'none'}`);
                 }
                 return { site: siteId, framesScanned: frames.length, found, analysis };
             };
+
+            // ---- Automatic provably-fair capture (option 3, live wiring) ----
+            // While a session is open, sweep the game frames periodically for
+            // fair-panel evidence (seeds / hashes / nonces). Silent and
+            // best-effort: a scan that finds nothing just moves on, so this
+            // never disturbs betting. Evidence accumulates in
+            // data/provablyfair-<site>.jsonl and feeds "npm run fair:audit".
+            const PF_AUTO_INTERVAL_MS = 5 * 60 * 1000;
+            const pfAutoTimer = setInterval(() => {
+                const hasLiveSession = [...sessions.values()].some((ss) => ss && ss.page && !ss.page.isClosed());
+                if (!hasLiveSession) return;
+                scanProvablyFair(null, { auto: true }).catch(() => { /* best-effort */ });
+            }, PF_AUTO_INTERVAL_MS);
+            pfAutoTimer.unref();
 
             const dashboardDeps = {
                 accounts,
@@ -1345,6 +1361,14 @@ async function main() {
             logger.info(`Feature model [${key}]: ${modelVerdict.verdict}${modelVerdict.stale ? ' (STALE — parked)' : ''} (${modelVerdict.reason}) — discipline-only gates remain in force`);
         } else {
             logger.info(`Feature model [${key}]: no training verdict yet — run "npm run train:model" after observation grows`);
+        }
+        // Tournament audit trail: "npm run tournament" pits every model family
+        // against each other out-of-sample and writes data/tournament-verdict-<site>.json.
+        // Its winner (if any) is deployed THROUGH the normal model-verdict path above;
+        // here we just surface the last tournament result so the startup log is complete.
+        const tourVerdict = readTournamentVerdict(config.DATA_DIR, key);
+        if (tourVerdict && tourVerdict.verdict) {
+            logger.info(`Model tournament [${key}]: last run → ${tourVerdict.verdict}${tourVerdict.winner ? ` (winner: ${tourVerdict.winner})` : ''} — ${tourVerdict.reason || ''}`.trim());
         }
 
         let engineRef = null; // lets the brain read this engine's live verdict
