@@ -81,18 +81,28 @@ test('setHistory recomputes the tail streak', () => {
     assert.strictEqual(p.consecutiveCold, 3);
 });
 
-test('model state persists across restarts', () => {
+test('model state persists across restarts and rescales correctly across target changes', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'predictor-'));
     const file = path.join(dir, 'model.json');
 
-    const p1 = Predictor.load(file, { minEntryProbability: 0.55, maxEntryProbability: 0.85 });
-    p1.recordOutcome(false);
-    p1.recordOutcome(false);
-    const savedThreshold = p1.entryProbability;
+    // 1. Saved at 1.3x baseline
+    const p1 = Predictor.load(file, { targetMultiplier: 1.3, minEntryProbability: 0.55, maxEntryProbability: 0.85 });
+    p1.recordOutcome(false); // tightened 0.55 -> 0.57
+    p1.recordOutcome(false); // tightened 0.57 -> 0.59
+    assert.ok(Math.abs(p1.entryProbability - 0.59) < 1e-9);
+    p1.save();
 
-    const p2 = Predictor.load(file, { minEntryProbability: 0.55, maxEntryProbability: 0.85 });
-    assert.strictEqual(p2.entryProbability, savedThreshold);
+    // 2. Loaded at same target: preserves exact tightened threshold
+    const p2 = Predictor.load(file, { targetMultiplier: 1.3, minEntryProbability: 0.55, maxEntryProbability: 0.85 });
+    assert.ok(Math.abs(p2.entryProbability - 0.59) < 1e-9);
     assert.strictEqual(p2.settledBets.losses, 2);
+
+    // 3. Loaded at a different target (2.0x): must NOT import 0.59 (which is above 2x ceiling 0.5525)
+    // It should rescale the tightness fraction ((0.59-0.55)/0.30 = 0.133) into the 2x window.
+    const p3 = Predictor.load(file, { targetMultiplier: 2.0, minEntryProbability: 0.55, maxEntryProbability: 0.85 });
+    assert.ok(p3.entryProbability < 0.40, `expected rescaled entryProbability near ~0.38, got ${p3.entryProbability}`);
+    assert.ok(p3.entryProbability >= p3.baseEntryProbability);
+
     fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -165,9 +175,44 @@ test('retarget() rescales thresholds and re-evaluates the regime streak', () => 
     assert.ok(Math.abs(p.baseEntryProbability - 0.55 * 0.65) < 1e-9);
     assert.strictEqual(p.entryProbability, p.baseEntryProbability);
     assert.strictEqual(p.consecutiveCold, 3);
-    assert.strictEqual(p.paused, true, 'three sub-2x crashes must trip the loss-streak guard');
+    // The guard is RECALIBRATED for the new target: at 2x losses are the norm
+    // (~50%), so 3 cold rounds are noise, not a pause-worthy streak — the
+    // effective limit widens (3 -> 5) instead of pinning the engine silent.
+    assert.ok(p.effectiveColdLimit > p.coldStreakLimit, 'high targets widen the guard');
+    assert.strictEqual(p.paused, false, 'widened 2x guard must not trip on 3 cold rounds');
+    // Five consecutive sub-2x rounds DO trip the recalibrated guard.
+    p.addRound(1.4);
+    p.addRound(1.2);
+    assert.strictEqual(p.consecutiveCold, 5);
+    assert.strictEqual(p.paused, true, 'five sub-2x crashes must trip the widened guard');
+    // Retargeting back to a low target restores the configured limit and
+    // re-judges the streak against the new target (1.4/1.5 are warm at 1.3x).
+    p.retarget(1.3);
+    assert.strictEqual(p.effectiveColdLimit, p.coldStreakLimit);
+    assert.strictEqual(p.paused, false);
     // History is target-independent and must survive the retarget.
-    assert.strictEqual(p.history.length, 5);
+    assert.strictEqual(p.history.length, 7);
+});
+
+test('loss-streak guard limit scales with high targets (no permanent silence)', () => {
+    // Low targets: the configured limit applies UNCHANGED (calibration zone).
+    const p13 = makePredictor({ targetMultiplier: 1.3 });
+    assert.strictEqual(p13.effectiveColdLimit, p13.coldStreakLimit);
+    const p15 = makePredictor({ targetMultiplier: 1.5 });
+    assert.strictEqual(p15.effectiveColdLimit, p15.coldStreakLimit);
+    // 2x: losses happen ~half the time, so 3-in-a-row is ordinary noise —
+    // the limit widens to keep the guard's trigger frequency meaningful.
+    const p20 = makePredictor({ targetMultiplier: 2.0 });
+    assert.strictEqual(p20.effectiveColdLimit, 5);
+    // Extreme targets are capped at 3x the configured limit.
+    const p10 = makePredictor({ targetMultiplier: 10 });
+    assert.strictEqual(p10.effectiveColdLimit, p10.coldStreakLimit * 3);
+    // And the widened guard still pauses on a REAL cold streak.
+    p20.setHistory([1.1, 1.2, 1.3, 1.4, 1.5]);
+    assert.strictEqual(p20.paused, true, 'five sub-2x crashes must still trip the guard');
+    // One warm round resumes it (recovery count unchanged).
+    p20.addRound(2.5);
+    assert.strictEqual(p20.paused, false);
 });
 
 test('blended probability falls back to plain estimate on short history', () => {

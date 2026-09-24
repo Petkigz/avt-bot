@@ -32,6 +32,14 @@ class Predictor {
         this.applyTargetScaling();
         this.coldStreakLimit = options.coldStreakLimit ?? 3;
         this.coldRecoveryCount = options.coldRecoveryCount ?? 1;
+        // The CONFIGURED limit is calibrated for low targets (<=1.5x), where
+        // "N losses in a row" is genuinely rare. Above 1.5x losses become the
+        // norm (a 2x bet loses ~half the time), so the same fixed N would keep
+        // the engine paused almost permanently — silence that looks like
+        // discipline but is really a calibration mismatch. The EFFECTIVE limit
+        // widens with the target so the guard triggers about as often as it
+        // does at 1.5x (capped at 3x the configured value).
+        this.effectiveColdLimit = this._scaledColdLimit();
         this.tightenStep = options.tightenStep ?? 0.02;
         this.loosenStep = options.loosenStep ?? 0.01;
         // Silence breaker: after this many rounds without a SETTLED bet the
@@ -67,6 +75,23 @@ class Predictor {
     }
 
     /**
+     * Target-aware loss-streak limit (see the constructor note). The trigger
+     * probability the configured limit produces at 1.5x is the anchor; higher
+     * targets get a wider limit that keeps the trigger probability similar.
+     * The loss rate comes from the fair crash tail P(X>=x)=(1-r)/x with the
+     * ~5% operator edge measured on the live streams — only the TARGET feeds
+     * it, so behavior stays deterministic and data-independent.
+     */
+    _scaledColdLimit() {
+        const t = this.targetMultiplier;
+        if (!Number.isFinite(t) || t <= 1.5) return this.coldStreakLimit;
+        const pLoss = (x) => Math.min(0.95, Math.max(0.05, 1 - 0.95 / x));
+        const anchor = Math.pow(pLoss(1.5), this.coldStreakLimit);
+        const scaled = Math.ceil(Math.log(anchor) / Math.log(pLoss(t)));
+        return Math.max(this.coldStreakLimit, Math.min(scaled, this.coldStreakLimit * 3));
+    }
+
+    /**
      * Switch to a new target multiplier at runtime (dashboard strategy
      * switch). Rescales the entry bounds, re-bases the adaptive threshold,
      * and re-evaluates the loss-streak regime against the new target.
@@ -78,6 +103,7 @@ class Predictor {
         this.targetMultiplier = targetMultiplier;
         this.applyTargetScaling();
         this.entryProbability = this.baseEntryProbability;
+        this.effectiveColdLimit = this._scaledColdLimit();
         this._recomputeTailStreak();
         logger.info(
             `Model retargeted to ${this.targetMultiplier}x ` +
@@ -99,7 +125,7 @@ class Predictor {
                 this.consecutiveWarm++;
             }
         }
-        this.paused = this.consecutiveCold >= this.coldStreakLimit;
+        this.paused = this.consecutiveCold >= this.effectiveColdLimit;
     }
 
     // ------------------------------------------------------------------
@@ -111,10 +137,27 @@ class Predictor {
             if (file && fs.existsSync(file)) {
                 const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
                 if (Number.isFinite(saved.entryProbability)) {
-                    predictor.entryProbability = Math.min(
-                        Math.max(saved.entryProbability, predictor.baseEntryProbability),
-                        predictor.maxEntryProbability
-                    );
+                    // Target-aware restoration: if the target matches, restore
+                    // the threshold directly (clamped to [base, max]). If the
+                    // target changed (e.g. running 2x after a 1.3x session),
+                    // rescale the tightness fraction (0..1) to the new target's
+                    // window — never blindly import a 1.3x threshold (0.55)
+                    // into a 2x engine where 0.55 is unreachable.
+                    if (Number.isFinite(saved.targetMultiplier) &&
+                        Math.abs(saved.targetMultiplier - predictor.targetMultiplier) < 1e-4) {
+                        predictor.entryProbability = Math.min(
+                            Math.max(saved.entryProbability, predictor.baseEntryProbability),
+                            predictor.maxEntryProbability
+                        );
+                    } else if (Number.isFinite(saved.targetMultiplier) && saved.targetMultiplier > 1) {
+                        const savedBase = (options.minEntryProbability ?? 0.55) * Math.min(1, 1.3 / saved.targetMultiplier);
+                        const savedMax = (options.maxEntryProbability ?? 0.85) * Math.min(1, 1.3 / saved.targetMultiplier);
+                        const span = Math.max(0.01, savedMax - savedBase);
+                        const tightness = Math.min(1, Math.max(0, (saved.entryProbability - savedBase) / span));
+                        predictor.entryProbability = predictor.baseEntryProbability +
+                            tightness * (predictor.maxEntryProbability - predictor.baseEntryProbability);
+                    }
+                    // Legacy file without targetMultiplier: keep predictor.baseEntryProbability
                 }
                 predictor.consecutiveCold = saved.consecutiveCold | 0;
                 predictor.consecutiveWarm = saved.consecutiveWarm | 0;
@@ -138,6 +181,7 @@ class Predictor {
         try {
             fs.mkdirSync(path.dirname(this.file), { recursive: true });
             fs.writeFileSync(this.file, JSON.stringify({
+                targetMultiplier: this.targetMultiplier,
                 entryProbability: this.entryProbability,
                 consecutiveCold: this.consecutiveCold,
                 consecutiveWarm: this.consecutiveWarm,
@@ -175,7 +219,7 @@ class Predictor {
         if (crash < target) {
             this.consecutiveCold++;
             this.consecutiveWarm = 0;
-            if (!this.paused && this.consecutiveCold >= this.coldStreakLimit) {
+            if (!this.paused && this.consecutiveCold >= this.effectiveColdLimit) {
                 this.paused = true;
                 logger.warn(
                     `Model: ${this.consecutiveCold} consecutive crashes below ${target}x — ` +
@@ -415,7 +459,7 @@ class Predictor {
      *  it is a risk rule that pauses betting through bad runs. */
     regime() {
         if (this.paused) return 'cold';
-        if (this.consecutiveCold >= Math.max(1, this.coldStreakLimit - 1)) return 'cooling';
+        if (this.consecutiveCold >= Math.max(1, this.effectiveColdLimit - 1)) return 'cooling';
         if (this.consecutiveWarm >= 2) return 'hot';
         return 'neutral';
     }
@@ -452,13 +496,16 @@ class Predictor {
                 regime: this.regime()
             };
         }
-        // Uncertainty guard: with sparse/noisy recent data the Wilson lower
-        // bound must still sit near the threshold — otherwise skip the round.
+        // Uncertainty guard: with sparse or weak recent data the Wilson lower
+        // bound must still sit near the baseline threshold — otherwise skip
+        // the round. Compared against baseEntryProbability (not the tightened
+        // entryProbability) so normal sampling variance does not double-penalize
+        // an engine whose point estimate already meets the tightened bar.
         const lower = this.wilsonLower(this.targetMultiplier);
-        if (lower !== null && lower + this.wilsonCushion < this.entryProbability) {
+        if (lower !== null && lower + this.wilsonCushion < this.baseEntryProbability) {
             return {
                 allowed: false,
-                reason: `confidence floor ${lower.toFixed(2)} too uncertain (needs ≥ ${(this.entryProbability - this.wilsonCushion).toFixed(2)})`,
+                reason: `confidence floor ${lower.toFixed(2)} too uncertain (needs ≥ ${(this.baseEntryProbability - this.wilsonCushion).toFixed(2)})`,
                 probability,
                 regime: this.regime()
             };

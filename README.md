@@ -430,6 +430,11 @@ and brain — so one game's rounds can never pollute another's:
    honestly: this is a RISK RULE for bad runs, not a statistical regime
    detector — k low crashes in an independent stream are not evidence the
    distribution changed. It remains the primary loss-avoidance mechanism.
+   The limit is calibrated for targets ≤ 1.5x, where "3 losses in a row" is
+   rare (~2% of windows). Above 1.5x losses become the norm (a 2x bet loses
+   ~half the time), so the guard widens automatically — keeping its trigger
+   frequency roughly constant instead of pausing a high-target strategy
+   almost permanently (capped at 3x the configured limit).
 5. **Adaptive risk gating (not predictive learning)** — each settled bet
    nudges the entry threshold: losses tighten it (bet less often), wins
    loosen it slightly. Adjustments are bounded
