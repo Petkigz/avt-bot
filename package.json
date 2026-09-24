@@ -16,7 +16,9 @@
     "error:analysis": "node scripts/error-analysis.js",
     "train:model": "node scripts/train-model.js",
     "tournament": "node scripts/model-tournament.js",
-    "fair:audit": "node scripts/fair-audit.js"
+    "fair:audit": "node scripts/fair-audit.js",
+    "research:dependence": "node scripts/research-dependence.js",
+    "research:distribution": "node scripts/research-distribution.js"
   },
   "engines": {
     "node": ">=18"

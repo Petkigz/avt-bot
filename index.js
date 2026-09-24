@@ -1770,6 +1770,15 @@ async function main() {
             );
         });
 
+        monitor.on('roundTrace', (trace) => {
+            const safe = safeSiteId(monitor.site);
+            const traceFile = path.join(config.DATA_DIR, `traces-${safe}.jsonl`);
+            try {
+                fs.mkdirSync(config.DATA_DIR, { recursive: true });
+                fs.appendFileSync(traceFile, `${JSON.stringify(trace)}\n`);
+            } catch (error) { /* non-fatal */ }
+        });
+
         monitor.on('roundEnded', (d) => {
             database.saveRound(d.crash);
             // The monitor already appended the round to this site's own store;

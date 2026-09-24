@@ -5,6 +5,7 @@ const BettingStrategy = require('./strategies');
 const StatsTracker = require('./statsTracker');
 const BetManager = require('./betManager');
 const FrameHelper = require('../util/frameHelper');
+const { reconcileStrip } = require('./stripReconciler');
 const { parseBalance } = require('../util/balance');
 const logger = require('../util/logger');
 
@@ -72,6 +73,10 @@ class GameMonitor extends EventEmitter {
         this.stripLogged = false;
         this.prevBubbles = null;    // for auto-detecting which end of the strip is newest
         this.newestEnd = null;      // 'head' | 'tail' once detected
+        this.prevStripNorm = null;  // previous normalized strip for reconciliation
+        this.telemetry = { roundsSeen: 0, roundsRecovered: 0, roundsPossiblyMissed: 0 };
+        this.currentFlightTrace = [];
+        this.roundStartTime = null;
         this.emptyStripCycles = 0;
         this.stuckLatest = null;
         this.stuckCycles = 0;
@@ -243,16 +248,33 @@ class GameMonitor extends EventEmitter {
             return;
         }
 
-        // ---- Round-end detection / baseline ----
+        // ---- Round-end detection via Strip Reconciliation ----
+        // Reconciles the full strip against the previous poll to guarantee
+        // that intermediate rounds are never skipped during quick crashes.
         if (this.lastBubble === null) {
             this.lastBubble = latest;
+            this.prevStripNorm = [...bubblesNorm];
             if (this.multiplierHistory.length === 0) {
                 this.multiplierHistory = bubblesNorm.slice(0, this.historySize);
                 logger.info(`Seeded session history from payouts strip: [${this.multiplierHistory.join(', ')}]`);
             }
             logger.info(`Baseline crash value: ${latest}x`);
-        } else if (latest !== this.lastBubble) {
-            this.detectRoundEnd(latest, state);
+        } else {
+            const rec = reconcileStrip(this.prevStripNorm, bubblesNorm);
+            this.prevStripNorm = [...bubblesNorm];
+            if (rec.newRounds.length > 0) {
+                if (rec.recoveredCount > 0) {
+                    this.telemetry.roundsRecovered += rec.recoveredCount;
+                    logger.info(`Strip reconciliation recovered ${rec.recoveredCount} intermediate round(s) between polls: [${rec.newRounds.slice(0, -1).join(', ')}]`);
+                }
+                if (!rec.overlapped) {
+                    this.telemetry.roundsPossiblyMissed++;
+                    logger.warn(`History strip rolled over without overlap (~${bubblesNorm.length}+ rounds elapsed)`);
+                }
+                for (const crash of rec.newRounds) {
+                    this.detectRoundEnd(crash, state);
+                }
+            }
         }
 
         // ---- Selector-drift alarm (fail LOUDLY, not silently) ----
@@ -270,7 +292,7 @@ class GameMonitor extends EventEmitter {
             }
         }
 
-        // ---- In-flight detection + flight-end tracking ----
+        // ---- In-flight detection + flight trajectory tracking ----
         const inflight =
             (Number.isFinite(state.liveMultiplier) && state.liveMultiplier >= 1) ||
             (state.cashoutButton.exists && state.cashoutButton.visible);
@@ -278,12 +300,21 @@ class GameMonitor extends EventEmitter {
         if (inflight && !this.roundInFlight) {
             this.roundInFlight = true;
             this.flightEndedAt = null;
+            this.roundStartTime = Date.now();
+            this.currentFlightTrace = [{ t: 0, v: state.liveMultiplier || 1.00 }];
             const bet = this.betManager.currentBet;
             if (bet && !bet.armed) {
                 bet.armed = true;
                 logger.debug(`Active bet armed for round #${this.roundId + 1} (flight started)`);
             }
             this.emit('roundStarted', { roundId: this.roundId + 1 });
+        } else if (inflight && this.roundInFlight) {
+            if (Number.isFinite(state.liveMultiplier)) {
+                this.currentFlightTrace.push({
+                    t: this.roundStartTime ? Date.now() - this.roundStartTime : 0,
+                    v: state.liveMultiplier
+                });
+            }
         } else if (!inflight && this.roundInFlight) {
             this.roundInFlight = false;
             this.flightEndedAt = Date.now();
@@ -487,6 +518,27 @@ class GameMonitor extends EventEmitter {
         this.roundInFlight = false;
         this.flightEndedAt = null;
         logger.info(`Round #${this.roundId} ended at ${crashValue}x [${this.site}${this.account ? ' / ' + this.account : ''}]`);
+
+        // ---- Flight Trajectory Record (Microstructure dataset) ----
+        const durationMs = this.roundStartTime ? Date.now() - this.roundStartTime : null;
+        const findTimeTo = (target) => {
+            const s = this.currentFlightTrace.find((p) => p.v >= target);
+            return s ? s.t : null;
+        };
+        const trace = {
+            roundId: this.roundId,
+            site: this.site,
+            crash: crashValue,
+            durationMs,
+            samplesCount: this.currentFlightTrace.length,
+            timeTo12: findTimeTo(1.20),
+            timeTo15: findTimeTo(1.50),
+            timeTo20: findTimeTo(2.00),
+            ts: Date.now()
+        };
+        this.emit('roundTrace', trace);
+        this.currentFlightTrace = [];
+        this.roundStartTime = null;
 
         // ---- Feed memory + model BEFORE settling the bet ----
         if (this.historyStore) this.historyStore.append(crashValue);
