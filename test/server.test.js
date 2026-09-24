@@ -227,6 +227,54 @@ test('PUT /api/strategies/:id hot-swaps or 400s on unknown', async () => {
     });
 });
 
+test('PUT /api/strategies/:id?site=X scopes the switch to one site', async () => {
+    const calls = [];
+    await withServer({
+        setStrategy: (id, site) => {
+            calls.push({ id, site });
+            return { name: id, site: site || null };
+        }
+    }, async (port) => {
+        // With ?site= the handler receives the site (per-site switch).
+        const res = await fetch(
+            `http://127.0.0.1:${port}/api/strategies/AGGRESSIVE?site=${encodeURIComponent('betpawa.ug')}`,
+            { method: 'PUT' });
+        assert.equal(res.status, 200);
+        assert.deepEqual(await res.json(), { name: 'AGGRESSIVE', site: 'betpawa.ug' });
+        // Without it the site is null (global default switch).
+        const res2 = await fetch(`http://127.0.0.1:${port}/api/strategies/MICRO`, { method: 'PUT' });
+        assert.equal(res2.status, 200);
+        assert.deepEqual(await res2.json(), { name: 'MICRO', site: null });
+        assert.deepEqual(calls, [
+            { id: 'AGGRESSIVE', site: 'betpawa.ug' },
+            { id: 'MICRO', site: null }
+        ]);
+    });
+});
+
+test('GET /api/sites exposes the per-site strategy map', async () => {
+    await withServer({
+        getSiteStrategies: () => ({ choices: { 'betpawa.ug': 'AGGRESSIVE' }, default: 'MICRO' })
+    }, async (port) => {
+        const res = await fetch(`http://127.0.0.1:${port}/api/sites`);
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.ok(Array.isArray(body.sites));
+        assert.deepEqual(body.siteStrategies, {
+            choices: { 'betpawa.ug': 'AGGRESSIVE' }, default: 'MICRO'
+        });
+    });
+});
+
+test('GET /api/sites without getSiteStrategies dep returns an empty map', async () => {
+    await withServer({}, async (port) => {
+        const res = await fetch(`http://127.0.0.1:${port}/api/sites`);
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.deepEqual(body.siteStrategies, { choices: {}, default: null });
+    });
+});
+
 test('GET /api/debug/game returns the monitor diagnostic', async () => {
     await withServer({
         getGameDebug: async () => ({ marker: 'content scan: div > ul', parsedBubbles: [1.23, 2.5] })

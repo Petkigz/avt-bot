@@ -95,7 +95,12 @@ async function startDashboard(port, logger, deps = {}) {
         app.get('/api/sites', (req, res) => {
             res.json({
                 sites: listSites(),
-                active: deps.getActiveSite ? deps.getActiveSite() : null
+                active: deps.getActiveSite ? deps.getActiveSite() : null,
+                // Per-site strategy selection (siteId -> preset name) plus the
+                // global default, so the dashboard can show each site's strategy.
+                siteStrategies: deps.getSiteStrategies
+                    ? deps.getSiteStrategies()
+                    : { choices: {}, default: null }
             });
         });
 
@@ -180,11 +185,15 @@ async function startDashboard(port, logger, deps = {}) {
         });
 
         // Switch strategy: hot-swaps the running session's strategy, or
-        // remembers the choice for the next launch.
+        // remembers the choice for the next launch. With ?site=<siteId> the
+        // switch is scoped to that one site (per-site strategy selection);
+        // without it the GLOBAL default changes (pinned sites keep theirs).
         app.put('/api/strategies/:id', (req, res) => {
             if (!deps.setStrategy) return res.status(503).json({ error: 'strategy switching unavailable' });
             try {
-                res.json(deps.setStrategy(req.params.id));
+                const site = typeof req.query.site === 'string' && req.query.site.trim()
+                    ? req.query.site.trim() : null;
+                res.json(deps.setStrategy(req.params.id, site));
             } catch (error) {
                 res.status(400).json({ error: error.message });
             }

@@ -8,6 +8,7 @@ const config = require('./util/config');
 const logger = require('./util/logger');
 const sleep = require('./util/sleep');
 const FrameHelper = require('./util/frameHelper');
+const { loadSiteStrategies, saveSiteStrategies, resolveSiteStrategy } = require('./util/siteStrategies');
 const GameMonitor = require('./game/gameMonitor');
 const BettingStrategy = require('./game/strategies');
 const Database = require('./database/database');
@@ -52,6 +53,15 @@ const userSitesLoaded = loadUserSites(USER_SITES_FILE);
 if (userSitesLoaded > 0) logger.info(`Loaded ${userSitesLoaded} user-defined site(s)`);
 
 const sessions = new Map(); // accountId -> { browser, page, account, site }
+
+// ---- Per-site strategy selection (module-level) -------------------------
+// Each bookmaker is an independent book, so each site can run its OWN
+// betting strategy. Choices persist in data/site-strategies.json. Declared
+// at module level so the module-scoped sessionsSnapshot() can read them;
+// main() mutates the same map and persists it on every change.
+const siteStrategyChoices = loadSiteStrategies(config.DATA_DIR);
+const persistSiteStrategies = () => saveSiteStrategies(config.DATA_DIR, siteStrategyChoices);
+let defaultStrategyName = null; // global default, set once strategyConfig is chosen
 let activeSite = getSite(config.SITE_ID);
 let dashboard = null;
 let loginWaiter = null; // {resolve} while waiting for the user to log in
@@ -121,6 +131,10 @@ function sessionsSnapshot() {
             currency: s.site.currency,
             phase: s.phase || 'starting',
             monitoring,
+            // The strategy THIS site's engine runs (per-site selection).
+            strategy: monitoring && s.monitor.strategy
+                ? s.monitor.strategy.name
+                : (siteStrategyChoices[s.site.id] || defaultStrategyName),
             roundsSeen: monitoring ? s.monitor.roundId : 0,
             roundsPerHour: monitoring ? Math.round(roundsPerHour(s.rateWindow) * 10) / 10 : 0,
             stalled: monitoring && isStalled(s.rateWindow),
@@ -818,6 +832,10 @@ async function main() {
     let brain = null;          // assigned after strategy selection (handlers are null-safe)
     let strategyConfig = null;
     let pendingStrategyName = null; // strategy picked in the UI before launch
+    // Per-site strategy resolution: a site's explicit choice wins; otherwise
+    // the global default (whatever was picked at launch) applies.
+    const strategyConfigForSite = (siteId) => resolveSiteStrategy(
+        siteStrategyChoices, siteId, config.BETTING_STRATEGIES, strategyConfig);
     let paperMode = config.MODE.PAPER; // live-switchable from the dashboard
     // Reassigned once the per-site engines exist; early dashboard requests
     // simply see an empty snapshot instead of crashing.
@@ -826,6 +844,9 @@ async function main() {
         awaitingLaunch: awaitingUiLaunch,
         paused: brain ? brain.paused : false,
         strategy: strategyConfig ? strategyConfig.name : pendingStrategyName,
+        // Per-site strategy map (siteId -> preset name) so the dashboard can
+        // show and edit each site's strategy independently.
+        siteStrategies: { ...siteStrategyChoices },
         mode: paperMode ? 'paper' : 'live'
     });
     const emitControlState = () => { if (dashboard) dashboard.io.emit('controlState', controlState()); };
@@ -896,6 +917,10 @@ async function main() {
             const dashboardDeps = {
                 accounts,
                 getActiveSite: () => ({ id: activeSite.id, name: activeSite.name, currency: activeSite.currency }),
+                getSiteStrategies: () => ({
+                    choices: { ...siteStrategyChoices },
+                    default: strategyConfig ? strategyConfig.name : pendingStrategyName
+                }),
                 getSessions: sessionsSnapshot,
                 getControlState: controlState,
                 profits: () => profitsSnapshot(),
@@ -924,58 +949,100 @@ async function main() {
                     }
                     return ok;
                 },
-                setStrategy: (id) => {
+                setStrategy: (id, siteId) => {
                     const preset = config.BETTING_STRATEGIES[String(id || '').toUpperCase()];
                     if (!preset) throw new Error(`unknown strategy "${id}"`);
-                    // Hot-swap on every per-site brain (they read .strategy live);
-                    // before any engine exists, swap the bootstrap brain.
-                    const targets = engines.size > 0
-                        ? [...engines.values()].map((e) => e.brain)
-                        : (brain ? [brain] : []);
-                    if (targets.length > 0) {
-                        // setStrategy retargets the model + pattern miner and
-                        // rescales the entry window to the new target.
-                        targets.forEach((b) => b.setStrategy(new BettingStrategy({ ...preset })));
-                        // Bet managers + monitors keep their own strategy
-                        // references (paper fills, live clicks, stop-loss rules
-                        // and the dashboard snapshot all read target/stake from
-                        // them) — swap those alongside the brain.
-                        for (const s of sessions.values()) {
-                            if (s.monitor) {
+                    const siteKey = String(siteId || '').trim();
+                    if (siteKey) {
+                        // ---- Per-site strategy switch ---------------------
+                        // Persisted choice + hot-swap ONLY this site's engine,
+                        // monitors and paper book — every other site keeps its
+                        // own strategy, progression and capital untouched.
+                        siteStrategyChoices[siteKey] = preset.name;
+                        persistSiteStrategies();
+                        const engine = engines.get(siteKey);
+                        if (engine) {
+                            const strat = new BettingStrategy({ ...preset });
+                            engine.brain.setStrategy(strat); // retargets model/patterns
+                            engine.strategy = strat;
+                            engine.strategyConfig = { ...preset };
+                            if (engine.bankroll) {
+                                engine.bankroll.minStake = preset.minBet;
+                                if (config.MODE.PAPER) {
+                                    engine.paperCapital = config.MODE.PAPER_BANKROLL > 0
+                                        ? config.MODE.PAPER_BANKROLL : preset.initialBet * 100;
+                                    engine.bankroll.setPaperReference(engine.paperCapital);
+                                }
+                            }
+                            for (const s of sessions.values()) {
+                                if (!s.site || s.site.id !== siteKey || !s.monitor) continue;
                                 s.monitor.strategy = new BettingStrategy({ ...preset });
                                 if (s.monitor.betManager) {
                                     s.monitor.betManager.setStrategy(s.monitor.strategy);
                                 }
-                                // Fresh strategy = fresh risk ledger: stop-loss /
-                                // take-profit commitments belong to the NEW
-                                // progression, not the previous strategy's losses.
                                 if (s.monitor.statsTracker) s.monitor.statsTracker.reset();
                             }
+                            // Fresh strategy = fresh paper book for THIS site.
+                            try { resetPaperLedgers(siteKey); } catch (error) { /* engines not up yet */ }
+                            logger.warn(`Strategy for ${siteKey} switched to ${preset.name} from the dashboard (site progression reset)`);
+                        } else {
+                            logger.info(`Strategy for ${siteKey} set to ${preset.name} — takes effect when its engine starts`);
                         }
-                        // Keep the shared strategy config in sync so stake
-                        // sizing, ledger resets and the UI reflect the switch.
-                        strategyConfig = { ...preset };
-                        pendingStrategyName = preset.name;
-                        // The sizing bankroll must track the SAME paper capital
-                        // the ledgers are reset to — otherwise stakes keep
-                        // getting capped by the PREVIOUS strategy's bankroll
-                        // (e.g. ADAPTIVE's 50,000 sim sized from MICRO's 10,000).
+                        emitControlState();
+                        return { name: preset.name, site: siteKey };
+                    }
+                    // ---- Global default switch (no site context) ----------
+                    // Sets the DEFAULT strategy and hot-swaps every engine that
+                    // has NO explicit per-site choice. Sites with their own
+                    // pinned strategy keep it — a global switch must never
+                    // silently overwrite a deliberate per-site selection.
+                    strategyConfig = { ...preset };
+                    pendingStrategyName = preset.name;
+                    defaultStrategyName = preset.name;
+                    if (engines.size === 0 && brain) {
+                        // Pre-launch: swap the bootstrap brain only.
+                        brain.setStrategy(new BettingStrategy({ ...preset }));
                         if (config.MODE.PAPER) {
                             const paperCapital = config.MODE.PAPER_BANKROLL > 0
                                 ? config.MODE.PAPER_BANKROLL : preset.initialBet * 100;
                             bankroll.setPaperReference(paperCapital);
                         }
-                        // The paper simulation restarts on the NEW strategy's
-                        // capital and stake ("assume the capital from the
-                        // selected strategy").
-                        try { resetPaperLedgers(); } catch (error) { /* engines not up yet */ }
-                        logger.warn(`Strategy switched to ${preset.name} from the dashboard (progression reset)`);
-                    } else {
-                        pendingStrategyName = preset.name;
-                        logger.info(`Strategy ${preset.name} selected from the dashboard — will be used for the next launch`);
+                        logger.warn(`Default strategy switched to ${preset.name} (no engines running yet)`);
+                        emitControlState();
+                        return { name: preset.name, site: null };
                     }
+                    let swapped = 0;
+                    for (const e of engines.values()) {
+                        if (siteStrategyChoices[e.siteId]) continue; // pinned per site
+                        const strat = new BettingStrategy({ ...preset });
+                        e.brain.setStrategy(strat);
+                        e.strategy = strat;
+                        e.strategyConfig = { ...preset };
+                        if (e.bankroll) {
+                            e.bankroll.minStake = preset.minBet;
+                            if (config.MODE.PAPER) {
+                                e.paperCapital = config.MODE.PAPER_BANKROLL > 0
+                                    ? config.MODE.PAPER_BANKROLL : preset.initialBet * 100;
+                                e.bankroll.setPaperReference(e.paperCapital);
+                            }
+                        }
+                        try { resetPaperLedgers(e.siteId); } catch (error) { /* engines not up yet */ }
+                        swapped++;
+                    }
+                    // Bet managers + monitors keep their own strategy
+                    // references — swap them for the non-pinned sites only.
+                    for (const s of sessions.values()) {
+                        if (!s.monitor) continue;
+                        if (s.site && siteStrategyChoices[s.site.id]) continue;
+                        s.monitor.strategy = new BettingStrategy({ ...preset });
+                        if (s.monitor.betManager) {
+                            s.monitor.betManager.setStrategy(s.monitor.strategy);
+                        }
+                        if (s.monitor.statsTracker) s.monitor.statsTracker.reset();
+                    }
+                    logger.warn(`Default strategy switched to ${preset.name} from the dashboard — applied to ${swapped} site(s); sites with their own pinned strategy were left untouched`);
                     emitControlState();
-                    return { name: preset.name };
+                    return { name: preset.name, site: null };
                 }
             };
             dashboard = await startDashboard(config.DASHBOARD.PORT, logger, dashboardDeps);
@@ -1048,22 +1115,37 @@ async function main() {
                     const p = payload || {};
                     const site = getSite(p.siteId);
                     const account = (p.accountId && accounts.get(p.accountId)) || accounts.ensureDefault(site.id);
+                    // An explicit pick wins; otherwise keep the site's saved
+                    // strategy; otherwise the pending/global default.
                     const preset = config.BETTING_STRATEGIES[
-                        String(p.strategy || pendingStrategyName || 'MICRO').toUpperCase()
+                        String(p.strategy || siteStrategyChoices[site.id] || pendingStrategyName || 'MICRO').toUpperCase()
                     ] || config.BETTING_STRATEGIES.MICRO;
+                    // Launching WITH a chosen strategy makes it this site's
+                    // pinned strategy (per-site selection).
+                    siteStrategyChoices[site.id] = preset.name;
+                    persistSiteStrategies();
                     logger.info(`Launch requested from dashboard: ${site.name} / "${account.label}" / ${preset.name}`);
                     uiLaunchWaiter.resolve({ site, account, strategyConfig: { ...preset } });
                 });
                 socket.on('pauseBetting', () => {
-                    if (brain) { brain.paused = true; logger.warn('Betting PAUSED from the dashboard'); emitControlState(); }
+                    // Every per-site brain must hear the kill-switch — pausing
+                    // only the bootstrap brain would leave running sites live.
+                    let applied = false;
+                    if (brain) { brain.paused = true; applied = true; }
+                    for (const e of engines.values()) { e.brain.paused = true; applied = true; }
+                    if (applied) { logger.warn('Betting PAUSED from the dashboard (all sites)'); emitControlState(); }
                 });
                 socket.on('resumeBetting', () => {
-                    if (brain) { brain.paused = false; logger.info('Betting RESUMED from the dashboard'); emitControlState(); }
+                    let applied = false;
+                    if (brain) { brain.paused = false; applied = true; }
+                    for (const e of engines.values()) { e.brain.paused = false; applied = true; }
+                    if (applied) { logger.info('Betting RESUMED from the dashboard (all sites)'); emitControlState(); }
                 });
-                // Strategy hot-swap (running session) or pre-launch selection
-                socket.on('setStrategy', ({ strategy } = {}) => {
+                // Strategy hot-swap (running session) or pre-launch selection.
+                // With `site` the switch is scoped to that site only.
+                socket.on('setStrategy', ({ strategy, site } = {}) => {
                     try {
-                        dashboardDeps.setStrategy(strategy);
+                        dashboardDeps.setStrategy(strategy, site);
                     } catch (error) {
                         logger.error(`Strategy change failed: ${error.message}`);
                     }
@@ -1077,6 +1159,7 @@ async function main() {
                         if (s.monitor) s.monitor.betManager.paperMode = toPaper;
                     }
                     if (brain) brain.mode = toPaper ? 'paper' : 'live';
+                    for (const e of engines.values()) e.brain.mode = toPaper ? 'paper' : 'live';
                     if (toPaper) {
                         logger.warn('Mode switched to OBSERVE-ONLY from the dashboard — no real bets');
                     } else {
@@ -1157,9 +1240,11 @@ async function main() {
         awaitingUiLaunch = false;
         selection = { site: launch.site, account: launch.account };
         strategyConfig = launch.strategyConfig;
+        defaultStrategyName = strategyConfig.name;
         emitControlState();
     } else {
         strategyConfig = await selectStrategy();
+        defaultStrategyName = strategyConfig.name;
         selection = await selectSiteAndAccount();
     }
 
@@ -1263,6 +1348,27 @@ async function main() {
         const safe = safeSiteId(key);
         const store = siteHistoryFor(key);
 
+        // ---- Per-site strategy + bankroll -------------------------------
+        // Each bookmaker is an independent book, so each engine runs the
+        // strategy selected FOR ITS SITE (data/site-strategies.json) and
+        // sizes stakes from its OWN capital. Sites with no explicit choice
+        // inherit the global default strategy picked at launch.
+        const siteStrategyCfg = strategyConfigForSite(key);
+        const siteStrategy = new BettingStrategy({ ...siteStrategyCfg });
+        const siteBankroll = Bankroll.load(path.join(config.DATA_DIR, `bankroll-${safe}.json`), {
+            sessionLossLimit: config.RISK.SESSION_LOSS_LIMIT,
+            dailyLossLimit: config.RISK.DAILY_LOSS_LIMIT,
+            maxStakeFraction: config.RISK.MAX_STAKE_FRACTION,
+            microStakeFraction: config.RISK.MICRO_STAKE_FRACTION,
+            minStake: siteStrategyCfg.minBet
+        });
+        const sitePaperCapital = config.MODE.PAPER_BANKROLL > 0
+            ? config.MODE.PAPER_BANKROLL : siteStrategyCfg.initialBet * 100;
+        if (config.MODE.PAPER) siteBankroll.setPaperReference(sitePaperCapital);
+        logger.info(`Engine [${key}]: strategy ${siteStrategyCfg.name} ` +
+            `(stake ${siteStrategyCfg.initialBet}, target ${siteStrategyCfg.adaptiveTarget ? 'model-driven' : `${siteStrategyCfg.targetMultiplier}x`}, ` +
+            `${config.MODE.PAPER ? `paper capital ${sitePaperCapital}` : 'live sizing from real balance'})`);
+
         if (store.size() === 0 && !primaryEngine && historyStore.size() > 0) {
             historyStore.values.forEach((v) => store.append(v, { force: true }));
             logger.info(
@@ -1273,7 +1379,7 @@ async function main() {
         let sitePredictor = null;
         if (config.MODEL.ENABLED) {
             sitePredictor = Predictor.load(path.join(config.DATA_DIR, `model-${safe}.json`), {
-                targetMultiplier: strategyConfig.targetMultiplier,
+                targetMultiplier: siteStrategyCfg.targetMultiplier,
                 minSampleSize: config.MODEL.MIN_SAMPLE_SIZE,
                 minEntryProbability: config.MODEL.MIN_ENTRY_PROBABILITY,
                 maxEntryProbability: config.MODEL.MAX_ENTRY_PROBABILITY,
@@ -1292,7 +1398,7 @@ async function main() {
                 lengths: config.PATTERN.LENGTHS,
                 minSupport: config.PATTERN.MIN_SUPPORT,
                 bins: config.PATTERN.BINS,
-                targetMultiplier: strategyConfig.targetMultiplier
+                targetMultiplier: siteStrategyCfg.targetMultiplier
             });
             sitePatterns.rebuildStream(store.values);
         }
@@ -1373,7 +1479,7 @@ async function main() {
 
         let engineRef = null; // lets the brain read this engine's live verdict
         const siteBrain = new Brain({
-            config, strategy, predictor: sitePredictor, patterns: sitePatterns, bankroll,
+            config, strategy: siteStrategy, predictor: sitePredictor, patterns: sitePatterns, bankroll: siteBankroll,
             recalibrator: siteRecalibrator,
             featureModel: siteFeatureModel,
             modelVerdict: modelVerdict || null,
@@ -1388,6 +1494,12 @@ async function main() {
             predictor: sitePredictor,
             patterns: sitePatterns,
             brain: siteBrain,
+            // Per-site strategy + bankroll handles (dashboard strategy switch
+            // hot-swaps these without touching the OTHER sites' books).
+            strategy: siteStrategy,
+            strategyConfig: { ...siteStrategyCfg },
+            bankroll: siteBankroll,
+            paperCapital: sitePaperCapital,
             // Measurement layer: every prediction is recorded and settled so
             // calibration and walk-forward validation have real data.
             predictionLog: new PredictionLogger(path.join(config.DATA_DIR, `predictions-${safe}.jsonl`)),
@@ -1408,9 +1520,9 @@ async function main() {
         };
         engine.paperBaseline = new PaperLedger(path.join(config.DATA_DIR, `paper-baseline-${safe}.json`), {
             kind: 'sim',
-            capital: config.MODE.PAPER_BANKROLL > 0 ? config.MODE.PAPER_BANKROLL : strategyConfig.initialBet * 100,
-            stake: strategyConfig.initialBet,
-            target: strategyConfig.targetMultiplier
+            capital: sitePaperCapital,
+            stake: siteStrategyCfg.initialBet,
+            target: siteStrategyCfg.targetMultiplier
         });
         engine.paperBaseline.load();
         engine.paperEngine = new PaperLedger(path.join(config.DATA_DIR, `paper-engine-${safe}.json`), { kind: 'log' });
@@ -1425,7 +1537,7 @@ async function main() {
         engine.signalVerdict = readSignalVerdict(config.DATA_DIR, key);
         if (store.size() >= 400) {
             try {
-                const report = runSignalValidation(store.values, { target: strategyConfig.targetMultiplier });
+                const report = runSignalValidation(store.values, { target: siteStrategyCfg.targetMultiplier });
                 if (!report.error) {
                     writeSignalVerdict(config.DATA_DIR, key, report);
                     engine.signalVerdict = { ...report, ts: Date.now() };
@@ -1469,7 +1581,9 @@ async function main() {
     // observing costs nothing and every settled prediction is evidence.
     const settleAndPredict = (engine, crash) => {
         if (!engine) return;
-        const target = strategyConfig.targetMultiplier;
+        // The ENGINE'S target (per-site strategy) — never the global default,
+        // or a 2x site would log/settle predictions against a 1.3x question.
+        const target = engine.strategy.targetMultiplier;
         try {
             const pending = engine.pendingPrediction;
             if (pending && Number.isFinite(pending.prob)) {
@@ -1570,19 +1684,22 @@ async function main() {
     // and strategy switches). Hoisted on purpose: the dashboard handlers
     // registered earlier in main() call this before its source position runs.
     function resetPaperLedgers(siteId = null) {
-        if (!strategyConfig) return; // nothing sized yet — nothing to reset
-        const capital = config.MODE.PAPER_BANKROLL > 0
-            ? config.MODE.PAPER_BANKROLL
-            : strategyConfig.initialBet * 100;
         for (const e of engines.values()) {
             if (siteId && e.siteId !== siteId) continue;
+            // Each engine resets on its OWN strategy's capital/stake/target —
+            // a per-site strategy switch must not resize the other sites.
+            const cfg = e.strategyConfig || strategyConfig;
+            if (!cfg) continue;
+            const capital = config.MODE.PAPER_BANKROLL > 0
+                ? config.MODE.PAPER_BANKROLL
+                : cfg.initialBet * 100;
             if (e.paperBaseline) {
-                e.paperBaseline.reset(capital, strategyConfig.initialBet, strategyConfig.targetMultiplier);
-                logger.info(`Paper baseline [${e.siteId}] reset to ${capital} (stake ${strategyConfig.initialBet} @ ${strategyConfig.targetMultiplier}x)`);
+                e.paperBaseline.reset(capital, cfg.initialBet, cfg.targetMultiplier);
+                logger.info(`Paper baseline [${e.siteId}] reset to ${capital} (stake ${cfg.initialBet} @ ${cfg.targetMultiplier}x)`);
             }
             if (e.paperEngine) {
-                e.paperEngine.reset(0, strategyConfig.initialBet, strategyConfig.targetMultiplier);
-                logger.info(`Paper engine ledger [${e.siteId}] reset (stake ${strategyConfig.initialBet} @ ${strategyConfig.targetMultiplier}x)`);
+                e.paperEngine.reset(0, cfg.initialBet, cfg.targetMultiplier);
+                logger.info(`Paper engine ledger [${e.siteId}] reset (stake ${cfg.initialBet} @ ${cfg.targetMultiplier}x)`);
             }
         }
         if (dashboard) dashboard.io.emit('profits', profitsSnapshot());
@@ -1685,11 +1802,11 @@ async function main() {
                 account: monitor.account,
                 roundId: monitor.roundId,
                 stake: t.betAmount,
-                target: strategyConfig.targetMultiplier,
+                target: engine.strategy.targetMultiplier,
                 multiplier: t.multiplier ?? '',
                 pnl: t.won ? t.profit : t.loss,
                 won: t.won ? 'yes' : 'no',
-                tier: brain.tier
+                tier: engine.brain.tier
             });
             if (dashboard) dashboard.io.emit('trade', t);
         });

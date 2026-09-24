@@ -359,6 +359,29 @@ produced which data — while the shared model learns from all of it.
 > are longshots, and the house edge makes the EV negative at every target.
 > Use it to watch how the model sizes ambition.
 
+### Per-site strategies
+
+Every bookmaker hosts its OWN Aviator stream, so each site is treated as an
+**independent book** — and each can run its **own strategy and its own
+capital**. You can have BetPawa on MICRO while ForteBet runs AGGRESSIVE at
+the same time.
+
+- **Choose per site:** the *Site strategies* panel on the dashboard lists every
+  site with its own selector; the Mission-control *Strategy* dropdown is scoped
+  to whichever site is selected. Applying a strategy hot-swaps it on that site's
+  running engine immediately (its predictor/patterns retarget to the new
+  multiplier, its progression and paper capital reset) — other sites keep their
+  own strategy, progression and capital untouched.
+- **Persistent:** choices are saved in `data/site-strategies.json` and restored
+  on every restart. Launching a site with a chosen strategy pins it to that site.
+- **Per-site capital:** in paper mode each site's bankroll is sized from its OWN
+  strategy (initial stake × 100, or `PAPER_BANKROLL`), so a high-stake strategy
+  on one site never starves another's sizing. Each site also keeps its own risk
+  ledger (`data/bankroll-<site>.json`).
+- **Default fallback:** a site with no pinned strategy follows the global
+  default picked at launch. Changing the global default updates only the
+  unpinned sites — it never overwrites a deliberate per-site choice.
+
 > **Caution-tuned for BetPawa by default:** 150-round warm-up, 0.60 entry
 > confidence, 1.5% max stake fraction, UGX 3,000 session / UGX 6,000 daily loss
 > caps, pattern families need 8+ observations before they're trusted, and

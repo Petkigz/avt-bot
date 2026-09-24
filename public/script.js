@@ -443,8 +443,13 @@ async function loadSiteControls() {
     const sitesData = await sitesRes.json();
     accountsCache = await accountsRes.json();
     sitesCache = sitesData.sites || [];
+    if (sitesData.siteStrategies) {
+      siteStrategies = { ...(sitesData.siteStrategies.choices || {}) };
+      if (sitesData.siteStrategies.default) defaultStrategyName = sitesData.siteStrategies.default;
+    }
 
     const siteSelect = el('siteSelect');
+    const prevSite = siteSelect.value;
     siteSelect.innerHTML = '';
     for (const s of sitesCache) {
       const opt = document.createElement('option');
@@ -456,8 +461,12 @@ async function loadSiteControls() {
       siteSelect.value = sitesData.active.id;
       el('siteHeader').textContent = `— ${sitesData.active.name}`;
       el('siteStatus').textContent = `Current: ${sitesData.active.name}`;
+    } else if (prevSite && siteSelect.querySelector(`option[value="${prevSite}"]`)) {
+      siteSelect.value = prevSite;
     }
     refreshAccountSelect();
+    syncStrategySelectToSite();
+    renderSiteStrategiesPanel();
   } catch (e) { /* server not ready */ }
 }
 
@@ -480,7 +489,10 @@ function refreshAccountSelect() {
   }
 }
 
-onEvent('siteSelect', 'change', refreshAccountSelect);
+onEvent('siteSelect', 'change', () => {
+  refreshAccountSelect();
+  syncStrategySelectToSite(); // strategy follows the selected site
+});
 
 onEvent('switchBtn', 'click', () => {
   const siteId = el('siteSelect').value;
@@ -612,6 +624,7 @@ function renderSessions(list) {
     tr.innerHTML =
       `<td>${esc(s.siteName || s.siteId)}</td>` +
       `<td>${esc(s.accountLabel)}</td>` +
+      `<td>${esc(s.strategy || '—')}</td>` +
       `<td><span class="${phaseCls}">${esc(s.phase)}</span></td>` +
       `<td>${s.monitoring ? '✅' : '—'}${stall}</td>` +
       `<td>${esc(s.roundsSeen)}</td>` +
@@ -858,23 +871,123 @@ setInterval(loadSiteHistory, 20000);
 // ---------------------------------------------------------------------------
 // Mission control: strategy list, launch-from-UI, pause/resume betting
 // ---------------------------------------------------------------------------
+// Cached strategy presets + per-site selections (siteId -> preset name).
+let strategiesCache = [];
+let siteStrategies = {};       // explicit per-site choices
+let defaultStrategyName = null; // global default (launch pick)
+
+function strategyLabel(s) {
+  const target = s.adaptiveTarget
+    ? `target: model-driven ${s.adaptiveMin}x–${s.adaptiveMax}x`
+    : `target ${s.targetMultiplier}x`;
+  return `${s.name} — stake ${s.initialBet}, min ${s.minBet}, max ${s.maxBet}, ${target}`;
+}
+
+/** The strategy a site ACTUALLY runs: its pinned choice, else the default. */
+function effectiveStrategyFor(siteId) {
+  return (siteId && siteStrategies[siteId]) || defaultStrategyName || 'MICRO';
+}
+
 async function loadStrategies() {
   try {
     const res = await fetch('/api/strategies');
-    const strategies = await res.json();
+    strategiesCache = await res.json();
     const sel = el('strategySelect');
     sel.innerHTML = '';
-    for (const s of strategies) {
+    for (const s of strategiesCache) {
       const opt = document.createElement('option');
       opt.value = s.name;
-      const target = s.adaptiveTarget
-        ? `target: model-driven ${s.adaptiveMin}x–${s.adaptiveMax}x`
-        : `target ${s.targetMultiplier}x`;
-      opt.textContent = `${s.name} — stake ${s.initialBet}, min ${s.minBet}, max ${s.maxBet}, ${target}`;
+      opt.textContent = strategyLabel(s);
       sel.appendChild(opt);
     }
     if (!sel.value || !sel.querySelector(`option[value="${sel.value}"]`)) sel.value = 'MICRO';
+    // The per-site panel needs the preset list too (load order is a race).
+    syncStrategySelectToSite();
+    renderSiteStrategiesPanel();
   } catch (e) { /* server not ready */ }
+}
+
+/** Sync the Mission-control dropdown to the SELECTED site's strategy. */
+function syncStrategySelectToSite() {
+  const siteId = el('siteSelect').value;
+  const sel = el('strategySelect');
+  if (!siteId || !sel) return;
+  const name = effectiveStrategyFor(siteId);
+  if (sel.querySelector(`option[value="${name}"]`)) {
+    sel.value = name;
+    strategyDirty = false;
+    updateStrategyHint(name);
+  }
+}
+
+/** Per-site strategy panel: one row per site, each with its own selector. */
+function renderSiteStrategiesPanel() {
+  const box = el('siteStrategiesRows');
+  const note = el('siteStrategiesNote');
+  if (!box) return;
+  if (!sitesCache || sitesCache.length === 0) {
+    box.innerHTML = '<span class="small">No sites registered yet.</span>';
+    return;
+  }
+  box.innerHTML = '';
+  for (const site of sitesCache) {
+    const row = document.createElement('div');
+    row.className = 'siteRow';
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid #223;border-radius:8px;background:#0d1420;';
+
+    const name = document.createElement('span');
+    name.style.cssText = 'min-width:170px;font-weight:600;';
+    name.textContent = `${site.name} (${site.currency})`;
+
+    const sel = document.createElement('select');
+    sel.id = `siteStrategy_${site.id.replace(/[^a-z0-9.-]/gi, '_')}`;
+    for (const s of strategiesCache) {
+      const opt = document.createElement('option');
+      opt.value = s.name;
+      opt.textContent = strategyLabel(s);
+      sel.appendChild(opt);
+    }
+    const current = effectiveStrategyFor(site.id);
+    if (sel.querySelector(`option[value="${current}"]`)) sel.value = current;
+    sel.style.flex = '1';
+
+    const pinned = !!siteStrategies[site.id];
+    const applyBtn = document.createElement('button');
+    applyBtn.textContent = pinned ? '✓ Apply' : '✓ Set';
+    applyBtn.title = pinned
+      ? `Hot-swap ${site.name} to the selected strategy now`
+      : `Pin a strategy for ${site.name} (currently following the default: ${defaultStrategyName || 'MICRO'})`;
+    const status = document.createElement('span');
+    status.className = 'small';
+    status.style.color = '#8aa';
+    status.textContent = pinned ? '' : `(default: ${defaultStrategyName || 'MICRO'})`;
+
+    applyBtn.addEventListener('click', async () => {
+      applyBtn.disabled = true;
+      try {
+        const res = await fetch(`/api/strategies/${encodeURIComponent(sel.value)}?site=${encodeURIComponent(site.id)}`, { method: 'PUT' });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        siteStrategies[site.id] = body.name;
+        status.textContent = '';
+        applyBtn.textContent = '✓ Apply';
+        el('controlStatus').textContent = `${site.name}: strategy set to ${body.name} ✓`;
+        syncStrategySelectToSite();
+        renderSiteStrategiesPanel();
+      } catch (e) {
+        el('controlStatus').textContent = `Strategy change failed: ${e.message}`;
+      } finally {
+        applyBtn.disabled = false;
+      }
+    });
+
+    row.appendChild(name);
+    row.appendChild(sel);
+    row.appendChild(status);
+    row.appendChild(applyBtn);
+    box.appendChild(row);
+  }
+  if (note) note.textContent = 'A site without a pinned strategy follows the global default. Paper capital always comes from the site\'s own strategy (initial stake × 100, or PAPER_BANKROLL).';
 }
 
 function applyControlState(cs) {
@@ -883,7 +996,15 @@ function applyControlState(cs) {
   const switchBtn = el('switchBtn');
   const strategySelect = el('strategySelect');
   const status = el('controlStatus');
+  // Track the per-site strategy map + global default pushed by the server.
+  if (cs.siteStrategies && typeof cs.siteStrategies === 'object') {
+    siteStrategies = { ...cs.siteStrategies };
+  }
+  if (cs.strategy) defaultStrategyName = cs.strategy;
   strategySelect.disabled = false; // strategy is switchable at any time via Apply
+  // The dropdown reflects the SELECTED site's strategy (per-site selection).
+  const selectedSite = el('siteSelect').value;
+  const activeName = effectiveStrategyFor(selectedSite);
   if (cs.awaitingLaunch) {
     launchBtn.classList.remove('hidden');
     switchBtn.classList.add('hidden');
@@ -891,18 +1012,19 @@ function applyControlState(cs) {
   } else {
     launchBtn.classList.add('hidden');
     switchBtn.classList.remove('hidden');
-    status.textContent = cs.strategy ? `Running — strategy ${cs.strategy} (${cs.mode || 'paper'})` : 'Running';
+    status.textContent = cs.strategy ? `Running — ${selectedSite ? `${selectedSite}: ${activeName}` : `strategy ${cs.strategy}`} (${cs.mode || 'paper'})` : 'Running';
   }
   // Keep the selector in sync with the strategy actually in use — but
   // NEVER clobber an unapplied user pick; show a hint instead.
-  if (cs.strategy && strategySelect.querySelector(`option[value="${cs.strategy}"]`)) {
+  if (activeName && strategySelect.querySelector(`option[value="${activeName}"]`)) {
     if (!strategyDirty) {
-      strategySelect.value = cs.strategy;
-    } else if (strategySelect.value === cs.strategy) {
+      strategySelect.value = activeName;
+    } else if (strategySelect.value === activeName) {
       strategyDirty = false; // pick already took effect (Apply/launch landed)
     }
-    updateStrategyHint(cs.strategy);
+    updateStrategyHint(activeName);
   }
+  if (el('siteStrategiesRows')) renderSiteStrategiesPanel();
   const pauseBtn = el('pauseBtn');
   const resumeBtn = el('resumeBtn');
   const pauseChip = el('pauseChip');
@@ -1026,13 +1148,20 @@ onEvent('strategySelect', 'change', () => {
 onEvent('strategyApplyBtn', 'click', async () => {
   const name = el('strategySelect').value;
   const status = el('controlStatus');
+  // Scoped to the SELECTED site: each bookmaker keeps its own strategy.
+  const siteId = el('siteSelect').value;
+  const qs = siteId ? `?site=${encodeURIComponent(siteId)}` : '';
   try {
-    const res = await fetch(`/api/strategies/${encodeURIComponent(name)}`, { method: 'PUT' });
+    const res = await fetch(`/api/strategies/${encodeURIComponent(name)}${qs}`, { method: 'PUT' });
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
     strategyDirty = false;
+    if (body.site) siteStrategies[body.site] = body.name;
     updateStrategyHint(body.name);
-    status.textContent = `Strategy set to ${body.name} ✓`;
+    status.textContent = body.site
+      ? `${body.site}: strategy set to ${body.name} ✓`
+      : `Default strategy set to ${body.name} ✓`;
+    renderSiteStrategiesPanel();
   } catch (e) {
     status.textContent = `Strategy change failed: ${e.message}`;
   }

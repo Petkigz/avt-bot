@@ -107,10 +107,10 @@
                         <select id="accountSelect"></select>
                     </label>
                     <button id="newAccountBtn" title="Add a new account for this site">+ account</button>
-                    <label class="small">Strategy
+                    <label class="small">Strategy <span class="small" style="color:#8aa;">(for selected site)</span>
                         <select id="strategySelect"></select>
                     </label>
-                    <button id="strategyApplyBtn" title="Apply the selected strategy now (or remember it for the next launch)">✓ Apply strategy</button>
+                    <button id="strategyApplyBtn" title="Apply the selected strategy to the SELECTED site now (hot-swap if running, remembered across restarts)">✓ Apply strategy</button>
                     <span id="strategyHint" class="small" style="color:#e2b93b;"></span>
                 </div>
                 <div class="siteRow">
@@ -140,6 +140,15 @@
             </div>
         </div>
 
+        <div class="panel" id="siteStrategiesPanel">
+            <h2>Site strategies
+                <span class="small" style="font-weight:normal;color:#8aa;">— each bookmaker is an independent book, so each runs its own strategy &amp; capital</span>
+            </h2>
+            <p class="small">Pick a different strategy for every site. Changes apply immediately to a running site (its progression and paper capital reset) and are remembered across restarts.</p>
+            <div id="siteStrategiesRows" class="siteRow" style="flex-direction:column;align-items:stretch;gap:6px;"></div>
+            <p class="small" id="siteStrategiesNote" style="color:#8aa;"></p>
+        </div>
+
         <div class="panel" id="profitsPanel">
             <h2>Profits &amp; losses
                 <span id="profitsModeBadge" class="phaseBadge" style="margin-left:6px;">—</span>
@@ -164,7 +173,7 @@
             <div class="panel" id="sessionsPanel">
                 <h2>Live bot sessions</h2>
                 <table id="sessionsTable" border="1">
-                    <thead><tr><th>Site</th><th>Account</th><th>Phase</th><th>Monitoring</th><th>Rounds</th><th>Rate/hr</th><th>Balance</th><th></th></tr></thead>
+                    <thead><tr><th>Site</th><th>Account</th><th>Strategy</th><th>Phase</th><th>Monitoring</th><th>Rounds</th><th>Rate/hr</th><th>Balance</th><th></th></tr></thead>
                     <tbody id="sessionsTableBody"></tbody>
                 </table>
                 <p class="small" id="sessionsNote"></p>
