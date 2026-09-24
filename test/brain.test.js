@@ -292,20 +292,31 @@ test('pattern freeze -> test -> promote: candidates have zero influence', () => 
     };
 
     const candidate = mkWithPattern(config.PATTERN.MIN_LIVE_USES - 1, null, 0);
-    // Perfect 20/20 live record: Wilson lower bound (~0.84) beats the ~0.75
-    // base rate of the mixed warm-up -> evidence factor 1.
-    const promoted = mkWithPattern(config.PATTERN.MIN_LIVE_USES * 2, 1.0, config.PATTERN.MIN_LIVE_USES * 2);
+    // Perfect 200/200 live record: even after the look-elsewhere penalty for
+    // the mined pattern space, the Wilson lower bound (~0.98 - 0.08) still
+    // beats the ~0.75 base rate of the mixed warm-up -> evidence factor 1.
+    const promoted = mkWithPattern(200, 1.0, 200);
+    // Perfect but SHORT 20/20 record: after the multiple-testing correction
+    // (penalty ~0.26 for the searched space) it no longer clears the base
+    // rate -> evidence 0. A small sample cannot prove a mined pattern.
+    const shortPerfect = mkWithPattern(config.PATTERN.MIN_LIVE_USES * 2, 1.0, config.PATTERN.MIN_LIVE_USES * 2);
     // Good-looking 80% record that does NOT statistically beat the ~75% base
     // rate (Wilson lower bound ~0.58) -> evidence factor 0 -> zero influence.
     const notBeating = mkWithPattern(config.PATTERN.MIN_LIVE_USES * 2, 0.8, 16);
     const dCand = candidate.decide({ bettingWindow: true, balance: 50000 });
     const dProm = promoted.decide({ bettingWindow: true, balance: 50000 });
+    const dShort = shortPerfect.decide({ bettingWindow: true, balance: 50000 });
     const dNB = notBeating.decide({ bettingWindow: true, balance: 50000 });
 
     // Candidate: the 0.95 claim must not have lifted confidence at all
     assert.ok(dCand.confidence <= dProm.confidence);
     assert.ok(dProm.confidence > dCand.confidence + 0.05,
         `promoted evidence-backed pattern should visibly raise confidence (cand ${dCand.confidence}, prom ${dProm.confidence})`);
+    // LOOK-ELSEWHERE: a perfect but short live record is exactly what random
+    // mining produces somewhere in a large pattern space — it must NOT lift
+    // confidence once the multiple-testing penalty is applied.
+    assert.ok(Math.abs(dShort.confidence - dCand.confidence) < 1e-9,
+        `short perfect record must not move confidence under the look-elsewhere correction (short ${dShort.confidence}, cand ${dCand.confidence})`);
     // A winning-looking record that doesn't beat the base rate gets NOTHING
     assert.ok(Math.abs(dNB.confidence - dCand.confidence) < 1e-9,
         `80% live record below base rate must not move confidence (nb ${dNB.confidence}, cand ${dCand.confidence})`);
@@ -431,4 +442,73 @@ test('ADAPTIVE stake scales with the hit probability of the drawn target', () =>
     assert.ok(longshot.stake >= approved * config.RISK.ADAPTIVE_MIN_STAKE_FRACTION - 0.01 ||
               longshot.stake === strategy.minBet,
         'longshot stake respects the adaptive floor (or the min-stake floor)');
+});
+
+test('Phase-3 feature model: deployed model drives entries; NO SIGNAL stays discipline-only', () => {
+    // Deterministic stub predictor whose statistical estimate is NOT good
+    // enough to enter (confidence 0.30 < required 0.55) — exactly the state
+    // the engine has been in for the whole observation history.
+    const mk = (featureModel, opts = {}) => {
+        const strategyConfig = { ...config.BETTING_STRATEGIES.MICRO };
+        const strategy = new BettingStrategy(strategyConfig);
+        const predictor = {
+            history: Array.from({ length: 160 }, () => 2.0),
+            paused: !!opts.paused,
+            entryProbability: 0.55,
+            baseEntryProbability: 0.55,
+            maxEntryProbability: 0.85,
+            shouldAllowBet: () => (opts.paused
+                ? { allowed: false, reason: 'loss-streak guard: 4 consecutive crashes below target (risk rule)', probability: 0.30 }
+                : { allowed: false, reason: 'confidence 0.30 < required 0.55', probability: 0.30 }),
+            recentVolatility: () => 0.5,
+            volatility: () => 0.5,
+            probCrashAtLeast: () => 0.75,
+            addRound: () => {}
+        };
+        const patterns = {
+            observe: () => {}, detect: () => ({ found: false }),
+            snapshot: () => null, recordUsageOutcome: () => {}
+        };
+        const bankroll = new Bankroll({
+            sessionLossLimit: config.RISK.SESSION_LOSS_LIMIT,
+            dailyLossLimit: config.RISK.DAILY_LOSS_LIMIT,
+            maxStakeFraction: config.RISK.MAX_STAKE_FRACTION,
+            microStakeFraction: config.RISK.MICRO_STAKE_FRACTION,
+            minStake: strategyConfig.minBet
+        });
+        bankroll.setBalance(50000);
+        const brain = new Brain({ config, strategy, predictor, patterns, bankroll, featureModel });
+        brain.tier = 'MICRO';
+        return brain;
+    };
+
+    // NO SIGNAL (verdict absent or negative): nothing is loaded — the
+    // statistical veto stands.
+    const noSignal = mk(null);
+    const dNo = noSignal.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(dNo.shouldBet, false);
+    assert.match(dNo.reasons.join(' '), /confidence 0.30 < required/);
+
+    // DEPLOY: the out-of-sample-validated model's probability REPLACES the
+    // raw estimate and drives the entry gate.
+    const deployed = mk({ predict: () => 0.92 });
+    const dYes = deployed.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(dYes.shouldBet, true);
+    assert.strictEqual(dYes.featureModel, true);
+    // 0.92 reaches the gate; the no-pattern penalty (0.95x) still applies, so
+    // expect ~0.874. The point is the feature model's probability got through.
+    assert.ok(dYes.confidence >= 0.8, `feature-model confidence ${dYes.confidence} must reach the gate`);
+
+    // The model can also say "no": a low model probability vetoes the entry
+    // even though the raw estimate would pass.
+    const modelVeto = mk({ predict: () => 0.4 });
+    const dVeto = modelVeto.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(dVeto.shouldBet, false);
+    assert.match(dVeto.reasons.join(' '), /feature model/);
+
+    // RISK RULES STAY ABSOLUTE: the loss-streak guard beats a deployed model.
+    const pausedBrain = mk({ predict: () => 0.99 }, { paused: true });
+    const dPaused = pausedBrain.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(dPaused.shouldBet, false);
+    assert.match(dPaused.reasons.join(' '), /loss-streak guard/);
 });

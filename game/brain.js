@@ -1,4 +1,6 @@
 const logger = require('../util/logger');
+const { extractFeatures } = require('./features');
+const { lookElsewherePenalty } = require('./modelLayer');
 
 /** Wilson score lower bound for a binomial proportion (95%). The honest way
  *  to say "this pattern's live win rate beats X": the lower edge of the
@@ -31,12 +33,20 @@ function wilsonLower(wins, n, z = 1.96) {
  *   (with volatility penalty), pattern check OK, bankroll policy OK.
  */
 class Brain {
-    constructor({ config, strategy, predictor, patterns, bankroll, microOnly, signal, recalibrator }) {
+    constructor({ config, strategy, predictor, patterns, bankroll, microOnly, signal, recalibrator, featureModel, modelVerdict }) {
         this.config = config;
         this.strategy = strategy;
         this.predictor = predictor;       // may be null (model disabled)
         this.patterns = patterns;         // may be null (patterns disabled)
         this.bankroll = bankroll;
+        // Phase-3 deployed feature model: { predict(features) -> P(next >= target) }.
+        // Loaded ONLY when scripts/train-model.js writes a DEPLOY verdict, so its
+        // mere presence means the model beat the base-rate null out-of-sample with
+        // positive economic value. When absent (NO_SIGNAL / INSUFFICIENT_DATA) the
+        // Brain stays discipline-only — the model is ALLOWED to say NO SIGNAL.
+        this.featureModel = featureModel || null;
+        // The raw training verdict (display-only audit trail for the dashboard).
+        this.modelVerdict = modelVerdict || null;
         // Adaptive probability self-repair: studies how the engine's own
         // predictions settled and corrects systematic mis-calibration.
         // Pass-through until enough predictions have settled.
@@ -226,17 +236,43 @@ class Brain {
             );
         } else if (this.predictor) {
             const gate = this.predictor.shouldAllowBet();
-            if (!gate.allowed) {
+            // The loss-streak guard is a RISK rule — it applies no matter which
+            // model supplies the confidence.
+            if (!gate.allowed && this.predictor.paused) {
                 reasons.push(`model: ${gate.reason}`);
                 return this.finish(decision);
             }
-            confidence = gate.probability;
 
-            // Intelligence upgrade #1: recalibrated confidence — the engine's
-            // own settled track record corrects systematic over/under-
-            // confidence before it is compared against the entry threshold.
-            if (this.recalibrator && confidence !== null) {
-                confidence = this.recalibrator.adjust(confidence);
+            // ---- Confidence source ---------------------------------------
+            // Phase-3 feature model: when a DEPLOY verdict loaded one, its
+            // probability REPLACES the raw estimator (it beat that estimator's
+            // null out-of-sample with positive EV — that is what deployment
+            // means). With NO_SIGNAL verdict nothing is loaded and the Brain
+            // stays discipline-only: the model's "NO SIGNAL" is honored.
+            let fromFeatureModel = false;
+            if (this.featureModel) {
+                const feats = extractFeatures(this.predictor.history, this.strategy.targetMultiplier);
+                const fmProb = this.featureModel.predict(feats);
+                if (Number.isFinite(fmProb)) {
+                    confidence = fmProb;
+                    fromFeatureModel = true;
+                }
+            }
+            if (!fromFeatureModel) {
+                if (!gate.allowed) {
+                    reasons.push(`model: ${gate.reason}`);
+                    return this.finish(decision);
+                }
+                confidence = gate.probability;
+
+                // Intelligence upgrade #1: recalibrated confidence — the engine's
+                // own settled track record corrects systematic over/under-
+                // confidence before it is compared against the entry threshold.
+                // (Applied to the estimator only — the feature model arrives
+                // already calibrated by its OOS training evaluation.)
+                if (this.recalibrator && confidence !== null) {
+                    confidence = this.recalibrator.adjust(confidence);
+                }
             }
 
             // Volatility risk evaluation: wild recent rounds demand MORE confidence.
@@ -245,10 +281,12 @@ class Brain {
             if (confidence !== null && confidence < required) {
                 reasons.push(
                     `confidence ${confidence.toFixed(2)} < required ${required.toFixed(2)}` +
-                    (volPenalty > 0 ? ' (volatility penalty)' : '')
+                    (volPenalty > 0 ? ' (volatility penalty)' : '') +
+                    (fromFeatureModel ? ' (feature model)' : '')
                 );
                 return this.finish(decision);
             }
+            if (fromFeatureModel) decision.featureModel = true;
         }
 
         // ---- Pattern gate (freeze → test → promote → statistical evidence) ----
@@ -292,9 +330,19 @@ class Brain {
                 // bound of (liveWins, used) exceeds the base rate, then ramps
                 // to 1 over a 5-point gap. On a fair stream this stays 0 —
                 // exactly what the evidence says.
+                //
+                // MULTIPLE-TESTING CORRECTION (look-elsewhere): the miner
+                // searches a huge space of candidate sequences (3^k possible
+                // patterns), so SOME pattern always looks good by chance. The
+                // lower bound must therefore clear the base rate by a margin
+                // that grows with the size of the searched space and shrinks
+                // only as live evidence accumulates.
                 let evidence = 1;
                 if (promoted && Number.isFinite(baseRate) && baseRate > 0 && used > 0) {
-                    const lower = wilsonLower(pattern.liveWins || 0, used);
+                    const searched = this.patterns && this.patterns.patterns
+                        ? Math.max(2, this.patterns.patterns.size) : 2;
+                    const penalty = lookElsewherePenalty(used, searched);
+                    const lower = wilsonLower(pattern.liveWins || 0, used) - penalty;
                     evidence = Math.max(0, Math.min(1, (lower - baseRate) / 0.05));
                 }
                 // Blend pattern evidence with the base probability — but ONLY
@@ -474,7 +522,22 @@ class Brain {
                         } : null;
                     } catch (error) { return null; }
                 })()
-            } : null
+            } : null,
+            // Phase-3 feature model: deployed (drives entries) or the verdict
+            // that keeps the engine discipline-only. NO SIGNAL is visible here.
+            featureModel: {
+                deployed: !!this.featureModel,
+                verdict: this.modelVerdict ? {
+                    verdict: this.modelVerdict.verdict,
+                    reason: this.modelVerdict.reason || '',
+                    target: this.modelVerdict.target,
+                    brierSkill: this.modelVerdict.brierSkill,
+                    entryHitRate: this.modelVerdict.entryHitRate,
+                    evPerBet: this.modelVerdict.evPerBet,
+                    n: this.modelVerdict.n,
+                    ts: this.modelVerdict.ts
+                } : null
+            }
         };
     }
 }

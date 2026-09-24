@@ -183,6 +183,32 @@ function renderLearning(b) {
     }
   }
 
+  // Phase-3 feature model: deployed models drive entries; anything else keeps
+  // the engine discipline-only. NO SIGNAL is a first-class, displayed result.
+  const fm = b.featureModel;
+  const fmEl = document.getElementById('featureModelVerdict');
+  if (fmEl) {
+    if (fm && fm.deployed && fm.verdict) {
+      fmEl.textContent = `🔓 DEPLOYED @${fm.verdict.target}x — model drives entries (skill ${fm.verdict.brierSkill}, EV ${fm.verdict.evPerBet})`;
+      fmEl.className = 'value small';
+      fmEl.style.color = '#38c172';
+      fmEl.style.fontWeight = '700';
+    } else if (fm && fm.verdict) {
+      const v = fm.verdict;
+      fmEl.textContent = v.verdict === 'INSUFFICIENT_DATA'
+        ? `training data still thin (${v.n} rows) — discipline-only`
+        : `NO SIGNAL (${v.n} rows @${v.target}x) — discipline-only`;
+      fmEl.className = 'value small';
+      fmEl.style.color = '';
+      fmEl.style.fontWeight = '';
+    } else {
+      fmEl.textContent = 'not trained yet — npm run train:model';
+      fmEl.className = 'value small';
+      fmEl.style.color = '';
+      fmEl.style.fontWeight = '';
+    }
+  }
+
   // Intelligence upgrade #1: adaptive self-calibration state
   const rc = b.recalibration;
   const rcEl = document.getElementById('recalState');

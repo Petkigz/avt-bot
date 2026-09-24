@@ -31,6 +31,7 @@ const {
     analyze: pfAnalyze
 } = require('./game/provablyFair');
 const Bankroll = require('./game/bankroll');
+const { readModelVerdict, loadFeatureModel } = require('./game/modelLayer');
 const Brain = require('./game/brain');
 const CsvLog = require('./util/csvLog');
 const AccountsManager = require('./util/accounts');
@@ -1284,10 +1285,31 @@ async function main() {
         });
         siteRecalibrator.load();
 
+        // ---- Phase-3 feature model (review #7: live model consumption) ----
+        // The model verdict is the OUT-OF-SAMPLE judgment written by
+        // scripts/train-model.js. Only a DEPLOY verdict loads a model into the
+        // Brain; NO_SIGNAL and INSUFFICIENT_DATA keep the engine discipline-only.
+        // The verdict file is the audit trail — it records WHY we bet or don't.
+        const modelVerdict = readModelVerdict(config.DATA_DIR, key);
+        let siteFeatureModel = null;
+        if (modelVerdict && modelVerdict.verdict === 'DEPLOY') {
+            siteFeatureModel = loadFeatureModel(config.DATA_DIR, key);
+            if (siteFeatureModel) {
+                logger.info(`Feature model [${key}]: DEPLOYED — model probabilities drive the entry gate ` +
+                    `(OOS Brier skill ${modelVerdict.brierSkill}, model-approved hit rate ${modelVerdict.entryHitRate}, EV/bet ${modelVerdict.evPerBet})`);
+            }
+        } else if (modelVerdict && modelVerdict.verdict) {
+            logger.info(`Feature model [${key}]: ${modelVerdict.verdict} (${modelVerdict.reason}) — discipline-only gates remain in force`);
+        } else {
+            logger.info(`Feature model [${key}]: no training verdict yet — run "npm run train:model" after observation grows`);
+        }
+
         let engineRef = null; // lets the brain read this engine's live verdict
         const siteBrain = new Brain({
             config, strategy, predictor: sitePredictor, patterns: sitePatterns, bankroll,
             recalibrator: siteRecalibrator,
+            featureModel: siteFeatureModel,
+            modelVerdict: modelVerdict || null,
             signal: {
                 policy: config.MODEL.SIGNAL_POLICY,
                 getVerdict: () => (engineRef ? engineRef.signalVerdict : null)
@@ -1304,6 +1326,10 @@ async function main() {
             predictionLog: new PredictionLogger(path.join(config.DATA_DIR, `predictions-${safe}.jsonl`)),
             calibration: new CalibrationTracker(),
             recalibrator: siteRecalibrator,
+            // Phase-3 audit trail: the out-of-sample model verdict that decided
+            // whether a trained feature model is driving entries (DEPLOY) or the
+            // engine is discipline-only (NO_SIGNAL / INSUFFICIENT_DATA).
+            modelVerdict: modelVerdict || null,
             pendingPrediction: null,
             // Profit/loss books (Profits panel), all persistent:
             //  baseline  — paper sim betting EVERY round at the strategy stake

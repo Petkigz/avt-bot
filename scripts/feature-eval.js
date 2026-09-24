@@ -72,52 +72,12 @@ function buildDataset(values, target, minHistory = 30) {
 }
 
 // ---------------------------------------------------------------------------
-// Logistic regression (hand-rolled: standardize on TRAIN stats only,
-// L2-penalised gradient descent, bias term)
+// Logistic regression: single implementation lives in game/modelLayer.js
+// (the Phase-3 deployment layer uses the exact same fitter, so research and
+// production can never drift apart). Re-exported for the public API below.
 // ---------------------------------------------------------------------------
 
-function fitLogistic(X, y, colIdx, opts = {}) {
-    const { l2 = 1e-2, lr = 0.1, iters = 300 } = opts;
-    const n = X.length;
-    const d = colIdx.length;
-    if (n < 30 || d === 0) return null;
-
-    // Standardization from training data only — never peek at the test fold.
-    const mean = new Array(d).fill(0);
-    const std = new Array(d).fill(0);
-    for (let j = 0; j < d; j++) {
-        let s = 0;
-        for (let i = 0; i < n; i++) s += X[i][colIdx[j]];
-        mean[j] = s / n;
-        let v = 0;
-        for (let i = 0; i < n; i++) v += (X[i][colIdx[j]] - mean[j]) ** 2;
-        std[j] = Math.sqrt(v / n) || 1;
-    }
-    const z = (i, j) => (X[i][colIdx[j]] - mean[j]) / std[j];
-
-    const w = new Array(d).fill(0);
-    let b = 0;
-    for (let it = 0; it < iters; it++) {
-        const gw = new Array(d).fill(0);
-        let gb = 0;
-        for (let i = 0; i < n; i++) {
-            let s = b;
-            for (let j = 0; j < d; j++) s += w[j] * z(i, j);
-            const p = 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, s))));
-            const err = p - y[i];
-            for (let j = 0; j < d; j++) gw[j] += err * z(i, j);
-            gb += err;
-        }
-        for (let j = 0; j < d; j++) w[j] -= lr * (gw[j] / n + l2 * w[j]);
-        b -= lr * (gb / n);
-    }
-    const predict = (row) => {
-        let s = b;
-        for (let j = 0; j < d; j++) s += w[j] * ((row[colIdx[j]] - mean[j]) / std[j]);
-        return 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, s))));
-    };
-    return { predict, mean, std, w, b };
-}
+const { fitLogistic } = require('../game/modelLayer');
 
 // ---------------------------------------------------------------------------
 // Gradient-boosted depth-2 trees (hand-rolled, log loss). A genuinely

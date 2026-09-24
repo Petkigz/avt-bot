@@ -13,7 +13,8 @@
     "model:eval": "node scripts/model-eval.js",
     "walkforward": "node scripts/walk-forward.js",
     "feature:eval": "node scripts/feature-eval.js",
-    "error:analysis": "node scripts/error-analysis.js"
+    "error:analysis": "node scripts/error-analysis.js",
+    "train:model": "node scripts/train-model.js"
   },
   "engines": {
     "node": ">=18"
