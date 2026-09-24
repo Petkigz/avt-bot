@@ -483,6 +483,22 @@ Instead of assuming the model is predictive, the bot *measures* whether it is:
   verdict does NOT unlock betting — the live gate stays on the walk-forward
   verdict — but a positive feature verdict is exactly the trigger to build
   a live feature model.
+- **Model tournament** (`npm run tournament`) — the selector layer. Instead
+  of asking "does ONE model beat chance?", it pits the whole field against
+  each other under the same strict no-peek protocol and lets the data pick:
+  five contestants per site — flat base-rate null, recency-window(50) null,
+  logistic regression, gradient boosting, and a 3-symbol pattern miner —
+  are scored ONLY out-of-sample: an expanding walk-forward (the first ~66%
+  of rows) ranks them by Brier skill versus the BEST persistence null with
+  a seeded bootstrap CI, then the untouched final ~34% is the last word.
+  The winner must show a positive skill CI on the walk before it ever sees
+  the holdout, and the holdout re-runs the same four deployment gates
+  (CI > 0, ≥30 entries at break-even+margin, hit-rate p < 0.05, EV > 0).
+  A DEPLOY writes the winner through the normal `feature-model-<site>.json`
+  + `model-verdict-<site>.json` path (marked `source: "tournament"`), so the
+  live Brain loads it with zero changes; NO_SIGNAL never overwrites an
+  existing verdict. `data/tournament-verdict-<site>.json` keeps the full
+  standings as an audit trail, and the startup log surfaces the last result.
 - **Patterns are frozen, tested, then promoted — with a statistical bar.** A
   mined pattern starts as a CANDIDATE with ZERO influence — with 3^10
   possible length-10 sequences, a random stream constantly produces
@@ -527,6 +543,22 @@ replayable), and nonce ranges. `replayRound()` recomputes
 formulas against observed crashes, so a revealed seed can be verified — or
 exploited, should the data ever show the scheme to be weak. The panel is
 often behind the in-game shield icon: open it in the game window, then scan.
+
+**Automatic capture** is armed too: while a session is open, the bot sweeps
+the game frames every 5 minutes for fair-panel evidence (silent, best-effort —
+it never interferes with betting), so the evidence accumulates on its own.
+
+**Fairness audit** (`npm run fair:audit`) tests the other half of the
+question: not the panel, but the CRASH DISTRIBUTION itself. For a fair crash
+game with house edge `r`, theory pins the entire curve —
+`P(crash = 1.00x) = r` and `P(crash >= x) = (1-r)/x` for `x > 1`. The audit
+estimates `r` from the instant-bust mass, then runs binomial tests of the
+observed survival rate against that curve at 1.3 / 1.5 / 2 / 3 / 5 / 10x
+(flags are Bonferroni-corrected so a genuinely fair stream is flagged ~1% of
+the time). Verdicts: `CONSISTENT_WITH_FAIR` (no measurable skew — which does
+NOT prove fairness) or `FLAGGED` with the direction and p-values
+(`LOW-SKEW at 1.3x` is the one that would hurt this bot). This is the one
+hypothesis no amount of stream analysis can test, so it gets its own tool.
 
 ## Profits & losses panel
 
