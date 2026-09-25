@@ -340,28 +340,85 @@ class Predictor {
     }
 
     /**
+     * Compute empirical survival probability P(multiplier >= target)
+     * combining whole-history Laplace smoothing and exponential recency weighting.
+     * Single source of truth across Predictor, Brain, and Tournament.
+     */
+    static computeStatisticalProbability(history, target, { recentWindow = 20, recencyHalfLife = 50 } = {}) {
+        if (!Array.isArray(history) || history.length === 0) {
+            return 1 / Number(target || 1.3);
+        }
+        const n = history.length;
+        let hits = 0;
+        for (let i = 0; i < n; i++) {
+            const v = history[i];
+            if (typeof v === 'boolean') {
+                if (v) hits++;
+            } else if (Number.isFinite(v)) {
+                if (v >= target) hits++;
+            }
+        }
+        const all = (hits + 1) / (n + 2); // Laplace smoothing
+        if (n < recentWindow) return all;
+
+        const halfLife = Math.max(10, recencyHalfLife);
+        let weightSum = 0;
+        let hitWeight = 0;
+        for (let i = 0; i < n; i++) {
+            const age = n - 1 - i;
+            const w = Math.pow(0.5, age / halfLife);
+            weightSum += w;
+            const v = history[i];
+            const hit = typeof v === 'boolean' ? v : (Number.isFinite(v) && v >= target);
+            if (hit) hitWeight += w;
+        }
+        const weighted = (hitWeight + 1) / (weightSum + 2);
+        return 0.5 * all + 0.5 * weighted;
+    }
+
+    /**
+     * Strictly online generation of statistical probabilities for a sequential series of test rows.
+     * At index i, only outcomes strictly before i are visible to the estimator.
+     */
+    static generateStatisticalPreds(priorHistory = [], streamRows = [], target, opts = {}) {
+        const history = [...priorHistory].map((v) =>
+            (typeof v === 'object' && v !== null)
+                ? (Number.isFinite(v.crash) ? v.crash : (v.won ? target : 1.0))
+                : v
+        );
+        const preds = [];
+        for (let i = 0; i < streamRows.length; i++) {
+            preds.push(Predictor.computeStatisticalProbability(history, target, opts));
+            const row = streamRows[i];
+            const val = (typeof row === 'object' && row !== null)
+                ? (Number.isFinite(row.crash) ? row.crash : (row.won ? target : 1.0))
+                : row;
+            history.push(val);
+        }
+        return preds;
+    }
+
+    /**
      * Working confidence: blend of the whole-history estimate and the
      * recency-weighted one. Falls back to the plain estimate while history
      * is still shorter than the recent window.
      */
     blendedProbability(x) {
-        const all = this.probCrashAtLeast(x);
-        if (this.history.length < this.recentWindow) return all;
-        const weighted = this.weightedProbCrashAtLeast(x);
-        if (all === null || weighted === null) return all ?? weighted;
-        return 0.5 * all + 0.5 * weighted;
+        return Predictor.computeStatisticalProbability(this.history, x, {
+            recentWindow: this.recentWindow,
+            recencyHalfLife: this.recencyHalfLife
+        });
     }
 
     /**
-     * Models the Empirical Distribution Regime & Payout Cluster Dynamics over recent history.
+     * Models the Empirical Distribution Regime over recent history.
      *
      * Empirical Dynamics:
-     * - "REGIME_PAYOUT_CLUSTER" (Clawback / Absorption): Following large payouts or winning clusters,
-     *   the empirical distribution shifts toward low multiplier clusters (<1.30x) and instant busts (<1.10x).
-     *   Clamps targets defensively (1.20x–1.38x) to protect bankroll.
-     * - "REGIME_COLD_ABSORPTION" (Distribution Release): Following prolonged cold streaks or dry periods,
-     *   the empirical distribution exhibits variance release (payouts 1.80x–6.50x+).
-     * - "REGIME_EQUILIBRIUM": Standard nominal steady-state flow (1.35x–1.95x).
+     * - "REGIME_PAYOUT_CLUSTER" (legacy alias HOUSE_ABSORPTION): Following large payouts or winning clusters,
+     *   the empirical distribution exhibits local tail density. Clamps targets defensively (1.20x–1.38x) to protect bankroll.
+     * - "REGIME_COLD_ABSORPTION" (legacy alias HOUSE_REBATE_DUE): Following prolonged cold streaks or dry periods,
+     *   the empirical distribution tracks broader dispersion.
+     * - "REGIME_EQUILIBRIUM" (legacy alias HOUSE_EQUILIBRIUM): Standard nominal steady-state flow (1.35x–1.95x).
      */
     getDistributionRegimeState(windowSize = 30) {
         const n = this.history.length;
@@ -414,9 +471,7 @@ class Predictor {
         const lastCrash = this.history[n - 1] || 1.0;
         const secondLastCrash = n >= 2 ? this.history[n - 2] : 1.0;
 
-        // Empirical intake / payout cluster pressure index:
-        // Positive: prolonged cold stream -> payout distribution due.
-        // Negative: recent large payout cluster -> defensive recouping regime.
+        // Empirical rolling distribution dispersion index:
         const coldRatio = nCold / w;
         const instantRatio = nInstants / w;
         const highRatio = nHigh / w;
@@ -443,29 +498,29 @@ class Predictor {
         if (intakeIndex <= -0.15 || lastCrash >= 20.0 || highRatio >= 0.20) {
             phase = 'REGIME_PAYOUT_CLUSTER';
             legacyPhase = 'HOUSE_ABSORPTION';
-            // Post-cluster clawback: avoid longshots, stay ultra-defensive
+            // Post-cluster defensive floor: avoid longshots, stay ultra-defensive
             suggestedBand = [1.20, 1.38];
             targetBias = 1.28;
-            description = `Payout cluster clawback (${highestRecent.toFixed(1)}x recent peak) — defensive low trap protection`;
+            description = `High multiplier cluster (${highestRecent.toFixed(1)}x recent peak) — conservative lower bound`;
         } else if (intakeIndex >= 0.20 || roundsSince5x >= 14 || (this.consecutiveCold >= 3 && coldRatio >= 0.60)) {
             phase = 'REGIME_COLD_ABSORPTION';
             legacyPhase = 'HOUSE_REBATE_DUE';
-            // Prolonged cold stream: distribution release expected
+            // Prolonged low multiplier run
             if (roundsSince10x >= 25 || nInstants >= 3) {
                 suggestedBand = [2.50, 6.50];
                 targetBias = 3.80;
-                description = `Prolonged cold stream (${roundsSince5x} rounds dry >=5x, ${(coldRatio * 100).toFixed(0)}% cold) — distribution release expected`;
+                description = `Low multiplier run (${roundsSince5x} rounds dry >=5x, ${(coldRatio * 100).toFixed(0)}% cold) — broader empirical target band`;
             } else {
                 suggestedBand = [1.80, 3.50];
                 targetBias = 2.40;
-                description = `Distribution rebalancing due (${roundsSince5x} rounds dry) — targeting moderate payout release`;
+                description = `Low multiplier run (${roundsSince5x} rounds < 5x) — moderate empirical band`;
             }
         } else {
             phase = 'REGIME_EQUILIBRIUM';
             legacyPhase = 'HOUSE_EQUILIBRIUM';
             suggestedBand = [1.35, 1.95];
             targetBias = 1.55;
-            description = 'Operating in normal balanced distribution equilibrium';
+            description = 'Operating in balanced empirical distribution equilibrium';
         }
 
         return {
@@ -493,14 +548,14 @@ class Predictor {
     }
 
     /**
-     * ADAPTIVE mode with Distribution Regime Awareness.
+     * ADAPTIVE mode with Deterministic Distribution Regime Awareness.
      *
      * Incorporates the stream's empirical regime state into the distribution search:
      * 1. If REGIME_PAYOUT_CLUSTER / HOUSE_ABSORPTION: Target pulls tight to defensive floor (1.20x–1.38x).
-     * 2. If REGIME_COLD_ABSORPTION / HOUSE_REBATE_DUE: Target shifts to capture calculated release (1.80x–6.50x).
+     * 2. If REGIME_COLD_ABSORPTION / HOUSE_REBATE_DUE: Target adapts to broader empirical band (1.80x–6.50x).
      * 3. If REGIME_EQUILIBRIUM / HOUSE_EQUILIBRIUM: Target adapts to empirical median (1.35x–1.95x).
      */
-    adaptiveTarget({ minTarget = 1.20, maxTarget = 30, minProb = 0.08, maxProb = 0.75, rng = Math.random } = {}) {
+    adaptiveTarget({ minTarget = 1.20, maxTarget = 30, minProb = 0.08, maxProb = 0.75 } = {}) {
         const nominal = this.targetMultiplier;
         if (this.history.length < this.minSampleSize) {
             return {
@@ -522,19 +577,19 @@ class Predictor {
         const bandLo = Math.max(lo, regimeState.suggestedTargetBand[0]);
         const bandHi = Math.min(hi, regimeState.suggestedTargetBand[1]);
 
-        // Map regime state to desired hit probability window on survival curve S(t)
+        // Map regime state to desired hit probability on survival curve S(t) (100% deterministic)
         let targetProb;
         if (regimeState.phase === 'REGIME_PAYOUT_CLUSTER' || houseCycle.phase === 'HOUSE_ABSORPTION') {
             // High survival probability desired (defensive)
-            targetProb = 0.70 + (0.85 - 0.70) * rng();
+            targetProb = 0.775;
         } else if (regimeState.phase === 'REGIME_COLD_ABSORPTION' || houseCycle.phase === 'HOUSE_REBATE_DUE') {
-            // Hunting payout distribution
-            const pFloor = Math.max(minProb, 1 / (bandHi * 1.3));
-            const pCeil = Math.min(maxProb, 1 / (bandLo * 0.9));
-            targetProb = pFloor + (pCeil - pFloor) * rng();
+            // Broader empirical target band
+            const pFloor = Math.max(minProb, 1 / (bandHi * 1.25));
+            const pCeil = Math.min(maxProb, 1 / (bandLo * 0.95));
+            targetProb = (pFloor + pCeil) / 2;
         } else {
             // Equilibrium balanced
-            targetProb = 0.50 + (0.72 - 0.50) * rng();
+            targetProb = 0.61;
         }
 
         // Candidate targets around the suggested band and recent stream

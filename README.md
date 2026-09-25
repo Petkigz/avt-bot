@@ -188,7 +188,7 @@ All settings live in `.env` (see [.env.example](.env.example)). Highlights:
 | `HISTORY_SIZE` | `5` | Rounds used for the moving average |
 | `MIN_BALANCE_RESERVE` | `0` | Balance the bot will never bet into (UGX) |
 | `MODEL_ENABLED` | `true` | Enable the adaptive history model |
-| `MODEL_MIN_ENTRY_PROBABILITY` | `0.55` | Minimum confidence to place a bet |
+| `MODEL_MIN_ENTRY_PROBABILITY` | `0.60` | Minimum confidence to place a bet |
 | `MODEL_COLD_STREAK_LIMIT` | `3` | Pause betting after this many low crashes |
 | `MIN_ROUND_GAP_MS` | `2000` | Jitter guard for round-end detection |
 | `BET_STALENESS_MS` | `120000` | Write-off timeout for an unconfirmed bet |

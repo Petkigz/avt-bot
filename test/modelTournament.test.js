@@ -41,6 +41,16 @@ test('tournament DEPLOYs the strongest contestant when a real signal exists', ()
     const stand = report.standings[winner];
     assert.ok(stand.skill > 0, 'winner skill must be positive');
     assert.ok(stand.ciLo > 0, 'winner CI lower bound must be positive');
+
+    // Holdout ensemble validation metrics:
+    assert.ok(report.holdout.ensembleSkill > 0, 'holdout ensemble skill must be positive');
+    assert.ok(report.holdout.ensembleCiLo > 0, 'holdout ensemble CI lower bound must be positive');
+    assert.ok(report.holdout.ensembleEntries >= 30, 'holdout ensemble entries must be >= 30');
+    assert.ok(report.holdout.ensembleEvPerBet > 0, 'holdout ensemble EV per bet must be positive');
+
+    // Learned ensemble weights must map feature_model weight directly to the winner's weight
+    assert.strictEqual(report.metaEnsemble.learnedBrainWeights.feature_model, report.metaEnsemble.weights[winner]);
+
     // Deploy payload must be loadable through the universal model dispatcher
     // (same path the live Brain uses) and keep predicting.
     assert.ok(deployModel && deployModel.json, 'deploy payload present');

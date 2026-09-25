@@ -376,3 +376,43 @@ test('distributionRegime: getDistributionRegimeState maps empirical payout clust
     assert.strictEqual(regimeCluster.phase, 'REGIME_PAYOUT_CLUSTER');
     assert.strictEqual(regimeCluster.legacyPhase, 'HOUSE_ABSORPTION');
 });
+
+test('Predictor.computeStatisticalProbability is identical to instance blendedProbability', () => {
+    const p = makePredictor({ targetMultiplier: 1.5, minSampleSize: 10, recentWindow: 20, recencyHalfLife: 50 });
+    const history = [1.2, 1.5, 2.3, 1.1, 4.5, 1.3, 2.0, 1.05, 3.2, 1.8, 1.4, 2.9, 1.6, 1.25, 1.7, 3.5, 1.1, 2.2, 1.9, 1.35, 2.8, 1.08];
+    p.setHistory(history);
+
+    const instProb = p.blendedProbability(1.5);
+    const staticProb = Predictor.computeStatisticalProbability(history, 1.5, { recentWindow: 20, recencyHalfLife: 50 });
+    assert.strictEqual(Number(instProb.toFixed(6)), Number(staticProb.toFixed(6)));
+});
+
+test('Predictor.generateStatisticalPreds is strictly online and deterministic', () => {
+    const prior = [1.2, 1.8, 2.5];
+    const stream = [
+        { crash: 1.1, won: false },
+        { crash: 3.2, won: true },
+        { crash: 1.4, won: false }
+    ];
+    const preds = Predictor.generateStatisticalPreds(prior, stream, 1.5);
+    assert.strictEqual(preds.length, 3);
+    // At step 0, estimator only sees prior
+    const expected0 = Predictor.computeStatisticalProbability(prior, 1.5);
+    assert.strictEqual(Number(preds[0].toFixed(6)), Number(expected0.toFixed(6)));
+    // At step 1, estimator sees prior + [1.1]
+    const expected1 = Predictor.computeStatisticalProbability([...prior, 1.1], 1.5);
+    assert.strictEqual(Number(preds[1].toFixed(6)), Number(expected1.toFixed(6)));
+});
+
+test('adaptiveTarget is 100% deterministic (no random sampling in decision path)', () => {
+    const p = makePredictor({ targetMultiplier: 1.5, minSampleSize: 20 });
+    const stream = [];
+    for (let i = 0; i < 150; i++) stream.push(1.1 + (i % 5) * 0.4);
+    p.setHistory(stream);
+
+    const call1 = p.adaptiveTarget({ minTarget: 1.2, maxTarget: 10 });
+    const call2 = p.adaptiveTarget({ minTarget: 1.2, maxTarget: 10 });
+    assert.strictEqual(call1.target, call2.target);
+    assert.strictEqual(call1.confidence, call2.confidence);
+    assert.strictEqual(call1.p, call2.p);
+});

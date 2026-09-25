@@ -46,6 +46,7 @@ const { FEATURE_VERSION, symbolOf } = require('../game/features');
 const { pairRecords } = require('./error-analysis');
 const { rowsForSite } = require('./train-model');
 const { fitEnsembleWeights } = require('../game/ensemble');
+const Predictor = require('../game/predictor');
 const {
     fitLogistic, fitBoosting, fitPlatt,
     logisticToJson, boostingToJson, patternModelToJson,
@@ -190,9 +191,10 @@ function runTournament(rows, opts = {}) {
         });
     }
 
-    // Persistence nulls, strictly online across the walk zone (zero lookahead).
+    // Persistence nulls and online statistical baseline matching Predictor formula
     const nullBase = expandingMeanNullPreds([], yWalk, 1 / Number(target));
     const nullRecent = recentWindowNullPreds([], yWalk, RECENT_NULL_WINDOW);
+    const nullStatistical = Predictor.generateStatisticalPreds([], walkRows, Number(target));
 
     // Test-covered indices (where model contestants have OOS predictions).
     const idx = [];
@@ -206,7 +208,7 @@ function runTournament(rows, opts = {}) {
         'boosting-25': pick(preds['boosting-25']),
         'boosting-50': pick(preds['boosting-50']),
         'pattern-3': pick(preds['pattern-3']),
-        statistical: pick(nullRecent),
+        statistical: pick(nullStatistical),
         null: pick(nullBase)
     };
 
@@ -290,7 +292,7 @@ function runTournament(rows, opts = {}) {
     const ensembleFit = fitEnsembleWeights(oosMetaDataset, metaSourceNames);
     const learnedEnsembleWeights = {
         statistical: ensembleFit.weights.statistical || 1.0,
-        feature_model: Math.max(1.0, Number((((ensembleFit.weights.logistic || 1.0) + (ensembleFit.weights['boosting-25'] || 1.0) + (ensembleFit.weights['boosting-50'] || 1.0)) / 3).toFixed(2))),
+        feature_model: Math.max(0.1, Number((ensembleFit.weights[winnerName] ?? 1.5).toFixed(2))),
         hypothesis: 1.25
     };
 
@@ -345,13 +347,18 @@ function runTournament(rows, opts = {}) {
         holdModel = { json: patternModelToJson({ window: PATTERN_WINDOW, base: walkBase, map: pmap }, names, {}), fit: null };
     }
 
-    // Persistence nulls on the holdout (strictly online continuation).
+    // Persistence nulls and online statistical baseline on the holdout
     const holdNullBase = expandingMeanNullPreds(yWalk, yHold, 1 / Number(target));
     const holdNullRecent = recentWindowNullPreds(yWalk, yHold, RECENT_NULL_WINDOW);
-    const bestNullHold = Math.min(brierScore(holdNullBase, yHold), brierScore(holdNullRecent, yHold));
+    const holdStatPreds = Predictor.generateStatisticalPreds(walkRows, holdoutRows, Number(target));
+    const bestNullHold = Math.min(
+        brierScore(holdNullBase, yHold),
+        brierScore(holdNullRecent, yHold),
+        brierScore(holdStatPreds, yHold)
+    );
     const holdBrier = brierScore(holdPreds, yHold);
     const holdSkill = brierSkill(holdBrier, bestNullHold);
-    const holdCi = bootstrapSkillCi(holdPreds, [holdNullBase, holdNullRecent], yHold, {
+    const holdCi = bootstrapSkillCi(holdPreds, [holdNullBase, holdNullRecent, holdStatPreds], yHold, {
         iters: 600,
         rng: makeRng(),
         method: 'block'
@@ -359,7 +366,7 @@ function runTournament(rows, opts = {}) {
 
     // Evaluate the full deployed ensemble on the untouched holdout
     const holdEnsemblePreds = holdPreds.map((hp, i) => {
-        const statP = holdNullRecent[i] ?? (1 / Number(target));
+        const statP = holdStatPreds[i] ?? (1 / Number(target));
         const wFeat = learnedEnsembleWeights.feature_model || 1.5;
         const wStat = learnedEnsembleWeights.statistical || 1.0;
         const totalW = wFeat + wStat;
@@ -371,21 +378,33 @@ function runTournament(rows, opts = {}) {
 
     const holdEnsembleBrier = brierScore(holdEnsemblePreds, yHold);
     const holdEnsembleSkill = brierSkill(holdEnsembleBrier, bestNullHold);
-    const holdEnsembleCi = bootstrapSkillCi(holdEnsemblePreds, [holdNullBase, holdNullRecent], yHold, {
+    const holdEnsembleCi = bootstrapSkillCi(holdEnsemblePreds, [holdNullBase, holdNullRecent, holdStatPreds], yHold, {
         iters: 600,
         rng: makeRng(),
         method: 'block'
     });
 
-    // Economic gates on the calibrated holdout predictions.
+    // Economic gates on the calibrated holdout predictions of the ENSEMBLE:
     const breakEven = 1 / target;
     const entryProb = breakEven + ENTRY_MARGIN;
-    const entries = [];
-    for (let i = 0; i < holdoutRows.length; i++) if (holdPreds[i] >= entryProb) entries.push(yHold[i]);
-    const entryHits = entries.reduce((s, v) => s + v, 0);
-    const entryRate = entries.length > 0 ? entryHits / entries.length : null;
-    const evPerBet = entryRate === null ? null : entryRate * target - 1;
-    const pEntry = entries.length > 0 ? hitRatePValue(entryHits, entries.length, breakEven) : 1;
+    const ensembleEntries = [];
+    for (let i = 0; i < holdoutRows.length; i++) {
+        if (holdEnsemblePreds[i] >= entryProb) ensembleEntries.push(yHold[i]);
+    }
+    const ensembleEntryHits = ensembleEntries.reduce((s, v) => s + v, 0);
+    const ensembleEntryRate = ensembleEntries.length > 0 ? ensembleEntryHits / ensembleEntries.length : null;
+    const ensembleEvPerBet = ensembleEntryRate === null ? null : ensembleEntryRate * target - 1;
+    const ensemblePEntry = ensembleEntries.length > 0 ? hitRatePValue(ensembleEntryHits, ensembleEntries.length, breakEven) : 1;
+
+    // Standalone winner model entries (reported alongside):
+    const modelEntries = [];
+    for (let i = 0; i < holdoutRows.length; i++) {
+        if (holdPreds[i] >= entryProb) modelEntries.push(yHold[i]);
+    }
+    const modelEntryHits = modelEntries.reduce((s, v) => s + v, 0);
+    const modelEntryRate = modelEntries.length > 0 ? modelEntryHits / modelEntries.length : null;
+    const modelEvPerBet = modelEntryRate === null ? null : modelEntryRate * target - 1;
+    const modelPEntry = modelEntries.length > 0 ? hitRatePValue(modelEntryHits, modelEntries.length, breakEven) : 1;
 
     Object.assign(report, {
         holdout: {
@@ -394,21 +413,28 @@ function runTournament(rows, opts = {}) {
             skill: holdSkill === null ? null : Number(holdSkill.toFixed(4)),
             ciLo: holdCi ? Number(holdCi.lo.toFixed(4)) : null,
             ciHi: holdCi ? Number(holdCi.hi.toFixed(4)) : null,
+            entries: modelEntries.length,
+            entryHitRate: modelEntryRate === null ? null : Number(modelEntryRate.toFixed(4)),
+            entryPValue: Number(modelPEntry.toFixed(4)),
+            evPerBet: modelEvPerBet === null ? null : Number(modelEvPerBet.toFixed(4)),
+
             ensembleBrier: Number(holdEnsembleBrier.toFixed(5)),
             ensembleSkill: holdEnsembleSkill === null ? null : Number(holdEnsembleSkill.toFixed(4)),
             ensembleCiLo: holdEnsembleCi ? Number(holdEnsembleCi.lo.toFixed(4)) : null,
             ensembleCiHi: holdEnsembleCi ? Number(holdEnsembleCi.hi.toFixed(4)) : null,
-            entries: entries.length,
-            entryHitRate: entryRate === null ? null : Number(entryRate.toFixed(4)),
-            entryPValue: Number(pEntry.toFixed(4)),
-            evPerBet: evPerBet === null ? null : Number(evPerBet.toFixed(4)),
+            ensembleEntries: ensembleEntries.length,
+            ensembleEntryHitRate: ensembleEntryRate === null ? null : Number(ensembleEntryRate.toFixed(4)),
+            ensembleEntryPValue: Number(ensemblePEntry.toFixed(4)),
+            ensembleEvPerBet: ensembleEvPerBet === null ? null : Number(ensembleEvPerBet.toFixed(4)),
+
             breakEven: Number(breakEven.toFixed(4))
         }
     });
 
-    const deploy = holdCi && holdCi.lo > 0 &&
-        entries.length >= 30 && pEntry < 0.05 &&
-        Number.isFinite(evPerBet) && evPerBet > 0;
+    // The DEPLOYMENT GATE strictly tests the full deployed ensemble pipeline:
+    const deploy = holdEnsembleCi && holdEnsembleCi.lo > 0 &&
+        ensembleEntries.length >= 30 && ensemblePEntry < 0.05 &&
+        Number.isFinite(ensembleEvPerBet) && ensembleEvPerBet > 0;
 
     return {
         verdict: deploy ? 'DEPLOY' : 'NO_SIGNAL',
@@ -446,7 +472,7 @@ function runSite(siteId, opts = {}) {
         verdict: result.verdict,
         winner: result.winner,
         reason: result.verdict === 'DEPLOY'
-            ? `tournament winner "${result.winner}" beat the best persistence null out-of-sample with positive economic value`
+            ? `tournament ensemble (winner "${result.winner}" + calibrated baseline) beat the best persistence null out-of-sample with positive economic value`
             : result.verdict === 'NO_SIGNAL'
                 ? 'no contestant cleared the out-of-sample gates — the live Brain stays discipline-only'
                 : `insufficient out-of-sample data for a fair tournament`
@@ -459,19 +485,37 @@ function runSite(siteId, opts = {}) {
         const trainingEndTs = rows[rows.length - 1].ts || null;
         const meta = {
             site: siteId, target: summary.target, winner: result.winner,
-            brierSkill: summary.holdout ? summary.holdout.skill : null,
+            brierSkill: summary.holdout ? summary.holdout.ensembleSkill : null,
             trained: trainedAt, trainingEndTs, rowsAtTraining: all.length,
             featureVersion: FEATURE_VERSION,
-            ensembleWeights: summary.metaEnsemble ? summary.metaEnsemble.learnedBrainWeights : {}
+            ensembleWeights: summary.metaEnsemble ? summary.metaEnsemble.learnedBrainWeights : {},
+            ensemble: {
+                sources: {
+                    statistical: { type: 'blended_empirical', recentWindow: 20, recencyHalfLife: 50 },
+                    feature_model: { type: result.winner, winner: result.winner },
+                    hypothesis: { type: 'signal_lifecycle_active' }
+                },
+                weights: summary.metaEnsemble ? summary.metaEnsemble.learnedBrainWeights : {},
+                validation: {
+                    ensembleBrier: summary.holdout ? summary.holdout.ensembleBrier : null,
+                    ensembleSkill: summary.holdout ? summary.holdout.ensembleSkill : null,
+                    ensembleCiLo: summary.holdout ? summary.holdout.ensembleCiLo : null,
+                    ensembleCiHi: summary.holdout ? summary.holdout.ensembleCiHi : null,
+                    ensembleEntries: summary.holdout ? summary.holdout.ensembleEntries : null,
+                    ensembleEntryHitRate: summary.holdout ? summary.holdout.ensembleEntryHitRate : null,
+                    ensembleEvPerBet: summary.holdout ? summary.holdout.ensembleEvPerBet : null,
+                    ensembleEntryPValue: summary.holdout ? summary.holdout.ensembleEntryPValue : null
+                }
+            }
         };
         const json = { ...result.deployModel.json, meta: { ...result.deployModel.json.meta, ...meta } };
         saveFeatureModel(config.DATA_DIR, siteId, json);
         writeModelVerdict(config.DATA_DIR, siteId, {
             ...summary, target: summary.dominantTarget,
             trainedAt, trainingEndTs, rowsAtTraining: all.length, featureVersion: FEATURE_VERSION,
-            brierSkill: summary.holdout ? summary.holdout.skill : null,
-            entryHitRate: summary.holdout ? summary.holdout.entryHitRate : null,
-            evPerBet: summary.holdout ? summary.holdout.evPerBet : null,
+            brierSkill: summary.holdout ? summary.holdout.ensembleSkill : null,
+            entryHitRate: summary.holdout ? summary.holdout.ensembleEntryHitRate : null,
+            evPerBet: summary.holdout ? summary.holdout.ensembleEvPerBet : null,
             ensembleWeights: summary.metaEnsemble ? summary.metaEnsemble.learnedBrainWeights : {},
             n: summary.n, nHoldout: summary.nHoldout
         });
@@ -526,14 +570,16 @@ function main() {
             console.log(`  selector: winner "${r.winner}" ${r.walkQualified ? 'qualified for the holdout' : 'did NOT qualify (CI includes zero)'}`);
         }
         if (r.holdout) {
-            console.log(`  final holdout: skill ${r.holdout.skill} CI [${r.holdout.ciLo}, ${r.holdout.ciHi}] | ` +
+            console.log(`  final holdout (winner "${r.winner}"): skill ${r.holdout.skill} CI [${r.holdout.ciLo}, ${r.holdout.ciHi}] | ` +
                 `entries ${r.holdout.entries} hit ${r.holdout.entryHitRate} p=${r.holdout.entryPValue} EV/bet=${r.holdout.evPerBet}`);
+            console.log(`  final holdout (ENSEMBLE): skill ${r.holdout.ensembleSkill} CI [${r.holdout.ensembleCiLo}, ${r.holdout.ensembleCiHi}] | ` +
+                `entries ${r.holdout.ensembleEntries} hit ${r.holdout.ensembleEntryHitRate} p=${r.holdout.ensembleEntryPValue} EV/bet=${r.holdout.ensembleEvPerBet}`);
         }
         console.log(`  VERDICT: ${r.verdict}` +
             (r.verdict === 'DEPLOY'
-                ? ` — "${r.winner}" deployed to the live Brain (it beat every persistence null with economic value)`
+                ? ` — ensemble (winner "${r.winner}" + calibrated baseline) deployed to live Brain (beat every persistence null with economic value)`
                 : r.verdict === 'NO_SIGNAL'
-                    ? ' — no contestant proved out-of-sample edge; the live Brain stays discipline-only. A CORRECT answer.'
+                    ? ' — no contestant/ensemble proved out-of-sample edge; the live Brain stays discipline-only. A CORRECT answer.'
                     : ' — need more out-of-sample data for a fair tournament.'));
     }
 }
