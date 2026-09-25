@@ -31,8 +31,15 @@ function makeRng(seed = 42) {
 // ---------------------------------------------------------------------------
 // 1. Randomized PIT Transform: continuous U(0,1) under null S(x) = (1-r)/x
 // ---------------------------------------------------------------------------
-function pitTransform(values, instantCrashRate = 0.04, rng = makeRng(88)) {
-    const r = Math.min(0.2, Math.max(0.01, instantCrashRate));
+function pitTransform(values, instantCrashRate = null, rng = makeRng(88)) {
+    if (!Array.isArray(values) || values.length === 0) return [];
+    // If not explicitly provided, estimate empirical instant crash rate from the dataset
+    let r = instantCrashRate;
+    if (!Number.isFinite(r)) {
+        const nInstants = values.filter((x) => Number.isFinite(x) && x <= 1.001).length;
+        r = Math.min(0.2, Math.max(0.01, nInstants / values.length));
+    }
+    r = Math.min(0.2, Math.max(0.01, r));
     return values.map((x) => {
         if (!Number.isFinite(x) || x <= 1.001) {
             // Properly randomized discrete atom: uniform within [0, r)

@@ -351,7 +351,31 @@ function runTournament(rows, opts = {}) {
     const bestNullHold = Math.min(brierScore(holdNullBase, yHold), brierScore(holdNullRecent, yHold));
     const holdBrier = brierScore(holdPreds, yHold);
     const holdSkill = brierSkill(holdBrier, bestNullHold);
-    const holdCi = bootstrapSkillCi(holdPreds, [holdNullBase, holdNullRecent], yHold, { iters: 600, rng: makeRng() });
+    const holdCi = bootstrapSkillCi(holdPreds, [holdNullBase, holdNullRecent], yHold, {
+        iters: 600,
+        rng: makeRng(),
+        method: 'block'
+    });
+
+    // Evaluate the full deployed ensemble on the untouched holdout
+    const holdEnsemblePreds = holdPreds.map((hp, i) => {
+        const statP = holdNullRecent[i] ?? (1 / Number(target));
+        const wFeat = learnedEnsembleWeights.feature_model || 1.5;
+        const wStat = learnedEnsembleWeights.statistical || 1.0;
+        const totalW = wFeat + wStat;
+        const lFeat = Math.log(Math.min(0.999, Math.max(0.001, hp)) / (1 - Math.min(0.999, Math.max(0.001, hp))));
+        const lStat = Math.log(Math.min(0.999, Math.max(0.001, statP)) / (1 - Math.min(0.999, Math.max(0.001, statP))));
+        const blendL = (wFeat * lFeat + wStat * lStat) / totalW;
+        return 1 / (1 + Math.exp(-Math.max(-20, Math.min(20, blendL))));
+    });
+
+    const holdEnsembleBrier = brierScore(holdEnsemblePreds, yHold);
+    const holdEnsembleSkill = brierSkill(holdEnsembleBrier, bestNullHold);
+    const holdEnsembleCi = bootstrapSkillCi(holdEnsemblePreds, [holdNullBase, holdNullRecent], yHold, {
+        iters: 600,
+        rng: makeRng(),
+        method: 'block'
+    });
 
     // Economic gates on the calibrated holdout predictions.
     const breakEven = 1 / target;
@@ -370,6 +394,10 @@ function runTournament(rows, opts = {}) {
             skill: holdSkill === null ? null : Number(holdSkill.toFixed(4)),
             ciLo: holdCi ? Number(holdCi.lo.toFixed(4)) : null,
             ciHi: holdCi ? Number(holdCi.hi.toFixed(4)) : null,
+            ensembleBrier: Number(holdEnsembleBrier.toFixed(5)),
+            ensembleSkill: holdEnsembleSkill === null ? null : Number(holdEnsembleSkill.toFixed(4)),
+            ensembleCiLo: holdEnsembleCi ? Number(holdEnsembleCi.lo.toFixed(4)) : null,
+            ensembleCiHi: holdEnsembleCi ? Number(holdEnsembleCi.hi.toFixed(4)) : null,
             entries: entries.length,
             entryHitRate: entryRate === null ? null : Number(entryRate.toFixed(4)),
             entryPValue: Number(pEntry.toFixed(4)),
