@@ -9,6 +9,7 @@ const logger = require('./util/logger');
 const sleep = require('./util/sleep');
 const FrameHelper = require('./util/frameHelper');
 const { loadSiteStrategies, saveSiteStrategies, resolveSiteStrategy } = require('./util/siteStrategies');
+const { loadSiteModes, saveSiteModes, resolveSiteMode } = require('./util/siteModes');
 const GameMonitor = require('./game/gameMonitor');
 const BettingStrategy = require('./game/strategies');
 const Database = require('./database/database');
@@ -63,6 +64,14 @@ const sessions = new Map(); // accountId -> { browser, page, account, site }
 const siteStrategyChoices = loadSiteStrategies(config.DATA_DIR);
 const persistSiteStrategies = () => saveSiteStrategies(config.DATA_DIR, siteStrategyChoices);
 let defaultStrategyName = null; // global default, set once strategyConfig is chosen
+
+// ---- Per-site system mode selection (SMART vs PLAIN) --------------------
+// SMART = Full AI & statistical ensemble gating + tier warm-up.
+// PLAIN = Direct mechanical strategy betting on every round without ML filters.
+const siteModeChoices = loadSiteModes(config.DATA_DIR);
+const persistSiteModes = () => saveSiteModes(config.DATA_DIR, siteModeChoices);
+let defaultSystemMode = (config.MODE && config.MODE.SYSTEM) || 'SMART';
+
 let activeSite = getSite(config.SITE_ID);
 let dashboard = null;
 let loginWaiter = null; // {resolve} while waiting for the user to log in
@@ -848,6 +857,8 @@ async function main() {
         // Per-site strategy map (siteId -> preset name) so the dashboard can
         // show and edit each site's strategy independently.
         siteStrategies: { ...siteStrategyChoices },
+        systemMode: defaultSystemMode,
+        siteModes: { ...siteModeChoices },
         mode: paperMode ? 'paper' : 'live'
     });
     const emitControlState = () => { if (dashboard) dashboard.io.emit('controlState', controlState()); };
@@ -1044,6 +1055,35 @@ async function main() {
                     logger.warn(`Default strategy switched to ${preset.name} from the dashboard — applied to ${swapped} site(s); sites with their own pinned strategy were left untouched`);
                     emitControlState();
                     return { name: preset.name, site: null };
+                },
+                getSystemModes: () => ({
+                    choices: { ...siteModeChoices },
+                    default: defaultSystemMode
+                }),
+                setSystemMode: (mode, siteId) => {
+                    const norm = String(mode || 'SMART').trim().toUpperCase() === 'PLAIN' ? 'PLAIN' : 'SMART';
+                    const siteKey = String(siteId || '').trim();
+                    if (siteKey) {
+                        siteModeChoices[siteKey] = norm;
+                        persistSiteModes();
+                        const engine = engines.get(siteKey);
+                        if (engine && engine.brain) {
+                            engine.brain.setSystemMode(norm);
+                        }
+                        logger.warn(`System mode for ${siteKey} switched to ${norm} from the dashboard`);
+                        emitControlState();
+                        return { mode: norm, site: siteKey };
+                    }
+                    defaultSystemMode = norm;
+                    if (brain) brain.setSystemMode(norm);
+                    for (const e of engines.values()) {
+                        if (!siteModeChoices[e.siteId]) {
+                            e.brain.setSystemMode(norm);
+                        }
+                    }
+                    logger.warn(`Default system mode switched to ${norm} from the dashboard`);
+                    emitControlState();
+                    return { mode: norm, site: null };
                 }
             };
             dashboard = await startDashboard(config.DASHBOARD.PORT, logger, dashboardDeps);
@@ -1167,6 +1207,14 @@ async function main() {
                         logger.error('Mode switched to LIVE from the dashboard — REAL BETS are now possible (limits still enforced)');
                     }
                     emitControlState();
+                });
+                // Smart (AI & statistical ensemble) <-> Plain (direct strategy betting) switch
+                socket.on('setSystemMode', ({ mode, site } = {}) => {
+                    try {
+                        dashboardDeps.setSystemMode(mode, site);
+                    } catch (error) {
+                        logger.error(`System mode change failed: ${error.message}`);
+                    }
                 });
                 // Live view mirror (screenshot stream + click-through)
                 socket.on('mirrorStart', ({ accountId } = {}) => {
@@ -1329,11 +1377,11 @@ async function main() {
     }
 
     const strategy = new BettingStrategy(strategyConfig);
-    brain = new Brain({ config, strategy, predictor, patterns, bankroll });
+    brain = new Brain({ config, strategy, predictor, patterns, bankroll, systemMode: defaultSystemMode });
 
     logger.info(
         `Memory loaded: ${roundsLoaded} rounds (legacy shared archive) | ` +
-        `patterns known: ${patterns ? patterns.patterns.size : 0} | tier: ${brain.tier} ` +
+        `patterns known: ${patterns ? patterns.patterns.size : 0} | tier: ${brain.tier} | system: ${brain.systemMode} ` +
         `(each site bootstraps its own engine on launch)`
     );
 
@@ -1485,12 +1533,14 @@ async function main() {
         }
 
         let engineRef = null; // lets the brain read this engine's live verdict
+        const siteSystemMode = resolveSiteMode(siteModeChoices, key, defaultSystemMode);
         const siteBrain = new Brain({
             config, strategy: siteStrategy, predictor: sitePredictor, patterns: sitePatterns, bankroll: siteBankroll,
             recalibrator: siteRecalibrator,
             featureModel: siteFeatureModel,
             modelVerdict: modelVerdict || null,
             signalLifecycle: siteLifecycle,
+            systemMode: siteSystemMode,
             signal: {
                 policy: config.MODEL.SIGNAL_POLICY,
                 getVerdict: () => (engineRef ? engineRef.signalVerdict : null)

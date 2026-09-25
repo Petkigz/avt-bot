@@ -252,6 +252,37 @@ test('PUT /api/strategies/:id?site=X scopes the switch to one site', async () =>
     });
 });
 
+test('GET & PUT /api/system-mode: switches between SMART and PLAIN system mode', async () => {
+    const calls = [];
+    await withServer({
+        getSystemModes: () => ({ default: 'SMART', choices: { 'betpawa.ug': 'PLAIN' } }),
+        setSystemMode: (mode, site) => {
+            calls.push({ mode, site });
+            return { mode: mode.toUpperCase(), site: site || null };
+        }
+    }, async (port) => {
+        const getRes = await fetch(`http://127.0.0.1:${port}/api/system-mode`);
+        assert.equal(getRes.status, 200);
+        assert.deepEqual(await getRes.json(), { default: 'SMART', choices: { 'betpawa.ug': 'PLAIN' } });
+
+        const putRes = await fetch(
+            `http://127.0.0.1:${port}/api/system-mode/PLAIN?site=${encodeURIComponent('betpawa.ug')}`,
+            { method: 'PUT' }
+        );
+        assert.equal(putRes.status, 200);
+        assert.deepEqual(await putRes.json(), { mode: 'PLAIN', site: 'betpawa.ug' });
+
+        const putResGlobal = await fetch(`http://127.0.0.1:${port}/api/system-mode/SMART`, { method: 'PUT' });
+        assert.equal(putResGlobal.status, 200);
+        assert.deepEqual(await putResGlobal.json(), { mode: 'SMART', site: null });
+
+        assert.deepEqual(calls, [
+            { mode: 'PLAIN', site: 'betpawa.ug' },
+            { mode: 'SMART', site: null }
+        ]);
+    });
+});
+
 test('GET /api/sites exposes the per-site strategy map', async () => {
     await withServer({
         getSiteStrategies: () => ({ choices: { 'betpawa.ug': 'AGGRESSIVE' }, default: 'MICRO' })

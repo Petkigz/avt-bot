@@ -156,7 +156,10 @@ const config = {
         PAPER: bool(process.env.PAPER_MODE, true),
         // Hypothetical bankroll for the paper simulation (Profits panel).
         // 0 = derive from the selected strategy: 100 x its initial bet.
-        PAPER_BANKROLL: num(process.env.PAPER_BANKROLL, 0)
+        PAPER_BANKROLL: num(process.env.PAPER_BANKROLL, 0),
+        // System execution engine: 'SMART' (AI/ML ensemble & statistical gating)
+        // or 'PLAIN' (direct mechanical betting on every round according to strategy).
+        SYSTEM: (process.env.SYSTEM_MODE || 'SMART').toUpperCase()
     },
 
     // Multi-site / multi-account

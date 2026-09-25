@@ -86,14 +86,32 @@ socket.on('status', (s) => {
 
   const b = s.brain;
   if (b) {
+    const isPlain = b.systemMode === 'PLAIN';
     const tierEl = document.getElementById('tier');
-    tierEl.textContent = b.tier;
-    tierEl.className = 'value ' + (b.tier === 'ARMED' ? 'pos' : b.tier === 'MICRO' ? 'warn' : '');
+    tierEl.textContent = isPlain ? 'PLAIN' : b.tier;
+    tierEl.className = 'value ' + (b.tier === 'ARMED' ? 'pos' : (b.tier === 'MICRO' || isPlain) ? 'warn' : '');
     document.getElementById('tierNote').textContent =
-      b.microOnly ? '— MICRO_ONLY safety profile: stakes capped at micro size'
-        : b.tier === 'OBSERVING' ? '— warm-up: no bets until enough rounds are studied'
-          : b.tier === 'MICRO' ? '— sizing tier (not the strategy): unproven hit-rate record, micro-bets only until 25+ bets sustain ≥58% wins'
-            : '— proven hit-rate: strategy stakes (bankroll-capped)';
+      isPlain ? '— PLAIN mode: direct mechanical betting on every round without ML gating (bankroll limits active)'
+        : b.microOnly ? '— MICRO_ONLY safety profile: stakes capped at micro size'
+          : b.tier === 'OBSERVING' ? '— warm-up: no bets until enough rounds are studied'
+            : b.tier === 'MICRO' ? '— sizing tier (not the strategy): unproven hit-rate record, micro-bets only until 25+ bets sustain ≥58% wins'
+              : '— proven hit-rate: strategy stakes (bankroll-capped)';
+
+    const sysBadge = document.getElementById('systemModeBadge');
+    if (sysBadge) {
+      sysBadge.textContent = isPlain ? '⚙️ PLAIN SYSTEM' : '🧠 SMART SYSTEM';
+      sysBadge.className = isPlain ? 'phaseBadge plain' : 'phaseBadge smart';
+    }
+    const sysNote = document.getElementById('systemModeNote');
+    if (sysNote) {
+      sysNote.textContent = isPlain
+        ? '⚙️ Plain system active: direct mechanical execution on every round using the strategy\'s target & progression without ML filters.'
+        : '🧠 Smart system active: AI feature models, Bayesian ensemble, pattern miner & statistical gating control every entry.';
+    }
+    const sysBtnStatus = document.getElementById('systemModeSwitchBtnStatus');
+    if (sysBtnStatus) {
+      sysBtnStatus.textContent = isPlain ? '🧠 Switch to SMART' : '⚙️ Switch to PLAIN';
+    }
 
     setText('hitRate', b.hitRate !== null && b.hitRate !== undefined ? fmt(b.hitRate * 100, 1) + '%' : '—');
 
@@ -492,6 +510,7 @@ function refreshAccountSelect() {
 onEvent('siteSelect', 'change', () => {
   refreshAccountSelect();
   syncStrategySelectToSite(); // strategy follows the selected site
+  syncSystemModeSelectToSite(); // system mode follows the selected site
 });
 
 onEvent('switchBtn', 'click', () => {
@@ -876,6 +895,10 @@ let strategiesCache = [];
 let siteStrategies = {};       // explicit per-site choices
 let defaultStrategyName = null; // global default (launch pick)
 
+// Cached system modes (SMART vs PLAIN) + per-site selections (siteId -> 'SMART' | 'PLAIN').
+let siteModes = {};
+let defaultSystemMode = 'SMART';
+
 function strategyLabel(s) {
   const target = s.adaptiveTarget
     ? `target: model-driven ${s.adaptiveMin}x–${s.adaptiveMax}x`
@@ -886,6 +909,11 @@ function strategyLabel(s) {
 /** The strategy a site ACTUALLY runs: its pinned choice, else the default. */
 function effectiveStrategyFor(siteId) {
   return (siteId && siteStrategies[siteId]) || defaultStrategyName || 'MICRO';
+}
+
+/** The system mode a site ACTUALLY runs: explicit choice, else default. */
+function effectiveSystemModeFor(siteId) {
+  return (siteId && siteModes[siteId]) || defaultSystemMode || 'SMART';
 }
 
 async function loadStrategies() {
@@ -903,6 +931,7 @@ async function loadStrategies() {
     if (!sel.value || !sel.querySelector(`option[value="${sel.value}"]`)) sel.value = 'MICRO';
     // The per-site panel needs the preset list too (load order is a race).
     syncStrategySelectToSite();
+    syncSystemModeSelectToSite();
     renderSiteStrategiesPanel();
   } catch (e) { /* server not ready */ }
 }
@@ -917,6 +946,37 @@ function syncStrategySelectToSite() {
     sel.value = name;
     strategyDirty = false;
     updateStrategyHint(name);
+  }
+}
+
+/** Sync the Mission-control system mode selector and button to the SELECTED site's mode. */
+function syncSystemModeSelectToSite() {
+  const siteId = el('siteSelect').value;
+  const sel = el('systemModeSelect');
+  const btn = el('systemModeToggleBtn');
+  const mode = effectiveSystemModeFor(siteId);
+  if (sel && sel.querySelector(`option[value="${mode}"]`)) {
+    sel.value = mode;
+  }
+  if (btn) {
+    btn.textContent = mode === 'PLAIN' ? '⚙️ PLAIN' : '🧠 SMART';
+    btn.className = mode === 'PLAIN' ? 'warn' : 'primary';
+    btn.title = `Current system mode: ${mode}. Click to toggle between SMART (AI/ensemble gated) and PLAIN (direct strategy betting)`;
+  }
+  const badge = el('systemModeBadge');
+  if (badge) {
+    badge.textContent = mode === 'PLAIN' ? '⚙️ PLAIN SYSTEM' : '🧠 SMART SYSTEM';
+    badge.className = mode === 'PLAIN' ? 'phaseBadge plain' : 'phaseBadge smart';
+  }
+  const statusBtn = el('systemModeSwitchBtnStatus');
+  if (statusBtn) {
+    statusBtn.textContent = mode === 'PLAIN' ? '🧠 Switch to SMART' : '⚙️ Switch to PLAIN';
+  }
+  const note = el('systemModeNote');
+  if (note) {
+    note.textContent = mode === 'PLAIN'
+      ? '⚙️ Plain system active: direct mechanical execution on every round using the strategy\'s target & progression without ML filters.'
+      : '🧠 Smart system active: AI feature models, Bayesian ensemble, pattern miner & statistical gating control every entry.';
   }
 }
 
@@ -951,6 +1011,31 @@ function renderSiteStrategiesPanel() {
     if (sel.querySelector(`option[value="${current}"]`)) sel.value = current;
     sel.style.flex = '1';
 
+    const curSysMode = effectiveSystemModeFor(site.id);
+    const modeBtn = document.createElement('button');
+    modeBtn.textContent = curSysMode === 'PLAIN' ? '⚙️ PLAIN' : '🧠 SMART';
+    modeBtn.className = curSysMode === 'PLAIN' ? 'phaseBadge plain' : 'phaseBadge smart';
+    modeBtn.title = `Click to toggle ${site.name} between SMART (AI/ensemble gated) and PLAIN (direct strategy betting)`;
+    modeBtn.style.cursor = 'pointer';
+
+    modeBtn.addEventListener('click', async () => {
+      modeBtn.disabled = true;
+      const nextMode = effectiveSystemModeFor(site.id) === 'PLAIN' ? 'SMART' : 'PLAIN';
+      try {
+        const res = await fetch(`/api/system-mode/${encodeURIComponent(nextMode)}?site=${encodeURIComponent(site.id)}`, { method: 'PUT' });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        siteModes[site.id] = body.mode;
+        el('controlStatus').textContent = `${site.name}: system mode set to ${body.mode} ✓`;
+        syncSystemModeSelectToSite();
+        renderSiteStrategiesPanel();
+      } catch (e) {
+        el('controlStatus').textContent = `System mode change failed: ${e.message}`;
+      } finally {
+        modeBtn.disabled = false;
+      }
+    });
+
     const pinned = !!siteStrategies[site.id];
     const applyBtn = document.createElement('button');
     applyBtn.textContent = pinned ? '✓ Apply' : '✓ Set';
@@ -983,6 +1068,7 @@ function renderSiteStrategiesPanel() {
 
     row.appendChild(name);
     row.appendChild(sel);
+    row.appendChild(modeBtn);
     row.appendChild(status);
     row.appendChild(applyBtn);
     box.appendChild(row);
@@ -1001,10 +1087,15 @@ function applyControlState(cs) {
     siteStrategies = { ...cs.siteStrategies };
   }
   if (cs.strategy) defaultStrategyName = cs.strategy;
+  if (cs.siteModes && typeof cs.siteModes === 'object') {
+    siteModes = { ...cs.siteModes };
+  }
+  if (cs.systemMode) defaultSystemMode = cs.systemMode;
   strategySelect.disabled = false; // strategy is switchable at any time via Apply
   // The dropdown reflects the SELECTED site's strategy (per-site selection).
   const selectedSite = el('siteSelect').value;
   const activeName = effectiveStrategyFor(selectedSite);
+  syncSystemModeSelectToSite();
   if (cs.awaitingLaunch) {
     launchBtn.classList.remove('hidden');
     switchBtn.classList.add('hidden');
@@ -1164,6 +1255,69 @@ onEvent('strategyApplyBtn', 'click', async () => {
     renderSiteStrategiesPanel();
   } catch (e) {
     status.textContent = `Strategy change failed: ${e.message}`;
+  }
+});
+
+// System mode change handlers (SMART vs PLAIN)
+onEvent('systemModeSelect', 'change', async () => {
+  const selectedSite = el('siteSelect').value;
+  const newMode = el('systemModeSelect').value;
+  const qs = selectedSite ? `?site=${encodeURIComponent(selectedSite)}` : '';
+  try {
+    const res = await fetch(`/api/system-mode/${encodeURIComponent(newMode)}${qs}`, { method: 'PUT' });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    if (body.site) siteModes[body.site] = body.mode;
+    else defaultSystemMode = body.mode;
+    el('controlStatus').textContent = body.site
+      ? `${body.site}: system mode set to ${body.mode} ✓`
+      : `Default system mode set to ${body.mode} ✓`;
+    syncSystemModeSelectToSite();
+    renderSiteStrategiesPanel();
+  } catch (e) {
+    el('controlStatus').textContent = `System mode change failed: ${e.message}`;
+  }
+});
+
+onEvent('systemModeToggleBtn', 'click', async () => {
+  const selectedSite = el('siteSelect').value;
+  const curMode = effectiveSystemModeFor(selectedSite);
+  const nextMode = curMode === 'PLAIN' ? 'SMART' : 'PLAIN';
+  const qs = selectedSite ? `?site=${encodeURIComponent(selectedSite)}` : '';
+  try {
+    const res = await fetch(`/api/system-mode/${encodeURIComponent(nextMode)}${qs}`, { method: 'PUT' });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    if (body.site) siteModes[body.site] = body.mode;
+    else defaultSystemMode = body.mode;
+    el('controlStatus').textContent = body.site
+      ? `${body.site}: system mode set to ${body.mode} ✓`
+      : `Default system mode set to ${body.mode} ✓`;
+    syncSystemModeSelectToSite();
+    renderSiteStrategiesPanel();
+  } catch (e) {
+    el('controlStatus').textContent = `System mode change failed: ${e.message}`;
+  }
+});
+
+onEvent('systemModeSwitchBtnStatus', 'click', async () => {
+  const selectedSite = el('siteSelect').value;
+  const curMode = effectiveSystemModeFor(selectedSite);
+  const nextMode = curMode === 'PLAIN' ? 'SMART' : 'PLAIN';
+  const qs = selectedSite ? `?site=${encodeURIComponent(selectedSite)}` : '';
+  try {
+    const res = await fetch(`/api/system-mode/${encodeURIComponent(nextMode)}${qs}`, { method: 'PUT' });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    if (body.site) siteModes[body.site] = body.mode;
+    else defaultSystemMode = body.mode;
+    el('controlStatus').textContent = body.site
+      ? `${body.site}: system mode set to ${body.mode} ✓`
+      : `Default system mode set to ${body.mode} ✓`;
+    syncSystemModeSelectToSite();
+    renderSiteStrategiesPanel();
+  } catch (e) {
+    el('controlStatus').textContent = `System mode change failed: ${e.message}`;
   }
 });
 

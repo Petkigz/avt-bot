@@ -552,3 +552,61 @@ test('Brain produces unified prediction object on decide and via getPrediction()
     assert.ok(pred.probSource !== undefined);
     assert.ok(pred.features !== undefined);
 });
+
+test('Brain PLAIN mode: bets immediately on round 1 without warm-up observation delay', () => {
+    const { brain } = makeBrain();
+    brain.setSystemMode('PLAIN');
+    assert.strictEqual(brain.systemMode, 'PLAIN');
+    assert.strictEqual(brain.tier, 'PLAIN');
+
+    const d = brain.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(d.shouldBet, true, 'Plain mode must place bets without waiting for warm-up rounds');
+    assert.strictEqual(d.tier, 'PLAIN');
+    assert.strictEqual(d.systemMode, 'PLAIN');
+    assert.ok(d.stake > 0, 'Stake must be positive and follow strategy');
+    assert.match(d.reasons.join(' '), /plain mode: betting directly/);
+});
+
+test('Brain PLAIN mode: ignores cold streaks and low model confidence but respects bankroll halt', () => {
+    const { brain, predictor, bankroll } = makeBrain();
+    brain.setSystemMode('PLAIN');
+
+    // Simulate predictor in a paused/cold state
+    predictor.paused = true;
+    predictor.consecutiveCold = 10;
+
+    const d = brain.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(d.shouldBet, true, 'Plain mode ignores predictor cold streak pause');
+
+    // But bankroll loss-limit halt MUST still be respected
+    bankroll.halted = true;
+    bankroll.haltReason = 'daily loss limit reached (-5000)';
+
+    const dHalted = brain.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(dHalted.shouldBet, false, 'Plain mode must still respect bankroll halts');
+    assert.match(dHalted.reasons.join(' '), /bankroll guard/);
+});
+
+test('Brain dynamic hot-swap between SMART and PLAIN mode', () => {
+    const { brain } = makeBrain();
+    assert.strictEqual(brain.systemMode, 'SMART');
+    assert.strictEqual(brain.tier, 'OBSERVING');
+
+    // In SMART mode with 0 rounds, it doesn't bet
+    let d = brain.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(d.shouldBet, false);
+
+    // Hot-swap to PLAIN
+    brain.setSystemMode('PLAIN');
+    assert.strictEqual(brain.systemMode, 'PLAIN');
+    assert.strictEqual(brain.tier, 'PLAIN');
+    d = brain.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(d.shouldBet, true);
+
+    // Hot-swap back to SMART
+    brain.setSystemMode('SMART');
+    assert.strictEqual(brain.systemMode, 'SMART');
+    assert.strictEqual(brain.tier, 'OBSERVING');
+    d = brain.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(d.shouldBet, false);
+});

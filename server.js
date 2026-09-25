@@ -184,6 +184,25 @@ async function startDashboard(port, logger, deps = {}) {
             })));
         });
 
+        // System mode: get current mode and per-site modes
+        app.get('/api/system-mode', (req, res) => {
+            if (!deps.getSystemModes) return res.json({ mode: 'SMART', choices: {} });
+            res.json(deps.getSystemModes());
+        });
+
+        // Switch system mode: hot-swaps between SMART (AI/ensemble gated) and PLAIN (direct strategy execution).
+        // With ?site=<siteId> the switch is scoped to that site; without it, the global default changes.
+        app.put('/api/system-mode/:mode', (req, res) => {
+            if (!deps.setSystemMode) return res.status(503).json({ error: 'system mode switching unavailable' });
+            try {
+                const site = typeof req.query.site === 'string' && req.query.site.trim()
+                    ? req.query.site.trim() : null;
+                res.json(deps.setSystemMode(req.params.mode, site));
+            } catch (error) {
+                res.status(400).json({ error: error.message });
+            }
+        });
+
         // Switch strategy: hot-swaps the running session's strategy, or
         // remembers the choice for the next launch. With ?site=<siteId> the
         // switch is scoped to that one site (per-site strategy selection);

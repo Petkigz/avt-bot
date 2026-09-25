@@ -34,12 +34,14 @@ function wilsonLower(wins, n, z = 1.96) {
  *   (with volatility penalty), pattern check OK, bankroll policy OK.
  */
 class Brain {
-    constructor({ config, strategy, predictor, patterns, bankroll, microOnly, signal, recalibrator, featureModel, modelVerdict, signalLifecycle }) {
+    constructor({ config, strategy, predictor, patterns, bankroll, microOnly, signal, recalibrator, featureModel, modelVerdict, signalLifecycle, systemMode }) {
         this.config = config;
         this.strategy = strategy;
         this.predictor = predictor;       // may be null (model disabled)
         this.patterns = patterns;         // may be null (patterns disabled)
         this.bankroll = bankroll;
+        const rawSys = systemMode || (config && config.MODE && config.MODE.SYSTEM);
+        this.systemMode = String(rawSys || 'SMART').trim().toUpperCase() === 'PLAIN' ? 'PLAIN' : 'SMART';
         // Phase-3 deployed feature model: { predict(features) -> P(next >= target) }.
         // Loaded ONLY when scripts/train-model.js writes a DEPLOY verdict, so its
         // mere presence means the model beat the base-rate null out-of-sample with
@@ -62,7 +64,7 @@ class Brain {
         // Strict safety profile: never promote beyond the MICRO tier.
         this.microOnly = microOnly ?? !!(config.MICRO_ONLY);
 
-        this.tier = 'OBSERVING';
+        this.tier = this.systemMode === 'PLAIN' ? 'PLAIN' : 'OBSERVING';
         this.paused = false;         // user toggle from the dashboard (UI kill-switch)
         this.pendingResult = null;   // outcome of the last settled trade
         this.stakeCache = null;      // stake computed from the last result
@@ -188,9 +190,11 @@ class Brain {
      */
     decide({ bettingWindow, balance = null, cooldownRounds = 0, halted = false }) {
         const reasons = [];
+        const isPlain = this.systemMode === 'PLAIN';
         const decision = {
             shouldBet: false, stake: 0, confidence: null,
-            pattern: null, tier: this.tier, reasons, mode: this.mode,
+            pattern: null, tier: isPlain ? 'PLAIN' : this.tier, reasons, mode: this.mode,
+            systemMode: this.systemMode,
             targetMultiplier: this.strategy ? this.strategy.targetMultiplier : null
         };
 
@@ -198,6 +202,50 @@ class Brain {
         if (this.paused) { reasons.push('paused by user (dashboard)'); return this.finish(decision); }
         if (!bettingWindow) { reasons.push('no betting window'); return this.finish(decision); }
         if (cooldownRounds > 0) { reasons.push(`cooldown (${cooldownRounds} rounds left)`); return this.finish(decision); }
+
+        if (isPlain) {
+            // ---- PLAIN EXECUTION MODE: pure mechanical strategy betting ----
+            // Bypasses observation warm-up gate, model confidence gate, streak loss pause,
+            // volatility penalty, pattern veto, and strict signal validation.
+            // Still strictly enforces hard bankroll risk limits (session/daily loss limits, reserve, max balance).
+            this.tier = 'PLAIN';
+            const targetMultiplier = (this.strategy && Number.isFinite(this.strategy.targetMultiplier))
+                ? this.strategy.targetMultiplier
+                : 1.50;
+            decision.targetMultiplier = targetMultiplier;
+            decision.tier = 'PLAIN';
+
+            if (this.bankroll && !this.bankroll.hasReference()) {
+                reasons.push('no verified bankroll yet — waiting for the site balance to be read (required before any real bet)');
+                return this.finish(decision);
+            }
+            if (this.pendingResult) {
+                this.stakeCache = this.strategy.calculateNextBet(this.pendingResult);
+                this.pendingResult = null;
+            }
+            const rawStake = this.stakeCache ?? this.strategy.getNextBetAmount();
+            let stake = this.bankroll ? this.bankroll.approveStake(rawStake, 'ARMED') : rawStake;
+
+            if (stake < this.strategy.minBet) {
+                const capCheck = this.bankroll ? this.bankroll.approveStake(this.strategy.minBet, 'ARMED') : this.strategy.minBet;
+                if (capCheck >= this.strategy.minBet) stake = this.strategy.minBet;
+                else {
+                    reasons.push(
+                        this.bankroll && this.bankroll.halted
+                            ? `bankroll guard: ${this.bankroll.haltReason}`
+                            : `stake ${stake} below min stake ${this.strategy.minBet}`
+                    );
+                    return this.finish(decision);
+                }
+            }
+
+            decision.shouldBet = true;
+            decision.stake = stake;
+            decision.confidence = 1.0;
+            decision.probSource = 'plain-direct';
+            decision.reasons.push(`plain mode: betting directly @ ${targetMultiplier}x (stake ${stake})`);
+            return this.finish(decision);
+        }
 
         // ---- Tier gate (warm-up is MANDATORY) ----
         this.updateTier();
@@ -677,9 +725,26 @@ class Brain {
     }
 
     // ------------------------------------------------------------------
-    // Tier management
+    // Tier management & Mode
     // ------------------------------------------------------------------
+    setSystemMode(mode) {
+        const norm = String(mode || 'SMART').trim().toUpperCase() === 'PLAIN' ? 'PLAIN' : 'SMART';
+        if (this.systemMode === norm) return;
+        logger.info(`Brain system mode: ${this.systemMode} -> ${norm}`);
+        this.systemMode = norm;
+        if (norm === 'PLAIN') {
+            this.tier = 'PLAIN';
+        } else {
+            this.tier = 'OBSERVING';
+            this.updateTier();
+        }
+    }
+
     updateTier() {
+        if (this.systemMode === 'PLAIN') {
+            this.tier = 'PLAIN';
+            return;
+        }
         const risk = this.config.RISK;
         const studied = this.predictor ? this.predictor.history.length : 0;
         const paused = this.predictor ? this.predictor.paused : false;
@@ -719,6 +784,7 @@ class Brain {
     snapshot() {
         return {
             tier: this.tier,
+            systemMode: this.systemMode,
             mode: this.mode,
             microOnly: this.microOnly,
             hitRate: this.hitRate(),
