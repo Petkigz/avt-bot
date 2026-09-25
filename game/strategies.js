@@ -79,13 +79,16 @@ class BettingStrategy {
 
     /**
      * Risk circuit-breakers: stop-loss, take-profit and a hard cap of
-     * 5 consecutive losses. Called by GameMonitor every cycle.
+     * consecutive losses. Called by GameMonitor every cycle.
      */
     shouldStopTrading(stats) {
         if (!stats) return false;
+        const net = Number.isFinite(stats.netProfit)
+            ? stats.netProfit
+            : ((stats.totalProfit || 0) + (stats.totalLoss || 0));
         return (
-            stats.totalLoss <= -this.stopLoss ||
-            stats.totalProfit >= this.takeProfit ||
+            net <= -this.stopLoss ||
+            net >= this.takeProfit ||
             this.consecutiveLosses >= this.maxConsecutiveLosses
         );
     }

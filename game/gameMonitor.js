@@ -71,8 +71,7 @@ class GameMonitor extends EventEmitter {
         this.stripPath = null;      // content-discovered history strip (new Spribe layouts)
         this.stripAnnounced = false;
         this.stripLogged = false;
-        this.prevBubbles = null;    // for auto-detecting which end of the strip is newest
-        this.newestEnd = null;      // 'head' | 'tail' once detected
+        this.prevBubbles = null;
         this.prevStripNorm = null;  // previous normalized strip for reconciliation
         this.telemetry = { roundsSeen: 0, roundsRecovered: 0, roundsPossiblyMissed: 0 };
         this.currentFlightTrace = [];
@@ -182,21 +181,8 @@ class GameMonitor extends EventEmitter {
         }
         if (!this.attachedUrl) this.attachedUrl = this.page.url();
 
-        // ---- Auto-detect which END of the strip carries the newest round
-        // (layouts differ; classic = newest first, some clients append). ----
-        if (this.newestEnd === null && this.prevBubbles &&
-            state.bubbles.length >= 2 && this.prevBubbles.length >= 2) {
-            const headChanged = state.bubbles[0] !== this.prevBubbles[0];
-            const tailChanged = state.bubbles[state.bubbles.length - 1] !==
-                this.prevBubbles[this.prevBubbles.length - 1];
-            if (headChanged && !tailChanged) this.newestEnd = 'head';
-            else if (tailChanged && !headChanged) {
-                this.newestEnd = 'tail';
-                logger.info('Round-history strip appends new rounds at the END — reading order adapted automatically');
-            }
-        }
         this.prevBubbles = state.bubbles;
-        const bubblesNorm = this.newestEnd === 'tail' ? [...state.bubbles].reverse() : state.bubbles;
+        const bubblesNorm = state.bubbles;
 
         // ---- Fallback-mode telemetry (explains a silent strip) ----
         if (marker.stripPath) {
@@ -901,7 +887,6 @@ class GameMonitor extends EventEmitter {
             mode: this.mode(),
             roundId: this.roundId,
             lastBubble: this.lastBubble,
-            newestEnd: this.newestEnd,
             stripPath: this.stripPath,
             recentHistory: this.multiplierHistory.slice(0, 12),
             frames: []

@@ -47,15 +47,23 @@ test('calling calculateNextBet(null) again keeps progressed amount (retry-safe)'
 });
 
 test('shouldStopTrading on stop-loss', () => {
-    const s = new BettingStrategy(base);
+    const s = new BettingStrategy(base); // stopLoss: 50, takeProfit: 100
     assert.strictEqual(s.shouldStopTrading({ totalLoss: -50, totalProfit: 0 }), true);
     assert.strictEqual(s.shouldStopTrading({ totalLoss: -49, totalProfit: 0 }), false);
+    // In net profit (below takeProfit), even with gross losses > stopLoss, stopLoss should NOT trigger
+    assert.strictEqual(s.shouldStopTrading({ totalLoss: -15000, totalProfit: 15020, netProfit: 20 }), false);
+    // In net loss >= stopLoss, stopLoss triggers
+    assert.strictEqual(s.shouldStopTrading({ totalLoss: -15050, totalProfit: 15000, netProfit: -50 }), true);
 });
 
 test('shouldStopTrading on take-profit', () => {
     const s = new BettingStrategy(base);
     assert.strictEqual(s.shouldStopTrading({ totalLoss: 0, totalProfit: 100 }), true);
     assert.strictEqual(s.shouldStopTrading({ totalLoss: 0, totalProfit: 99 }), false);
+    // High turnover without net profit should NOT trigger take-profit
+    assert.strictEqual(s.shouldStopTrading({ totalLoss: -1000, totalProfit: 1050, netProfit: 50 }), false);
+    // Net profit reaching takeProfit triggers
+    assert.strictEqual(s.shouldStopTrading({ totalLoss: -500, totalProfit: 600, netProfit: 100 }), true);
 });
 
 test('shouldStopTrading on 5 consecutive losses', () => {
