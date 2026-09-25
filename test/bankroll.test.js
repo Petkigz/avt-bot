@@ -130,14 +130,28 @@ test('bankroll reset clears a SESSION halt (2026-09-24 silent-session bug)', () 
     assert.ok(b.approveStake(500, 'ARMED') > 0, 'sizing must resume after reset');
 });
 
-test('bankroll reset does NOT clear a DAILY loss-limit halt', () => {
+test('bankroll reset does NOT clear a DAILY loss-limit halt in live mode', () => {
     const b = new Bankroll({ minStake: 100, sessionLossLimit: 1000000, dailyLossLimit: 1000 });
     b.setPaperReference(10000);
     b.recordTrade({ won: false, loss: -1500 });
     assert.strictEqual(b.halted, true);
     assert.match(b.haltReason, /daily loss limit/);
-    // A bankroll reset must not lift the date-bound daily commitment.
+    // Standard setPaperReference preserves daily loss limit commitment
     b.setPaperReference(100000);
-    assert.strictEqual(b.halted, true, 'daily halt must survive a bankroll reset');
+    assert.strictEqual(b.halted, true, 'daily halt must survive a plain bankroll reference change');
     assert.match(b.haltReason, /daily loss limit/);
+});
+
+test('resetPaper clears both session and daily halts for a simulated fresh run', () => {
+    const b = new Bankroll({ minStake: 100, sessionLossLimit: 1000, dailyLossLimit: 1000 });
+    b.setPaperReference(10000);
+    b.recordTrade({ won: false, loss: -1500 });
+    assert.strictEqual(b.halted, true);
+    // Explicit UI restart of the paper simulation clears paper daily halt
+    b.resetPaper(50000);
+    assert.strictEqual(b.halted, false);
+    assert.strictEqual(b.sessionPnl, 0);
+    assert.strictEqual(b.daily.pnl, 0);
+    assert.strictEqual(b.balance, 50000);
+    assert.strictEqual(b.approveStake(500, 'ARMED') > 0, true);
 });

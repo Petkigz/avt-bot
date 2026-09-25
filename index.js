@@ -1746,6 +1746,27 @@ async function main() {
                 e.paperEngine.reset(0, cfg.initialBet, cfg.targetMultiplier);
                 logger.info(`Paper engine ledger [${e.siteId}] reset (stake ${cfg.initialBet} @ ${cfg.targetMultiplier}x)`);
             }
+            if (e.bankroll && typeof e.bankroll.resetPaper === 'function') {
+                e.bankroll.resetPaper(capital);
+            }
+            if (e.strategy) {
+                e.strategy.consecutiveLosses = 0;
+                e.strategy.currentBet = e.strategy.initialBet;
+            }
+        }
+        for (const session of sessions.values()) {
+            if (siteId && session.site && session.site.id !== siteId) continue;
+            if (session.monitor) {
+                if (session.monitor.statsTracker) {
+                    session.monitor.statsTracker.reset();
+                }
+                session.monitor.tradingHalted = false;
+                session.monitor.haltReason = null;
+                if (session.monitor.strategy) {
+                    session.monitor.strategy.consecutiveLosses = 0;
+                    session.monitor.strategy.currentBet = session.monitor.strategy.initialBet;
+                }
+            }
         }
         if (dashboard) dashboard.io.emit('profits', profitsSnapshot());
     }

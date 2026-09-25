@@ -111,6 +111,22 @@ class Bankroll {
         logger.info(`Paper bankroll reference set: ${amount} (real balance ignored for sizing/gates)`);
     }
 
+    /**
+     * Resets paper simulation bankroll reference and clears paper limits.
+     * Invoked when user explicitly restarts the paper simulation from the UI.
+     */
+    resetPaper(amount) {
+        const cap = Number.isFinite(amount) && amount > 0 ? amount : this.paperReference || 10000;
+        this.paperReference = cap;
+        this.balance = cap;
+        this.startingBalance = cap;
+        this.sessionPnl = 0;
+        this.daily.pnl = 0;
+        this.halted = false;
+        this.haltReason = null;
+        logger.info(`Paper bankroll reset: ${cap} (session & daily limits refreshed for new simulation)`);
+    }
+
     rollDailyIfNeeded() {
         const today = Bankroll.today();
         if (this.daily.date !== today) {
