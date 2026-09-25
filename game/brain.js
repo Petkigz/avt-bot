@@ -238,15 +238,10 @@ class Brain {
         const adaptive = !!(this.strategy && this.strategy.adaptiveTarget) && this.predictor;
         let adaptiveHitProb = null; // raw model P(hit) of the drawn target — sizes the stake
         if (adaptive) {
-            // ADAPTIVE mode: the model picks this round's target from its
-            // live distribution read instead of betting a fixed multiplier.
-            // Confidence and target are COUPLED here — a 30x target
-            // legitimately carries a ~3% hit probability — so a fixed
-            // confidence threshold cannot apply. Discipline comes from the
-            // loss-streak guard (checked inside the pick), the tier gate and
-            // the bankroll policy. HONEST NOTE: this rides the model's
-            // DISTRIBUTION read, which shifts slowly; it does not predict
-            // individual rounds (walk-forward found no per-round signal).
+            // ADAPTIVE mode with House Liquidity & RTP Cycle Awareness:
+            // The model determines the house state (HOUSE_REBATE_DUE, HOUSE_ABSORPTION,
+            // or HOUSE_EQUILIBRIUM) based on accumulated intake and payout clusters,
+            // and targets the exact multiplier zone where the house is expected to operate.
             if (this.predictor.paused) {
                 reasons.push(
                     `model: loss-streak guard: ${this.predictor.consecutiveCold} low crashes in a row (risk rule — not evidence the stream changed)`
@@ -260,13 +255,16 @@ class Brain {
                 maxProb: this.config.RISK.ADAPTIVE_PROB_MAX
             });
             decision.targetMultiplier = pick.target;
+            decision.houseCycle = pick.houseCycle;
             adaptiveHitProb = pick.confidence;
             confidence = pick.confidence;
             if (this.recalibrator && confidence !== null) {
                 confidence = this.recalibrator.adjust(confidence);
             }
+            const hc = pick.houseCycle;
+            const hcTag = hc ? ` [House: ${hc.phase} (intake index ${hc.intakeIndex >= 0 ? '+' : ''}${hc.intakeIndex})]` : '';
             decision.reasons.push(
-                `adaptive target ${pick.target}x (model P(hit) ≈ ${(confidence ?? 0).toFixed(2)})`
+                `adaptive target ${pick.target}x (model P(hit) ≈ ${(confidence ?? 0).toFixed(2)})${hcTag}`
             );
         } else if (this.predictor) {
             const gate = this.predictor.shouldAllowBet();
@@ -463,17 +461,24 @@ class Brain {
         }
 
         // ADAPTIVE stake sizing: the stake follows the model's own read of
-        // THIS bet — safe picks (small target, high P(hit)) stake near the
-        // approved amount, longshot picks (big target, low P(hit)) stake a
-        // reduced share, never below ADAPTIVE_MIN_STAKE_FRACTION of it. Uses
-        // the RAW hit probability: the recalibrator is trained on fixed-target
-        // predictions and would distort the variable-target scale.
+        // THIS bet and the House Cycle state — safe picks (small target, high P(hit))
+        // stake near the approved amount, while house absorption phases scale stakes down
+        // defensively and house rebate releases scale proportionally.
         if (adaptive && Number.isFinite(adaptiveHitProb)) {
             const pMin = this.config.RISK.ADAPTIVE_PROB_MIN;
             const pMax = this.config.RISK.ADAPTIVE_PROB_MAX;
             const norm = Math.min(1, Math.max(0, (adaptiveHitProb - pMin) / Math.max(0.01, pMax - pMin)));
             const minFrac = Math.min(1, Math.max(0, this.config.RISK.ADAPTIVE_MIN_STAKE_FRACTION));
-            const frac = minFrac + (1 - minFrac) * norm;
+            let frac = minFrac + (1 - minFrac) * norm;
+
+            // House Cycle stake multiplier adjustment
+            const hc = decision.houseCycle;
+            if (hc && hc.phase === 'HOUSE_ABSORPTION') {
+                frac *= 0.65; // defensive capital preservation
+            } else if (hc && hc.phase === 'HOUSE_REBATE_DUE') {
+                frac *= 1.15; // captured payout release
+            }
+            frac = Math.min(1.0, Math.max(minFrac * 0.5, frac));
             stake = Math.round(stake * frac * 100) / 100;
         }
 

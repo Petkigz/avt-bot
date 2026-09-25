@@ -686,12 +686,15 @@ class GameMonitor extends EventEmitter {
             });
             if (decision.shouldBet && decision.stake > 0) {
                 const isAdaptive = this.brain.strategy && this.brain.strategy.adaptiveTarget;
+                const hc = decision.houseCycle;
+                const hcTag = isAdaptive && hc ? ` | house ${hc.phase} (${hc.intakeIndex >= 0 ? '+' : ''}${hc.intakeIndex})` : '';
                 logger.info(
                     `[PAPER] BET round #${this.roundId + 1}: stake ${decision.stake} | ` +
-                    `target ${decision.targetMultiplier}x${isAdaptive ? ' (model-chosen)' : ''} | ` +
+                    `target ${decision.targetMultiplier}x${isAdaptive ? ' (house-adaptive)' : ''} | ` +
                     `strategy ${this.strategy.name} | sizing tier ${decision.tier} | ` +
                     `confidence ${(decision.confidence ?? 0).toFixed(2)} | ` +
-                    `pattern ${decision.pattern ? decision.pattern.pattern : 'none'}`
+                    `pattern ${decision.pattern ? decision.pattern.pattern : 'none'}` +
+                    hcTag
                 );
                 this.lastStanddownKey = null; // a bet happened — next block is news again
                 this.betManager.placeBet(null, null, decision.stake, {

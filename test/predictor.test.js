@@ -240,23 +240,26 @@ test('adaptiveTarget stays inside bounds and varies with the drawn probability',
         `greedy ${greedy.target}x should not exceed timid ${timid.target}x`);
 });
 
-test('adaptiveTarget follows the model: hot tail picks bigger targets than cold tail', () => {
+test('adaptiveTarget follows House Cycle: house absorption stays defensive, house rebate hunts distribution', () => {
     const mk = (values) => {
         const p = makePredictor({ targetMultiplier: 1.5, minSampleSize: 20 });
         p.setHistory(values);
         return p;
     };
-    const hot = [];
-    const cold = [];
+    const hotPayoutStream = [];
+    const heavyIntakeStream = [];
     for (let i = 0; i < 200; i++) {
-        hot.push(i % 4 === 0 ? 8 + (i % 7) : 1.1 + (i % 3) * 0.2);
-        cold.push(1.05 + (i % 5) * 0.05);
+        hotPayoutStream.push(i % 4 === 0 ? 15 + (i % 7) : 1.1 + (i % 3) * 0.2);
+        heavyIntakeStream.push(1.05 + (i % 5) * 0.05); // prolonged cold absorption
     }
-    const mid = () => 0.5; // same drawn ambition for both
-    const hotPick = mk(hot).adaptiveTarget({ minTarget: 1.3, maxTarget: 30, rng: mid });
-    const coldPick = mk(cold).adaptiveTarget({ minTarget: 1.3, maxTarget: 30, rng: mid });
-    assert.ok(hotPick.target > coldPick.target,
-        `hot-tail target ${hotPick.target} should exceed cold-tail ${coldPick.target}`);
+    const mid = () => 0.5; // same drawn seed
+    const absorptionPick = mk(hotPayoutStream).adaptiveTarget({ minTarget: 1.3, maxTarget: 30, rng: mid });
+    const rebatePick = mk(heavyIntakeStream).adaptiveTarget({ minTarget: 1.3, maxTarget: 30, rng: mid });
+
+    assert.strictEqual(absorptionPick.houseCycle.phase, 'HOUSE_ABSORPTION', 'Hot payout stream should trigger HOUSE_ABSORPTION');
+    assert.strictEqual(rebatePick.houseCycle.phase, 'HOUSE_REBATE_DUE', 'Heavy intake stream should trigger HOUSE_REBATE_DUE');
+    assert.ok(absorptionPick.target <= 1.40, `Absorption target ${absorptionPick.target} should be clamped defensively`);
+    assert.ok(rebatePick.target >= 2.00, `Rebate target ${rebatePick.target} should hunt the distribution release`);
 });
 
 test('adaptiveTarget falls back to the nominal target before enough history', () => {
@@ -317,4 +320,41 @@ test('silence breaker does not decay while bets keep settling', () => {
     }
     assert.ok(p.entryProbability > p.baseEntryProbability,
         'an actively-betting engine keeps its tightened gate');
+});
+
+test('houseCycle: detects HOUSE_REBATE_DUE during prolonged low crash streams', () => {
+    const p = makePredictor({ minSampleSize: 10 });
+    // Simulate house absorbing money with mostly cold crashes and instant busts
+    const coldHistory = [];
+    for (let i = 0; i < 30; i++) {
+        coldHistory.push(i % 5 === 0 ? 1.00 : 1.25);
+    }
+    p.setHistory(coldHistory);
+
+    const houseState = p.getHouseCycleState();
+    assert.strictEqual(houseState.phase, 'HOUSE_REBATE_DUE');
+    assert.ok(houseState.intakeIndex > 0.20, 'Intake index should be strongly positive');
+    assert.ok(houseState.suggestedTargetBand[0] >= 1.50, 'Suggested target band should shift upward for distribution');
+
+    const pick = p.adaptiveTarget({ minTarget: 1.20, maxTarget: 20 });
+    assert.ok(pick.adaptive, 'Target should be adaptive');
+    assert.strictEqual(pick.houseCycle.phase, 'HOUSE_REBATE_DUE');
+    assert.ok(pick.target >= 1.50, 'Target should hunt the expected distribution release');
+});
+
+test('houseCycle: detects HOUSE_ABSORPTION following huge payouts and clamps defensively', () => {
+    const p = makePredictor({ minSampleSize: 10 });
+    // History with a recent massive 85x crash (house paid out heavily)
+    const payoutHistory = Array(25).fill(1.80);
+    payoutHistory.push(85.50);
+    p.setHistory(payoutHistory);
+
+    const houseState = p.getHouseCycleState();
+    assert.strictEqual(houseState.phase, 'HOUSE_ABSORPTION');
+    assert.ok(houseState.intakeIndex < 0, 'Intake index should be negative after big payout');
+    assert.ok(houseState.suggestedTargetBand[1] <= 1.40, 'Suggested target band should be defensively capped');
+
+    const pick = p.adaptiveTarget({ minTarget: 1.20, maxTarget: 20 });
+    assert.strictEqual(pick.houseCycle.phase, 'HOUSE_ABSORPTION');
+    assert.ok(pick.target <= 1.40, 'Target should stay defensive to protect against house clawback');
 });

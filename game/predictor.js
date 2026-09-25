@@ -353,51 +353,208 @@ class Predictor {
     }
 
     /**
-     * ADAPTIVE mode: pick this round's target FROM the model's own live
-     * read of the crash distribution.
+     * Models the House Liquidity & RTP Return Cycle over recent crash history.
      *
-     * The model maintains a recency-weighted survival curve S(t) =
-     * P(crash >= t). We draw a desired hit probability p at random in
-     * [minProb, maxProb], then invert S to find the multiplier t where the
-     * stream is CURRENTLY delivering that probability. On a hot tail the
-     * same p maps to a bigger target; on a cold tail to a smaller one — so
-     * the target adapts to what the model sees, and varies every round.
-     *
-     * HONEST NOTE: this uses the model's DISTRIBUTION read (which shifts
-     * slowly), not per-round prediction — walk-forward validation found no
-     * per-round signal on either site. Big targets are longshots: the EV
-     * stays negative at every target; this mode explores the stream's shape.
+     * In casino economics:
+     * - The House operates on a long-run nominal RTP (~97% or 3% house edge).
+     * - "HOUSE_ABSORPTION" (House takes): Following large payouts or winning clusters,
+     *   the house reclaims margin via instant crashes (<1.10x) and low multiplier traps (<1.30x).
+     * - "HOUSE_REBATE_DUE" (House gives back): Following prolonged cold streaks or heavy intake,
+     *   the house releases liquidity (payouts 2.5x–10x+) to restore equilibrium RTP and maintain player retention.
+     * - "HOUSE_EQUILIBRIUM": Standard nominal steady-state flow.
      */
-    adaptiveTarget({ minTarget = 1.3, maxTarget = 30, minProb = 0.08, maxProb = 0.75, rng = Math.random } = {}) {
+    getHouseCycleState(windowSize = 30) {
+        const n = this.history.length;
+        if (n < 5) {
+            return {
+                phase: 'HOUSE_EQUILIBRIUM',
+                intakeIndex: 0,
+                description: 'Insufficient history for house cycle estimation',
+                roundsSince5x: null,
+                roundsSince10x: null,
+                consecutiveCold: this.consecutiveCold,
+                suggestedTargetBand: [1.30, 1.80],
+                targetBias: 1.50
+            };
+        }
+
+        const recent = this.history.slice(-windowSize);
+        const w = recent.length;
+        let nInstants = 0; // < 1.10x (100% house intake)
+        let nCold = 0;     // < 1.50x
+        let nHigh = 0;     // >= 3.00x
+        let nMega = 0;     // >= 10.00x
+        let highestRecent = 1.0;
+
+        for (const crash of recent) {
+            if (crash < 1.10) nInstants++;
+            if (crash < 1.50) nCold++;
+            if (crash >= 3.00) nHigh++;
+            if (crash >= 10.00) nMega++;
+            if (crash > highestRecent) highestRecent = crash;
+        }
+
+        let roundsSince5x = w;
+        for (let i = n - 1; i >= 0; i--) {
+            if (this.history[i] >= 5.0) {
+                roundsSince5x = n - 1 - i;
+                break;
+            }
+        }
+
+        let roundsSince10x = w;
+        for (let i = n - 1; i >= 0; i--) {
+            if (this.history[i] >= 10.0) {
+                roundsSince10x = n - 1 - i;
+                break;
+            }
+        }
+
+        const lastCrash = this.history[n - 1] || 1.0;
+        const secondLastCrash = n >= 2 ? this.history[n - 2] : 1.0;
+
+        // Empirical intake pressure calculation:
+        // Positive: house has accumulated heavy intake -> payout distribution due.
+        // Negative: house recently paid out heavily -> absorption clawback phase.
+        const coldRatio = nCold / w;
+        const instantRatio = nInstants / w;
+        const highRatio = nHigh / w;
+        const megaRatio = nMega / w;
+
+        let intakeIndex = (coldRatio - 0.45) * 1.5 + (instantRatio * 1.2) + Math.min(0.5, roundsSince5x / 30) - (highRatio * 1.5 + megaRatio * 1.0);
+
+        // Heavy payout deduction
+        if (lastCrash >= 20.0 || secondLastCrash >= 20.0) {
+            intakeIndex -= 0.8;
+        } else if (lastCrash >= 8.0) {
+            intakeIndex -= 0.4;
+        }
+
+        intakeIndex = Math.max(-1.0, Math.min(1.0, intakeIndex));
+
+        // Determine House Cycle Phase
+        let phase = 'HOUSE_EQUILIBRIUM';
+        let suggestedBand = [1.35, 1.85];
+        let targetBias = 1.50;
+        let description = '';
+
+        if (intakeIndex <= -0.15 || lastCrash >= 20.0 || highRatio >= 0.20) {
+            phase = 'HOUSE_ABSORPTION';
+            // House is recouping capital: avoid longshots, stay ultra-defensive
+            suggestedBand = [1.20, 1.38];
+            targetBias = 1.28;
+            description = `House recouping margin after large payouts (${highestRecent.toFixed(1)}x recent peak) — defensive clawback protection`;
+        } else if (intakeIndex >= 0.20 || roundsSince5x >= 14 || (this.consecutiveCold >= 3 && coldRatio >= 0.60)) {
+            phase = 'HOUSE_REBATE_DUE';
+            // House accumulated liquidity: expect payout distribution release
+            if (roundsSince10x >= 25 || nInstants >= 3) {
+                // High liquidity accumulation -> larger release
+                suggestedBand = [2.50, 6.50];
+                targetBias = 3.80;
+                description = `House accumulated excess liquidity (${roundsSince5x} rounds since >=5x, ${(coldRatio * 100).toFixed(0)}% cold) — distribution release expected`;
+            } else {
+                suggestedBand = [1.80, 3.50];
+                targetBias = 2.40;
+                description = `House RTP rebalancing due (${roundsSince5x} rounds dry) — targeting moderate payout release`;
+            }
+        } else {
+            phase = 'HOUSE_EQUILIBRIUM';
+            suggestedBand = [1.35, 1.95];
+            targetBias = 1.55;
+            description = 'House operating in normal balanced margin equilibrium';
+        }
+
+        return {
+            phase,
+            intakeIndex: Number(intakeIndex.toFixed(3)),
+            coldRatio: Number(coldRatio.toFixed(3)),
+            instantCount: nInstants,
+            roundsSince5x,
+            roundsSince10x,
+            lastCrash,
+            suggestedTargetBand: suggestedBand,
+            targetBias,
+            description
+        };
+    }
+
+    /**
+     * ADAPTIVE mode with House Liquidity & RTP Cycle Awareness.
+     *
+     * Incorporates the House Intake & Payout state into the distribution search:
+     * 1. If HOUSE_ABSORPTION: Target pulls tight to the defensive floor (1.20x–1.38x) to protect capital.
+     * 2. If HOUSE_REBATE_DUE: Target shifts to capture the calculated liquidity release (2.20x–6.50x).
+     * 3. If HOUSE_EQUILIBRIUM: Target adapts naturally to the empirical survival median (1.35x–1.95x).
+     */
+    adaptiveTarget({ minTarget = 1.20, maxTarget = 30, minProb = 0.08, maxProb = 0.75, rng = Math.random } = {}) {
         const nominal = this.targetMultiplier;
         if (this.history.length < this.minSampleSize) {
-            return { target: nominal, confidence: this.blendedProbability(nominal), p: null, adaptive: false };
+            return {
+                target: nominal,
+                confidence: this.blendedProbability(nominal),
+                p: null,
+                adaptive: false,
+                houseCycle: null
+            };
         }
+
+        const houseCycle = this.getHouseCycleState();
         const lo = Math.max(1.01, minTarget);
         const hi = Math.max(lo + 0.01, maxTarget);
-        const p = minProb + (maxProb - minProb) * rng();
 
-        // Candidate targets: a log-spaced grid plus recent actual crashes in
-        // the allowed band, so the inversion can land anywhere the stream goes.
-        const candidates = new Set();
-        let t = lo;
-        while (t <= hi) { candidates.add(Number(t.toFixed(2))); t *= 1.05; }
-        candidates.add(Number(hi.toFixed(2)));
-        for (const v of this.history.slice(-500)) {
-            if (v >= lo && v <= hi) candidates.add(Number(v.toFixed(2)));
+        // Bound search window using the House Cycle's suggested band
+        const bandLo = Math.max(lo, houseCycle.suggestedTargetBand[0]);
+        const bandHi = Math.min(hi, houseCycle.suggestedTargetBand[1]);
+
+        // Map house state to desired hit probability window on survival curve S(t)
+        let targetProb;
+        if (houseCycle.phase === 'HOUSE_ABSORPTION') {
+            // High survival probability desired (defensive)
+            targetProb = 0.70 + (0.85 - 0.70) * rng();
+        } else if (houseCycle.phase === 'HOUSE_REBATE_DUE') {
+            // Hunting payout distribution
+            const pFloor = Math.max(minProb, 1 / (bandHi * 1.3));
+            const pCeil = Math.min(maxProb, 1 / (bandLo * 0.9));
+            targetProb = pFloor + (pCeil - pFloor) * rng();
+        } else {
+            // Equilibrium balanced
+            targetProb = 0.50 + (0.72 - 0.50) * rng();
         }
 
-        let best = lo;
+        // Candidate targets around the house band and recent stream
+        const candidates = new Set();
+        let t = bandLo;
+        while (t <= bandHi) {
+            candidates.add(Number(t.toFixed(2)));
+            t *= 1.04;
+        }
+        candidates.add(Number(bandHi.toFixed(2)));
+        for (const v of this.history.slice(-300)) {
+            if (v >= bandLo && v <= bandHi) candidates.add(Number(v.toFixed(2)));
+        }
+
+        let best = bandLo;
         let bestDiff = Infinity;
         let bestS = null;
         for (const cand of candidates) {
             const s = this.weightedProbCrashAtLeast(cand);
             if (s === null) continue;
-            const diff = Math.abs(s - p);
-            if (diff < bestDiff) { bestDiff = diff; best = cand; bestS = s; }
+            const diff = Math.abs(s - targetProb);
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                best = cand;
+                bestS = s;
+            }
         }
-        const target = Math.min(hi, Math.max(lo, best));
-        return { target, confidence: bestS, p, adaptive: true };
+
+        const target = Math.min(bandHi, Math.max(bandLo, best));
+        return {
+            target,
+            confidence: bestS,
+            p: targetProb,
+            adaptive: true,
+            houseCycle
+        };
     }
 
     average() {
