@@ -358,3 +358,21 @@ test('houseCycle: detects HOUSE_ABSORPTION following huge payouts and clamps def
     assert.strictEqual(pick.houseCycle.phase, 'HOUSE_ABSORPTION');
     assert.ok(pick.target <= 1.40, 'Target should stay defensive to protect against house clawback');
 });
+
+test('distributionRegime: getDistributionRegimeState maps empirical payout clusters vs cold regimes', () => {
+    const p = makePredictor({ minSampleSize: 10 });
+    const coldHistory = Array(30).fill(1.20);
+    p.setHistory(coldHistory);
+
+    const regimeCold = p.getDistributionRegimeState();
+    assert.strictEqual(regimeCold.phase, 'REGIME_COLD_ABSORPTION');
+    assert.strictEqual(regimeCold.legacyPhase, 'HOUSE_REBATE_DUE');
+
+    const payoutHistory = Array(25).fill(1.80);
+    payoutHistory.push(55.0);
+    p.setHistory(payoutHistory);
+
+    const regimeCluster = p.getDistributionRegimeState();
+    assert.strictEqual(regimeCluster.phase, 'REGIME_PAYOUT_CLUSTER');
+    assert.strictEqual(regimeCluster.legacyPhase, 'HOUSE_ABSORPTION');
+});

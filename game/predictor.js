@@ -353,23 +353,24 @@ class Predictor {
     }
 
     /**
-     * Models the House Liquidity & RTP Return Cycle over recent crash history.
+     * Models the Empirical Distribution Regime & Payout Cluster Dynamics over recent history.
      *
-     * In casino economics:
-     * - The House operates on a long-run nominal RTP (~97% or 3% house edge).
-     * - "HOUSE_ABSORPTION" (House takes): Following large payouts or winning clusters,
-     *   the house reclaims margin via instant crashes (<1.10x) and low multiplier traps (<1.30x).
-     * - "HOUSE_REBATE_DUE" (House gives back): Following prolonged cold streaks or heavy intake,
-     *   the house releases liquidity (payouts 2.5x–10x+) to restore equilibrium RTP and maintain player retention.
-     * - "HOUSE_EQUILIBRIUM": Standard nominal steady-state flow.
+     * Empirical Dynamics:
+     * - "REGIME_PAYOUT_CLUSTER" (Clawback / Absorption): Following large payouts or winning clusters,
+     *   the empirical distribution shifts toward low multiplier clusters (<1.30x) and instant busts (<1.10x).
+     *   Clamps targets defensively (1.20x–1.38x) to protect bankroll.
+     * - "REGIME_COLD_ABSORPTION" (Distribution Release): Following prolonged cold streaks or dry periods,
+     *   the empirical distribution exhibits variance release (payouts 1.80x–6.50x+).
+     * - "REGIME_EQUILIBRIUM": Standard nominal steady-state flow (1.35x–1.95x).
      */
-    getHouseCycleState(windowSize = 30) {
+    getDistributionRegimeState(windowSize = 30) {
         const n = this.history.length;
         if (n < 5) {
             return {
-                phase: 'HOUSE_EQUILIBRIUM',
+                phase: 'REGIME_EQUILIBRIUM',
+                legacyPhase: 'HOUSE_EQUILIBRIUM',
                 intakeIndex: 0,
-                description: 'Insufficient history for house cycle estimation',
+                description: 'Insufficient history for distribution regime estimation',
                 roundsSince5x: null,
                 roundsSince10x: null,
                 consecutiveCold: this.consecutiveCold,
@@ -380,7 +381,7 @@ class Predictor {
 
         const recent = this.history.slice(-windowSize);
         const w = recent.length;
-        let nInstants = 0; // < 1.10x (100% house intake)
+        let nInstants = 0; // < 1.10x (instant busts)
         let nCold = 0;     // < 1.50x
         let nHigh = 0;     // >= 3.00x
         let nMega = 0;     // >= 10.00x
@@ -413,9 +414,9 @@ class Predictor {
         const lastCrash = this.history[n - 1] || 1.0;
         const secondLastCrash = n >= 2 ? this.history[n - 2] : 1.0;
 
-        // Empirical intake pressure calculation:
-        // Positive: house has accumulated heavy intake -> payout distribution due.
-        // Negative: house recently paid out heavily -> absorption clawback phase.
+        // Empirical intake / payout cluster pressure index:
+        // Positive: prolonged cold stream -> payout distribution due.
+        // Negative: recent large payout cluster -> defensive recouping regime.
         const coldRatio = nCold / w;
         const instantRatio = nInstants / w;
         const highRatio = nHigh / w;
@@ -423,7 +424,7 @@ class Predictor {
 
         let intakeIndex = (coldRatio - 0.45) * 1.5 + (instantRatio * 1.2) + Math.min(0.5, roundsSince5x / 30) - (highRatio * 1.5 + megaRatio * 1.0);
 
-        // Heavy payout deduction
+        // Large payout cluster deduction
         if (lastCrash >= 20.0 || secondLastCrash >= 20.0) {
             intakeIndex -= 0.8;
         } else if (lastCrash >= 8.0) {
@@ -432,40 +433,44 @@ class Predictor {
 
         intakeIndex = Math.max(-1.0, Math.min(1.0, intakeIndex));
 
-        // Determine House Cycle Phase
-        let phase = 'HOUSE_EQUILIBRIUM';
+        // Determine Distribution Regime Phase
+        let phase = 'REGIME_EQUILIBRIUM';
+        let legacyPhase = 'HOUSE_EQUILIBRIUM';
         let suggestedBand = [1.35, 1.85];
         let targetBias = 1.50;
         let description = '';
 
         if (intakeIndex <= -0.15 || lastCrash >= 20.0 || highRatio >= 0.20) {
-            phase = 'HOUSE_ABSORPTION';
-            // House is recouping capital: avoid longshots, stay ultra-defensive
+            phase = 'REGIME_PAYOUT_CLUSTER';
+            legacyPhase = 'HOUSE_ABSORPTION';
+            // Post-cluster clawback: avoid longshots, stay ultra-defensive
             suggestedBand = [1.20, 1.38];
             targetBias = 1.28;
-            description = `House recouping margin after large payouts (${highestRecent.toFixed(1)}x recent peak) — defensive clawback protection`;
+            description = `Payout cluster clawback (${highestRecent.toFixed(1)}x recent peak) — defensive low trap protection`;
         } else if (intakeIndex >= 0.20 || roundsSince5x >= 14 || (this.consecutiveCold >= 3 && coldRatio >= 0.60)) {
-            phase = 'HOUSE_REBATE_DUE';
-            // House accumulated liquidity: expect payout distribution release
+            phase = 'REGIME_COLD_ABSORPTION';
+            legacyPhase = 'HOUSE_REBATE_DUE';
+            // Prolonged cold stream: distribution release expected
             if (roundsSince10x >= 25 || nInstants >= 3) {
-                // High liquidity accumulation -> larger release
                 suggestedBand = [2.50, 6.50];
                 targetBias = 3.80;
-                description = `House accumulated excess liquidity (${roundsSince5x} rounds since >=5x, ${(coldRatio * 100).toFixed(0)}% cold) — distribution release expected`;
+                description = `Prolonged cold stream (${roundsSince5x} rounds dry >=5x, ${(coldRatio * 100).toFixed(0)}% cold) — distribution release expected`;
             } else {
                 suggestedBand = [1.80, 3.50];
                 targetBias = 2.40;
-                description = `House RTP rebalancing due (${roundsSince5x} rounds dry) — targeting moderate payout release`;
+                description = `Distribution rebalancing due (${roundsSince5x} rounds dry) — targeting moderate payout release`;
             }
         } else {
-            phase = 'HOUSE_EQUILIBRIUM';
+            phase = 'REGIME_EQUILIBRIUM';
+            legacyPhase = 'HOUSE_EQUILIBRIUM';
             suggestedBand = [1.35, 1.95];
             targetBias = 1.55;
-            description = 'House operating in normal balanced margin equilibrium';
+            description = 'Operating in normal balanced distribution equilibrium';
         }
 
         return {
             phase,
+            legacyPhase,
             intakeIndex: Number(intakeIndex.toFixed(3)),
             coldRatio: Number(coldRatio.toFixed(3)),
             instantCount: nInstants,
@@ -478,13 +483,22 @@ class Predictor {
         };
     }
 
+    /** Backward-compatible alias for getDistributionRegimeState. */
+    getHouseCycleState(windowSize = 30) {
+        const state = this.getDistributionRegimeState(windowSize);
+        return {
+            ...state,
+            phase: state.phase === 'REGIME_PAYOUT_CLUSTER' ? 'HOUSE_ABSORPTION' : (state.phase === 'REGIME_COLD_ABSORPTION' ? 'HOUSE_REBATE_DUE' : 'HOUSE_EQUILIBRIUM')
+        };
+    }
+
     /**
-     * ADAPTIVE mode with House Liquidity & RTP Cycle Awareness.
+     * ADAPTIVE mode with Distribution Regime Awareness.
      *
-     * Incorporates the House Intake & Payout state into the distribution search:
-     * 1. If HOUSE_ABSORPTION: Target pulls tight to the defensive floor (1.20x–1.38x) to protect capital.
-     * 2. If HOUSE_REBATE_DUE: Target shifts to capture the calculated liquidity release (2.20x–6.50x).
-     * 3. If HOUSE_EQUILIBRIUM: Target adapts naturally to the empirical survival median (1.35x–1.95x).
+     * Incorporates the stream's empirical regime state into the distribution search:
+     * 1. If REGIME_PAYOUT_CLUSTER / HOUSE_ABSORPTION: Target pulls tight to defensive floor (1.20x–1.38x).
+     * 2. If REGIME_COLD_ABSORPTION / HOUSE_REBATE_DUE: Target shifts to capture calculated release (1.80x–6.50x).
+     * 3. If REGIME_EQUILIBRIUM / HOUSE_EQUILIBRIUM: Target adapts to empirical median (1.35x–1.95x).
      */
     adaptiveTarget({ minTarget = 1.20, maxTarget = 30, minProb = 0.08, maxProb = 0.75, rng = Math.random } = {}) {
         const nominal = this.targetMultiplier;
@@ -494,24 +508,26 @@ class Predictor {
                 confidence: this.blendedProbability(nominal),
                 p: null,
                 adaptive: false,
-                houseCycle: null
+                houseCycle: null,
+                regimeState: null
             };
         }
 
+        const regimeState = this.getDistributionRegimeState();
         const houseCycle = this.getHouseCycleState();
         const lo = Math.max(1.01, minTarget);
         const hi = Math.max(lo + 0.01, maxTarget);
 
-        // Bound search window using the House Cycle's suggested band
-        const bandLo = Math.max(lo, houseCycle.suggestedTargetBand[0]);
-        const bandHi = Math.min(hi, houseCycle.suggestedTargetBand[1]);
+        // Bound search window using the Regime's suggested band
+        const bandLo = Math.max(lo, regimeState.suggestedTargetBand[0]);
+        const bandHi = Math.min(hi, regimeState.suggestedTargetBand[1]);
 
-        // Map house state to desired hit probability window on survival curve S(t)
+        // Map regime state to desired hit probability window on survival curve S(t)
         let targetProb;
-        if (houseCycle.phase === 'HOUSE_ABSORPTION') {
+        if (regimeState.phase === 'REGIME_PAYOUT_CLUSTER' || houseCycle.phase === 'HOUSE_ABSORPTION') {
             // High survival probability desired (defensive)
             targetProb = 0.70 + (0.85 - 0.70) * rng();
-        } else if (houseCycle.phase === 'HOUSE_REBATE_DUE') {
+        } else if (regimeState.phase === 'REGIME_COLD_ABSORPTION' || houseCycle.phase === 'HOUSE_REBATE_DUE') {
             // Hunting payout distribution
             const pFloor = Math.max(minProb, 1 / (bandHi * 1.3));
             const pCeil = Math.min(maxProb, 1 / (bandLo * 0.9));
@@ -521,7 +537,7 @@ class Predictor {
             targetProb = 0.50 + (0.72 - 0.50) * rng();
         }
 
-        // Candidate targets around the house band and recent stream
+        // Candidate targets around the suggested band and recent stream
         const candidates = new Set();
         let t = bandLo;
         while (t <= bandHi) {
@@ -553,6 +569,7 @@ class Predictor {
             confidence: bestS,
             p: targetProb,
             adaptive: true,
+            regimeState,
             houseCycle
         };
     }

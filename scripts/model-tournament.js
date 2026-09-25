@@ -45,6 +45,7 @@ const PredictionLogger = require('../game/predictionLogger');
 const { FEATURE_VERSION, symbolOf } = require('../game/features');
 const { pairRecords } = require('./error-analysis');
 const { rowsForSite } = require('./train-model');
+const { fitEnsembleWeights } = require('../game/ensemble');
 const {
     fitLogistic, fitBoosting, fitPlatt,
     logisticToJson, boostingToJson, patternModelToJson,
@@ -272,6 +273,27 @@ function runTournament(rows, opts = {}) {
     // on the walk before it earns a shot at the holdout.
     const walkQualified = winnerStats.ci && winnerStats.ci.lo > 0;
 
+    // ---- Meta-Ensemble Stacking Optimization on OOS Walk Folds -----------
+    const oosMetaDataset = [];
+    const metaSourceNames = ['statistical', 'logistic', 'boosting-25', 'boosting-50', 'pattern-3'];
+    for (let i = 0; i < yOOS.length; i++) {
+        const probs = {
+            statistical: contestants.statistical[i],
+            logistic: applyCal('logistic', contestants.logistic)[i],
+            'boosting-25': applyCal('boosting-25', contestants['boosting-25'])[i],
+            'boosting-50': applyCal('boosting-50', contestants['boosting-50'])[i],
+            'pattern-3': applyCal('pattern-3', contestants['pattern-3'])[i]
+        };
+        oosMetaDataset.push({ probs, outcome: yOOS[i] });
+    }
+
+    const ensembleFit = fitEnsembleWeights(oosMetaDataset, metaSourceNames);
+    const learnedEnsembleWeights = {
+        statistical: ensembleFit.weights.statistical || 1.0,
+        feature_model: Math.max(1.0, Number((((ensembleFit.weights.logistic || 1.0) + (ensembleFit.weights['boosting-25'] || 1.0) + (ensembleFit.weights['boosting-50'] || 1.0)) / 3).toFixed(2))),
+        hypothesis: 1.25
+    };
+
     const report = {
         n: rows.length, nWalk: walkRows.length, nHoldout: holdoutRows.length,
         folds: segments.length, oosRows: idx.length, target,
@@ -286,6 +308,12 @@ function runTournament(rows, opts = {}) {
             significantFwer: v.significantFwer,
             bootstrapMethod: 'moving_block'
         }])),
+        metaEnsemble: {
+            weights: ensembleFit.weights,
+            brierOOS: ensembleFit.brier,
+            baselineBrier: ensembleFit.baselineBrier,
+            learnedBrainWeights: learnedEnsembleWeights
+        },
         winner: winnerName, walkQualified
     };
 
@@ -405,7 +433,8 @@ function runSite(siteId, opts = {}) {
             site: siteId, target: summary.target, winner: result.winner,
             brierSkill: summary.holdout ? summary.holdout.skill : null,
             trained: trainedAt, trainingEndTs, rowsAtTraining: all.length,
-            featureVersion: FEATURE_VERSION
+            featureVersion: FEATURE_VERSION,
+            ensembleWeights: summary.metaEnsemble ? summary.metaEnsemble.learnedBrainWeights : {}
         };
         const json = { ...result.deployModel.json, meta: { ...result.deployModel.json.meta, ...meta } };
         saveFeatureModel(config.DATA_DIR, siteId, json);
@@ -415,6 +444,7 @@ function runSite(siteId, opts = {}) {
             brierSkill: summary.holdout ? summary.holdout.skill : null,
             entryHitRate: summary.holdout ? summary.holdout.entryHitRate : null,
             evPerBet: summary.holdout ? summary.holdout.evPerBet : null,
+            ensembleWeights: summary.metaEnsemble ? summary.metaEnsemble.learnedBrainWeights : {},
             n: summary.n, nHoldout: summary.nHoldout
         });
     } else {

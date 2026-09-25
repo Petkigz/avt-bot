@@ -18,6 +18,8 @@
     "tournament": "node scripts/model-tournament.js",
     "fair:audit": "node scripts/fair-audit.js",
     "research:dependence": "node scripts/research-dependence.js",
+    "research:dependence-test": "node scripts/dependence-test.js",
+    "test:dependence": "node scripts/dependence-test.js",
     "research:distribution": "node scripts/research-distribution.js",
     "research:trajectory": "node scripts/research-trajectory.js",
     "research:hypotheses": "node scripts/research-hypotheses.js",
