@@ -610,3 +610,33 @@ test('Brain dynamic hot-swap between SMART and PLAIN mode', () => {
     d = brain.decide({ bettingWindow: true, balance: 50000 });
     assert.strictEqual(d.shouldBet, false);
 });
+
+test('Brain IRRATIONAL mode: bold goal-seeking dynamically stakes and targets multiplier to fulfill daily quota', () => {
+    const { brain, bankroll } = makeBrain();
+    brain.setSystemMode('IRRATIONAL');
+    brain.setDailyQuota(10000);
+
+    assert.strictEqual(brain.systemMode, 'IRRATIONAL');
+    assert.strictEqual(brain.tier, 'IRRATIONAL');
+
+    // Gap is full 10,000 UGX
+    const d1 = brain.decide({ bettingWindow: true, balance: 50000 });
+    assert.strictEqual(d1.shouldBet, true);
+    assert.strictEqual(d1.systemMode, 'IRRATIONAL');
+    assert.ok(d1.stake > 0);
+    assert.ok(d1.targetMultiplier > 1.0);
+    assert.strictEqual(d1.remainingGap, 10000);
+    assert.match(d1.reasons.join(' '), /Irrational goal-seeking/);
+
+    // Simulate winning trade that meets the daily quota
+    bankroll.daily.pnl = 12000;
+    const dGoal = brain.decide({ bettingWindow: true, balance: 62000 });
+    assert.strictEqual(dGoal.shouldBet, false, 'Should stop betting when quota is achieved');
+    assert.strictEqual(dGoal.quotaAchieved, true);
+    assert.match(dGoal.reasons.join(' '), /DAILY PROFIT QUOTA ACHIEVED/);
+
+    const snap = brain.snapshot();
+    assert.strictEqual(snap.systemMode, 'IRRATIONAL');
+    assert.strictEqual(snap.dailyQuota, 10000);
+    assert.strictEqual(snap.quotaAchieved, true);
+});

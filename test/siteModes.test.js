@@ -6,7 +6,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const {
-    loadSiteModes, saveSiteModes, resolveSiteMode, siteModesPath
+    loadSiteModes, saveSiteModes, resolveSiteMode, siteModesPath,
+    loadSiteQuotas, saveSiteQuotas, resolveSiteQuota, siteQuotasPath
 } = require('../util/siteModes');
 
 function makeTempDir() {
@@ -42,9 +43,20 @@ test('loadSiteModes: corrupt / non-object files never throw', () => {
 });
 
 test('resolveSiteMode: prefers explicit per-site choice, falls back safely', () => {
-    const choices = { 'betpawa.ug': 'PLAIN' };
+    const choices = { 'betpawa.ug': 'PLAIN', 'fortebet.ug': 'IRRATIONAL' };
     assert.strictEqual(resolveSiteMode(choices, 'betpawa.ug', 'SMART'), 'PLAIN');
-    assert.strictEqual(resolveSiteMode(choices, 'fortebet.ug', 'SMART'), 'SMART');
-    assert.strictEqual(resolveSiteMode(choices, 'fortebet.ug', 'PLAIN'), 'PLAIN');
-    assert.strictEqual(resolveSiteMode(choices, 'fortebet.ug'), 'SMART');
+    assert.strictEqual(resolveSiteMode(choices, 'fortebet.ug', 'SMART'), 'IRRATIONAL');
+    assert.strictEqual(resolveSiteMode(choices, 'unknown.site', 'IRRATIONAL'), 'IRRATIONAL');
+    assert.strictEqual(resolveSiteMode(choices, 'unknown.site'), 'SMART');
+});
+
+test('saveSiteQuotas + loadSiteQuotas + resolveSiteQuota round-trip', () => {
+    const dir = makeTempDir();
+    const quotas = { 'betpawa.ug': 25000, 'fortebet.ug': 50000 };
+    assert.strictEqual(saveSiteQuotas(dir, quotas), true);
+    const loaded = loadSiteQuotas(dir);
+    assert.deepStrictEqual(loaded, quotas);
+
+    assert.strictEqual(resolveSiteQuota(loaded, 'betpawa.ug', 10000), 25000);
+    assert.strictEqual(resolveSiteQuota(loaded, 'unknown.site', 10000), 10000);
 });

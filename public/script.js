@@ -87,30 +87,47 @@ socket.on('status', (s) => {
   const b = s.brain;
   if (b) {
     const isPlain = b.systemMode === 'PLAIN';
+    const isIrrational = b.systemMode === 'IRRATIONAL';
     const tierEl = document.getElementById('tier');
-    tierEl.textContent = isPlain ? 'PLAIN' : b.tier;
-    tierEl.className = 'value ' + (b.tier === 'ARMED' ? 'pos' : (b.tier === 'MICRO' || isPlain) ? 'warn' : '');
+    tierEl.textContent = (isPlain || isIrrational) ? b.systemMode : b.tier;
+    tierEl.className = 'value ' + (b.tier === 'ARMED' ? 'pos' : isIrrational ? 'neg' : (b.tier === 'MICRO' || isPlain) ? 'warn' : '');
     document.getElementById('tierNote').textContent =
-      isPlain ? '— PLAIN mode: direct mechanical betting on every round without ML gating (bankroll limits active)'
-        : b.microOnly ? '— MICRO_ONLY safety profile: stakes capped at micro size'
-          : b.tier === 'OBSERVING' ? '— warm-up: no bets until enough rounds are studied'
-            : b.tier === 'MICRO' ? '— sizing tier (not the strategy): unproven hit-rate record, micro-bets only until 25+ bets sustain ≥58% wins'
-              : '— proven hit-rate: strategy stakes (bankroll-capped)';
+      isIrrational ? `— IRRATIONAL mode: unhinged bold goal-seeking targeting daily quota (+${fmt(b.dailyQuota || 10000, 0)} UGX)`
+        : isPlain ? '— PLAIN mode: direct mechanical betting on every round without ML gating (bankroll limits active)'
+          : b.microOnly ? '— MICRO_ONLY safety profile: stakes capped at micro size'
+            : b.tier === 'OBSERVING' ? '— warm-up: no bets until enough rounds are studied'
+              : b.tier === 'MICRO' ? '— sizing tier (not the strategy): unproven hit-rate record, micro-bets only until 25+ bets sustain ≥58% wins'
+                : '— proven hit-rate: strategy stakes (bankroll-capped)';
 
     const sysBadge = document.getElementById('systemModeBadge');
     if (sysBadge) {
-      sysBadge.textContent = isPlain ? '⚙️ PLAIN SYSTEM' : '🧠 SMART SYSTEM';
-      sysBadge.className = isPlain ? 'phaseBadge plain' : 'phaseBadge smart';
+      sysBadge.textContent = isIrrational ? '🔥 IRRATIONAL MODE' : isPlain ? '⚙️ PLAIN SYSTEM' : '🧠 SMART SYSTEM';
+      sysBadge.className = isIrrational ? 'phaseBadge irrational' : isPlain ? 'phaseBadge plain' : 'phaseBadge smart';
     }
     const sysNote = document.getElementById('systemModeNote');
     if (sysNote) {
-      sysNote.textContent = isPlain
-        ? '⚙️ Plain system active: direct mechanical execution on every round using the strategy\'s target & progression without ML filters.'
-        : '🧠 Smart system active: AI feature models, Bayesian ensemble, pattern miner & statistical gating control every entry.';
+      sysNote.textContent = isIrrational
+        ? `🔥 Irrational mode active: unhinged bold goal-seeking play targeting daily profit quota of +${fmt(b.dailyQuota || 10000, 0)} UGX.`
+        : isPlain
+          ? '⚙️ Plain system active: direct mechanical execution on every round using the strategy\'s target & progression without ML filters.'
+          : '🧠 Smart system active: AI feature models, Bayesian ensemble, pattern miner & statistical gating control every entry.';
+    }
+    const quotaText = document.getElementById('quotaStatusText');
+    if (quotaText) {
+      if (isIrrational) {
+        const pnl = b.dailyProfit || 0;
+        const q = b.dailyQuota || 10000;
+        const pct = Math.max(0, Math.min(100, (pnl / q) * 100)).toFixed(0);
+        quotaText.textContent = b.quotaAchieved
+          ? `🏆 Daily Quota Achieved! (+${fmt(pnl, 0)} / target +${fmt(q, 0)} UGX — 100%)`
+          : `🎯 Goal Seeking: +${fmt(pnl, 0)} / target +${fmt(q, 0)} UGX (${pct}%) — gap: ${fmt(b.quotaGap || (q - pnl), 0)} UGX`;
+      } else {
+        quotaText.textContent = '';
+      }
     }
     const sysBtnStatus = document.getElementById('systemModeSwitchBtnStatus');
     if (sysBtnStatus) {
-      sysBtnStatus.textContent = isPlain ? '🧠 Switch to SMART' : '⚙️ Switch to PLAIN';
+      sysBtnStatus.textContent = isIrrational ? '🧠 Switch to SMART' : isPlain ? '🔥 Switch to IRRATIONAL' : '⚙️ Switch to PLAIN';
     }
 
     setText('hitRate', b.hitRate !== null && b.hitRate !== undefined ? fmt(b.hitRate * 100, 1) + '%' : '—');
@@ -895,9 +912,13 @@ let strategiesCache = [];
 let siteStrategies = {};       // explicit per-site choices
 let defaultStrategyName = null; // global default (launch pick)
 
-// Cached system modes (SMART vs PLAIN) + per-site selections (siteId -> 'SMART' | 'PLAIN').
+// Cached system modes (SMART vs PLAIN vs IRRATIONAL) + per-site selections.
 let siteModes = {};
 let defaultSystemMode = 'SMART';
+
+// Cached daily profit quotas + per-site selections.
+let siteQuotas = {};
+let defaultDailyQuota = 10000;
 
 function strategyLabel(s) {
   const target = s.adaptiveTarget
@@ -914,6 +935,17 @@ function effectiveStrategyFor(siteId) {
 /** The system mode a site ACTUALLY runs: explicit choice, else default. */
 function effectiveSystemModeFor(siteId) {
   return (siteId && siteModes[siteId]) || defaultSystemMode || 'SMART';
+}
+
+/** The daily profit quota a site ACTUALLY runs: explicit choice, else default. */
+function effectiveDailyQuotaFor(siteId) {
+  return (siteId && siteQuotas[siteId]) || defaultDailyQuota || 10000;
+}
+
+function nextSystemMode(cur) {
+  if (cur === 'SMART') return 'PLAIN';
+  if (cur === 'PLAIN') return 'IRRATIONAL';
+  return 'SMART';
 }
 
 async function loadStrategies() {
@@ -949,34 +981,42 @@ function syncStrategySelectToSite() {
   }
 }
 
-/** Sync the Mission-control system mode selector and button to the SELECTED site's mode. */
+/** Sync the Mission-control system mode selector, quota input and buttons. */
 function syncSystemModeSelectToSite() {
   const siteId = el('siteSelect').value;
   const sel = el('systemModeSelect');
   const btn = el('systemModeToggleBtn');
+  const quotaInput = el('dailyQuotaInput');
   const mode = effectiveSystemModeFor(siteId);
+  const quota = effectiveDailyQuotaFor(siteId);
+
   if (sel && sel.querySelector(`option[value="${mode}"]`)) {
     sel.value = mode;
   }
+  if (quotaInput && document.activeElement !== quotaInput) {
+    quotaInput.value = quota;
+  }
   if (btn) {
-    btn.textContent = mode === 'PLAIN' ? '⚙️ PLAIN' : '🧠 SMART';
-    btn.className = mode === 'PLAIN' ? 'warn' : 'primary';
-    btn.title = `Current system mode: ${mode}. Click to toggle between SMART (AI/ensemble gated) and PLAIN (direct strategy betting)`;
+    btn.textContent = mode === 'IRRATIONAL' ? '🔥 IRRATIONAL' : mode === 'PLAIN' ? '⚙️ PLAIN' : '🧠 SMART';
+    btn.className = mode === 'IRRATIONAL' ? 'danger' : mode === 'PLAIN' ? 'warn' : 'primary';
+    btn.title = `Current system mode: ${mode}. Click to cycle mode (SMART -> PLAIN -> IRRATIONAL)`;
   }
   const badge = el('systemModeBadge');
   if (badge) {
-    badge.textContent = mode === 'PLAIN' ? '⚙️ PLAIN SYSTEM' : '🧠 SMART SYSTEM';
-    badge.className = mode === 'PLAIN' ? 'phaseBadge plain' : 'phaseBadge smart';
+    badge.textContent = mode === 'IRRATIONAL' ? '🔥 IRRATIONAL MODE' : mode === 'PLAIN' ? '⚙️ PLAIN SYSTEM' : '🧠 SMART SYSTEM';
+    badge.className = mode === 'IRRATIONAL' ? 'phaseBadge irrational' : mode === 'PLAIN' ? 'phaseBadge plain' : 'phaseBadge smart';
   }
   const statusBtn = el('systemModeSwitchBtnStatus');
   if (statusBtn) {
-    statusBtn.textContent = mode === 'PLAIN' ? '🧠 Switch to SMART' : '⚙️ Switch to PLAIN';
+    statusBtn.textContent = mode === 'IRRATIONAL' ? '🧠 Switch to SMART' : mode === 'PLAIN' ? '🔥 Switch to IRRATIONAL' : '⚙️ Switch to PLAIN';
   }
   const note = el('systemModeNote');
   if (note) {
-    note.textContent = mode === 'PLAIN'
-      ? '⚙️ Plain system active: direct mechanical execution on every round using the strategy\'s target & progression without ML filters.'
-      : '🧠 Smart system active: AI feature models, Bayesian ensemble, pattern miner & statistical gating control every entry.';
+    note.textContent = mode === 'IRRATIONAL'
+      ? `🔥 Irrational mode active: unhinged bold goal-seeking targeting daily profit quota of +${fmt(quota, 0)} UGX.`
+      : mode === 'PLAIN'
+        ? '⚙️ Plain system active: direct mechanical execution on every round using the strategy\'s target & progression without ML filters.'
+        : '🧠 Smart system active: AI feature models, Bayesian ensemble, pattern miner & statistical gating control every entry.';
   }
 }
 
@@ -1013,14 +1053,14 @@ function renderSiteStrategiesPanel() {
 
     const curSysMode = effectiveSystemModeFor(site.id);
     const modeBtn = document.createElement('button');
-    modeBtn.textContent = curSysMode === 'PLAIN' ? '⚙️ PLAIN' : '🧠 SMART';
-    modeBtn.className = curSysMode === 'PLAIN' ? 'phaseBadge plain' : 'phaseBadge smart';
-    modeBtn.title = `Click to toggle ${site.name} between SMART (AI/ensemble gated) and PLAIN (direct strategy betting)`;
+    modeBtn.textContent = curSysMode === 'IRRATIONAL' ? '🔥 IRRATIONAL' : curSysMode === 'PLAIN' ? '⚙️ PLAIN' : '🧠 SMART';
+    modeBtn.className = curSysMode === 'IRRATIONAL' ? 'phaseBadge irrational' : curSysMode === 'PLAIN' ? 'phaseBadge plain' : 'phaseBadge smart';
+    modeBtn.title = `Click to cycle ${site.name} mode (currently ${curSysMode})`;
     modeBtn.style.cursor = 'pointer';
 
     modeBtn.addEventListener('click', async () => {
       modeBtn.disabled = true;
-      const nextMode = effectiveSystemModeFor(site.id) === 'PLAIN' ? 'SMART' : 'PLAIN';
+      const nextMode = nextSystemMode(effectiveSystemModeFor(site.id));
       try {
         const res = await fetch(`/api/system-mode/${encodeURIComponent(nextMode)}?site=${encodeURIComponent(site.id)}`, { method: 'PUT' });
         const body = await res.json();
@@ -1091,6 +1131,10 @@ function applyControlState(cs) {
     siteModes = { ...cs.siteModes };
   }
   if (cs.systemMode) defaultSystemMode = cs.systemMode;
+  if (cs.siteQuotas && typeof cs.siteQuotas === 'object') {
+    siteQuotas = { ...cs.siteQuotas };
+  }
+  if (cs.dailyQuota) defaultDailyQuota = cs.dailyQuota;
   strategySelect.disabled = false; // strategy is switchable at any time via Apply
   // The dropdown reflects the SELECTED site's strategy (per-site selection).
   const selectedSite = el('siteSelect').value;
@@ -1282,7 +1326,7 @@ onEvent('systemModeSelect', 'change', async () => {
 onEvent('systemModeToggleBtn', 'click', async () => {
   const selectedSite = el('siteSelect').value;
   const curMode = effectiveSystemModeFor(selectedSite);
-  const nextMode = curMode === 'PLAIN' ? 'SMART' : 'PLAIN';
+  const nextMode = nextSystemMode(curMode);
   const qs = selectedSite ? `?site=${encodeURIComponent(selectedSite)}` : '';
   try {
     const res = await fetch(`/api/system-mode/${encodeURIComponent(nextMode)}${qs}`, { method: 'PUT' });
@@ -1303,7 +1347,7 @@ onEvent('systemModeToggleBtn', 'click', async () => {
 onEvent('systemModeSwitchBtnStatus', 'click', async () => {
   const selectedSite = el('siteSelect').value;
   const curMode = effectiveSystemModeFor(selectedSite);
-  const nextMode = curMode === 'PLAIN' ? 'SMART' : 'PLAIN';
+  const nextMode = nextSystemMode(curMode);
   const qs = selectedSite ? `?site=${encodeURIComponent(selectedSite)}` : '';
   try {
     const res = await fetch(`/api/system-mode/${encodeURIComponent(nextMode)}${qs}`, { method: 'PUT' });
@@ -1320,6 +1364,31 @@ onEvent('systemModeSwitchBtnStatus', 'click', async () => {
     el('controlStatus').textContent = `System mode change failed: ${e.message}`;
   }
 });
+
+async function applyDailyQuota() {
+  const selectedSite = el('siteSelect').value;
+  const quota = parseFloat(el('dailyQuotaInput').value);
+  if (!Number.isFinite(quota) || quota <= 0) {
+    alert('Please enter a valid positive daily profit quota');
+    return;
+  }
+  const qs = selectedSite ? `?site=${encodeURIComponent(selectedSite)}` : '';
+  try {
+    const res = await fetch(`/api/daily-quota/${encodeURIComponent(quota)}${qs}`, { method: 'PUT' });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    if (body.site) siteQuotas[body.site] = body.quota;
+    else defaultDailyQuota = body.quota;
+    el('controlStatus').textContent = body.site
+      ? `${body.site}: daily quota set to +${fmt(body.quota, 0)} UGX ✓`
+      : `Default daily quota set to +${fmt(body.quota, 0)} UGX ✓`;
+    syncSystemModeSelectToSite();
+  } catch (e) {
+    el('controlStatus').textContent = `Quota update failed: ${e.message}`;
+  }
+}
+onEvent('dailyQuotaApplyBtn', 'click', applyDailyQuota);
+onEvent('dailyQuotaInput', 'change', applyDailyQuota);
 
 // Observe-only <-> live betting toggle (hard confirmation for LIVE)
 let currentMode = 'paper';

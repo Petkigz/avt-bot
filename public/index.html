@@ -86,6 +86,7 @@
         .phaseBadge.paper { background: #274b73; color: #cfe6ff; border-color: #37648f; }
         .phaseBadge.smart { background: #1a334d; color: #7cb5ec; border-color: #2b5480; }
         .phaseBadge.plain { background: #3d2f1b; color: #ffc46b; border-color: #634d2c; }
+        .phaseBadge.irrational { background: #4d1a1a; color: #ff9999; border-color: #802b2b; font-weight: 700; box-shadow: 0 0 8px rgba(255,80,80,0.3); }
         @media (max-width: 800px) { #learningPanel, #sessionRow, #missionGrid { grid-template-columns: 1fr; } }
     </style>
 </head>
@@ -113,13 +114,18 @@
                         <select id="strategySelect"></select>
                     </label>
                     <button id="strategyApplyBtn" title="Apply the selected strategy to the SELECTED site now (hot-swap if running, remembered across restarts)">✓ Apply strategy</button>
-                    <label class="small">System <span class="small" style="color:#8aa;">(Smart vs Plain)</span>
+                    <label class="small">System <span class="small" style="color:#8aa;">(Mode)</span>
                         <select id="systemModeSelect">
                             <option value="SMART">🧠 SMART (AI / ML Filtered)</option>
                             <option value="PLAIN">⚙️ PLAIN (Direct Strategy Bets)</option>
+                            <option value="IRRATIONAL">🔥 IRRATIONAL (Unhinged Goal-Seeking)</option>
                         </select>
                     </label>
-                    <button id="systemModeToggleBtn" title="Quick toggle between SMART (AI &amp; statistical gating) and PLAIN (direct mechanical betting on every round)">🧠 SMART</button>
+                    <button id="systemModeToggleBtn" title="Cycle between SMART, PLAIN, and IRRATIONAL mode">🧠 SMART</button>
+                    <label class="small" id="dailyQuotaLabel">Daily Quota
+                        <input type="number" id="dailyQuotaInput" style="width:105px;padding:5px 8px;" placeholder="10000" min="100" step="500">
+                    </label>
+                    <button id="dailyQuotaApplyBtn" title="Set the daily profit quota for goal-seeking">✓ Set Quota</button>
                     <span id="strategyHint" class="small" style="color:#e2b93b;"></span>
                 </div>
                 <div class="siteRow">
@@ -143,14 +149,15 @@
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
                     <span id="modeBadge" class="paper">PAPER MODE</span>
                     <span id="systemModeBadge" class="phaseBadge smart">🧠 SMART SYSTEM</span>
-                    <button id="systemModeSwitchBtnStatus" style="font-size:0.78em;padding:3px 10px;">⚙️ Switch to PLAIN</button>
+                    <button id="systemModeSwitchBtnStatus" style="font-size:0.78em;padding:3px 10px;">⚙️ Switch Mode</button>
                     <button id="modeToggleBtnStatus" class="hidden" style="font-size:0.78em;padding:3px 10px;">🔴 Switch to LIVE betting</button>
                 </div>
                 <p class="small" id="tierNote"></p>
+                <p class="small" id="quotaStatusText"></p>
                 <p class="small" id="systemModeNote" style="color:#8aa;"></p>
                 <p class="small" id="strategyProfile"></p>
                 <p class="small">Each site runs its OWN engine and memory — bookmakers host separate Aviator streams. Login is always manual; passwords are never stored.</p>
-                <p class="small" style="color:var(--amber);">Auto-trade: in SMART mode, the bot uses calibrated ML ensemble signals; in PLAIN mode, it wagers directly on every round. Session/daily loss caps and stake caps ALWAYS stay enforced.</p>
+                <p class="small" style="color:var(--amber);">Auto-trade: in SMART mode, the bot uses calibrated ML ensemble signals; in PLAIN mode, it wagers directly on every round; in IRRATIONAL mode, it uses unhinged bold play to fill a daily profit quota.</p>
             </div>
         </div>
 

@@ -34,14 +34,17 @@ function wilsonLower(wins, n, z = 1.96) {
  *   (with volatility penalty), pattern check OK, bankroll policy OK.
  */
 class Brain {
-    constructor({ config, strategy, predictor, patterns, bankroll, microOnly, signal, recalibrator, featureModel, modelVerdict, signalLifecycle, systemMode }) {
+    constructor({ config, strategy, predictor, patterns, bankroll, microOnly, signal, recalibrator, featureModel, modelVerdict, signalLifecycle, systemMode, dailyQuota }) {
         this.config = config;
         this.strategy = strategy;
         this.predictor = predictor;       // may be null (model disabled)
         this.patterns = patterns;         // may be null (patterns disabled)
         this.bankroll = bankroll;
         const rawSys = systemMode || (config && config.MODE && config.MODE.SYSTEM);
-        this.systemMode = String(rawSys || 'SMART').trim().toUpperCase() === 'PLAIN' ? 'PLAIN' : 'SMART';
+        const normSys = String(rawSys || 'SMART').trim().toUpperCase();
+        this.systemMode = (normSys === 'PLAIN' || normSys === 'IRRATIONAL') ? normSys : 'SMART';
+        this.dailyQuota = Number.isFinite(dailyQuota) && dailyQuota > 0
+            ? dailyQuota : ((config && config.RISK && config.RISK.DAILY_QUOTA) || 10000);
         // Phase-3 deployed feature model: { predict(features) -> P(next >= target) }.
         // Loaded ONLY when scripts/train-model.js writes a DEPLOY verdict, so its
         // mere presence means the model beat the base-rate null out-of-sample with
@@ -64,7 +67,7 @@ class Brain {
         // Strict safety profile: never promote beyond the MICRO tier.
         this.microOnly = microOnly ?? !!(config.MICRO_ONLY);
 
-        this.tier = this.systemMode === 'PLAIN' ? 'PLAIN' : 'OBSERVING';
+        this.tier = (this.systemMode === 'PLAIN' || this.systemMode === 'IRRATIONAL') ? this.systemMode : 'OBSERVING';
         this.paused = false;         // user toggle from the dashboard (UI kill-switch)
         this.pendingResult = null;   // outcome of the last settled trade
         this.stakeCache = null;      // stake computed from the last result
@@ -191,9 +194,10 @@ class Brain {
     decide({ bettingWindow, balance = null, cooldownRounds = 0, halted = false }) {
         const reasons = [];
         const isPlain = this.systemMode === 'PLAIN';
+        const isIrrational = this.systemMode === 'IRRATIONAL';
         const decision = {
             shouldBet: false, stake: 0, confidence: null,
-            pattern: null, tier: isPlain ? 'PLAIN' : this.tier, reasons, mode: this.mode,
+            pattern: null, tier: (isPlain || isIrrational) ? this.systemMode : this.tier, reasons, mode: this.mode,
             systemMode: this.systemMode,
             targetMultiplier: this.strategy ? this.strategy.targetMultiplier : null
         };
@@ -247,7 +251,84 @@ class Brain {
             return this.finish(decision);
         }
 
-        // ---- Tier gate (warm-up is MANDATORY) ----
+        if (isIrrational) {
+            // ---- IRRATIONAL EXECUTION MODE: Unhinged Bold Goal-Seeking ----
+            // Directly targets fulfilling the daily profit quota (Dubins-Savage Bold Play).
+            // Dynamically scales stake and target multiplier based on remaining gap and house momentum.
+            this.tier = 'IRRATIONAL';
+            decision.tier = 'IRRATIONAL';
+            decision.systemMode = 'IRRATIONAL';
+
+            if (this.bankroll && !this.bankroll.hasReference()) {
+                reasons.push('no verified bankroll yet — waiting for balance');
+                return this.finish(decision);
+            }
+
+            const currentDailyProfit = this.bankroll ? this.bankroll.daily.pnl : 0;
+            const remainingGap = this.dailyQuota - currentDailyProfit;
+            decision.dailyQuota = this.dailyQuota;
+            decision.dailyProfit = currentDailyProfit;
+            decision.remainingGap = remainingGap;
+
+            if (remainingGap <= 0) {
+                decision.shouldBet = false;
+                decision.quotaAchieved = true;
+                decision.reasons.push(
+                    `🔥 DAILY PROFIT QUOTA ACHIEVED! (+${currentDailyProfit.toFixed(0)} UGX >= target ${this.dailyQuota.toFixed(0)} UGX) — goal reached for today!`
+                );
+                return this.finish(decision);
+            }
+
+            const bankrollRef = this.bankroll ? (this.bankroll.balance ?? this.bankroll.startingBalance) : 10000;
+            const minBet = this.strategy ? this.strategy.minBet : 100;
+            const maxBet = this.strategy ? this.strategy.maxBet : 50000;
+
+            if (bankrollRef < minBet) {
+                decision.shouldBet = false;
+                decision.reasons.push(`bankroll exhausted (${bankrollRef.toFixed(0)} < min stake ${minBet}) — goal seeking halted on capital exhaustion`);
+                return this.finish(decision);
+            }
+
+            const hc = (this.predictor && typeof this.predictor.houseCycleState === 'function')
+                ? this.predictor.houseCycleState() : null;
+
+            let targetMultiplier = 2.0;
+            let stake = minBet;
+
+            if (hc && hc.phase === 'HOUSE_REBATE_DUE') {
+                targetMultiplier = Math.min(10.0, Math.max(3.0, 1 + (remainingGap / Math.max(minBet, bankrollRef * 0.12))));
+                const neededStake = remainingGap / (targetMultiplier - 1);
+                stake = Math.min(bankrollRef * 0.35, Math.max(minBet, neededStake));
+            } else if (remainingGap <= minBet * 3) {
+                targetMultiplier = 1.35;
+                const neededStake = remainingGap / 0.35;
+                stake = Math.min(bankrollRef * 0.50, Math.max(minBet, neededStake));
+            } else {
+                targetMultiplier = Math.min(5.0, Math.max(1.80, 1 + (remainingGap / Math.max(minBet, bankrollRef * 0.20))));
+                const neededStake = remainingGap / (targetMultiplier - 1);
+                stake = Math.min(bankrollRef * 0.40, Math.max(minBet, neededStake));
+            }
+
+            if (this.pendingResult && !this.pendingResult.won) {
+                stake = Math.min(bankrollRef * 0.60, stake * 1.5);
+            }
+
+            stake = Math.round(Math.min(bankrollRef, Math.max(minBet, Math.min(maxBet, stake))) * 100) / 100;
+            targetMultiplier = Math.round(targetMultiplier * 100) / 100;
+
+            decision.shouldBet = true;
+            decision.stake = stake;
+            decision.targetMultiplier = targetMultiplier;
+            decision.confidence = 1.0;
+            decision.probSource = 'irrational-goal-seeking';
+            decision.houseCycle = hc;
+            decision.reasons.push(
+                `🔥 Irrational goal-seeking: targeting ${targetMultiplier}x with stake ${stake} UGX to close gap +${remainingGap.toFixed(0)} UGX (goal: ${this.dailyQuota} UGX)`
+            );
+            return this.finish(decision);
+        }
+
+        // ---- Tier gate (warm-up is MANDATORY in SMART mode) ----
         this.updateTier();
         if (this.tier === 'OBSERVING') {
             const studied = this.predictor ? this.predictor.history.length : 0;
@@ -728,21 +809,30 @@ class Brain {
     // Tier management & Mode
     // ------------------------------------------------------------------
     setSystemMode(mode) {
-        const norm = String(mode || 'SMART').trim().toUpperCase() === 'PLAIN' ? 'PLAIN' : 'SMART';
+        const raw = String(mode || 'SMART').trim().toUpperCase();
+        const norm = (raw === 'PLAIN' || raw === 'IRRATIONAL') ? raw : 'SMART';
         if (this.systemMode === norm) return;
         logger.info(`Brain system mode: ${this.systemMode} -> ${norm}`);
         this.systemMode = norm;
-        if (norm === 'PLAIN') {
-            this.tier = 'PLAIN';
+        if (norm === 'PLAIN' || norm === 'IRRATIONAL') {
+            this.tier = norm;
         } else {
             this.tier = 'OBSERVING';
             this.updateTier();
         }
     }
 
+    setDailyQuota(quota) {
+        const n = parseFloat(quota);
+        if (Number.isFinite(n) && n > 0) {
+            this.dailyQuota = n;
+            logger.info(`Brain daily profit quota set: +${n} UGX`);
+        }
+    }
+
     updateTier() {
-        if (this.systemMode === 'PLAIN') {
-            this.tier = 'PLAIN';
+        if (this.systemMode === 'PLAIN' || this.systemMode === 'IRRATIONAL') {
+            this.tier = this.systemMode;
             return;
         }
         const risk = this.config.RISK;
@@ -782,9 +872,14 @@ class Brain {
 
     // ------------------------------------------------------------------
     snapshot() {
+        const dailyProfit = this.bankroll ? this.bankroll.daily.pnl : 0;
         return {
             tier: this.tier,
             systemMode: this.systemMode,
+            dailyQuota: this.dailyQuota,
+            dailyProfit,
+            quotaGap: Math.max(0, this.dailyQuota - dailyProfit),
+            quotaAchieved: dailyProfit >= this.dailyQuota,
             mode: this.mode,
             microOnly: this.microOnly,
             hitRate: this.hitRate(),

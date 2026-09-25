@@ -9,7 +9,10 @@ const logger = require('./util/logger');
 const sleep = require('./util/sleep');
 const FrameHelper = require('./util/frameHelper');
 const { loadSiteStrategies, saveSiteStrategies, resolveSiteStrategy } = require('./util/siteStrategies');
-const { loadSiteModes, saveSiteModes, resolveSiteMode } = require('./util/siteModes');
+const {
+    loadSiteModes, saveSiteModes, resolveSiteMode,
+    loadSiteQuotas, saveSiteQuotas, resolveSiteQuota
+} = require('./util/siteModes');
 const GameMonitor = require('./game/gameMonitor');
 const BettingStrategy = require('./game/strategies');
 const Database = require('./database/database');
@@ -65,12 +68,17 @@ const siteStrategyChoices = loadSiteStrategies(config.DATA_DIR);
 const persistSiteStrategies = () => saveSiteStrategies(config.DATA_DIR, siteStrategyChoices);
 let defaultStrategyName = null; // global default, set once strategyConfig is chosen
 
-// ---- Per-site system mode selection (SMART vs PLAIN) --------------------
+// ---- Per-site system mode selection (SMART vs PLAIN vs IRRATIONAL) ------
 // SMART = Full AI & statistical ensemble gating + tier warm-up.
 // PLAIN = Direct mechanical strategy betting on every round without ML filters.
+// IRRATIONAL = Unhinged bold goal-seeking play targeting a daily profit quota.
 const siteModeChoices = loadSiteModes(config.DATA_DIR);
 const persistSiteModes = () => saveSiteModes(config.DATA_DIR, siteModeChoices);
 let defaultSystemMode = (config.MODE && config.MODE.SYSTEM) || 'SMART';
+
+const siteQuotaChoices = loadSiteQuotas(config.DATA_DIR);
+const persistSiteQuotas = () => saveSiteQuotas(config.DATA_DIR, siteQuotaChoices);
+let defaultDailyQuota = (config.RISK && config.RISK.DAILY_QUOTA) || 10000;
 
 let activeSite = getSite(config.SITE_ID);
 let dashboard = null;
@@ -859,6 +867,8 @@ async function main() {
         siteStrategies: { ...siteStrategyChoices },
         systemMode: defaultSystemMode,
         siteModes: { ...siteModeChoices },
+        dailyQuota: defaultDailyQuota,
+        siteQuotas: { ...siteQuotaChoices },
         mode: paperMode ? 'paper' : 'live'
     });
     const emitControlState = () => { if (dashboard) dashboard.io.emit('controlState', controlState()); };
@@ -1061,7 +1071,8 @@ async function main() {
                     default: defaultSystemMode
                 }),
                 setSystemMode: (mode, siteId) => {
-                    const norm = String(mode || 'SMART').trim().toUpperCase() === 'PLAIN' ? 'PLAIN' : 'SMART';
+                    const raw = String(mode || 'SMART').trim().toUpperCase();
+                    const norm = (raw === 'PLAIN' || raw === 'IRRATIONAL') ? raw : 'SMART';
                     const siteKey = String(siteId || '').trim();
                     if (siteKey) {
                         siteModeChoices[siteKey] = norm;
@@ -1084,6 +1095,36 @@ async function main() {
                     logger.warn(`Default system mode switched to ${norm} from the dashboard`);
                     emitControlState();
                     return { mode: norm, site: null };
+                },
+                getDailyQuotas: () => ({
+                    choices: { ...siteQuotaChoices },
+                    default: defaultDailyQuota
+                }),
+                setDailyQuota: (quota, siteId) => {
+                    const n = parseFloat(quota);
+                    if (!Number.isFinite(n) || n <= 0) throw new Error('Daily quota must be a positive number');
+                    const siteKey = String(siteId || '').trim();
+                    if (siteKey) {
+                        siteQuotaChoices[siteKey] = n;
+                        persistSiteQuotas();
+                        const engine = engines.get(siteKey);
+                        if (engine && engine.brain) {
+                            engine.brain.setDailyQuota(n);
+                        }
+                        logger.warn(`Daily quota for ${siteKey} set to +${n} UGX from the dashboard`);
+                        emitControlState();
+                        return { quota: n, site: siteKey };
+                    }
+                    defaultDailyQuota = n;
+                    if (brain) brain.setDailyQuota(n);
+                    for (const e of engines.values()) {
+                        if (!siteQuotaChoices[e.siteId]) {
+                            e.brain.setDailyQuota(n);
+                        }
+                    }
+                    logger.warn(`Default daily quota set to +${n} UGX from the dashboard`);
+                    emitControlState();
+                    return { quota: n, site: null };
                 }
             };
             dashboard = await startDashboard(config.DASHBOARD.PORT, logger, dashboardDeps);
@@ -1208,12 +1249,19 @@ async function main() {
                     }
                     emitControlState();
                 });
-                // Smart (AI & statistical ensemble) <-> Plain (direct strategy betting) switch
+                // Smart (AI & statistical ensemble) <-> Plain (direct strategy betting) <-> Irrational (unhinged goal-seeking)
                 socket.on('setSystemMode', ({ mode, site } = {}) => {
                     try {
                         dashboardDeps.setSystemMode(mode, site);
                     } catch (error) {
                         logger.error(`System mode change failed: ${error.message}`);
+                    }
+                });
+                socket.on('setDailyQuota', ({ quota, site } = {}) => {
+                    try {
+                        dashboardDeps.setDailyQuota(quota, site);
+                    } catch (error) {
+                        logger.error(`Daily quota change failed: ${error.message}`);
                     }
                 });
                 // Live view mirror (screenshot stream + click-through)
@@ -1377,11 +1425,14 @@ async function main() {
     }
 
     const strategy = new BettingStrategy(strategyConfig);
-    brain = new Brain({ config, strategy, predictor, patterns, bankroll, systemMode: defaultSystemMode });
+    brain = new Brain({
+        config, strategy, predictor, patterns, bankroll,
+        systemMode: defaultSystemMode, dailyQuota: defaultDailyQuota
+    });
 
     logger.info(
         `Memory loaded: ${roundsLoaded} rounds (legacy shared archive) | ` +
-        `patterns known: ${patterns ? patterns.patterns.size : 0} | tier: ${brain.tier} | system: ${brain.systemMode} ` +
+        `patterns known: ${patterns ? patterns.patterns.size : 0} | tier: ${brain.tier} | system: ${brain.systemMode} (quota: +${brain.dailyQuota} UGX) ` +
         `(each site bootstraps its own engine on launch)`
     );
 
@@ -1534,6 +1585,7 @@ async function main() {
 
         let engineRef = null; // lets the brain read this engine's live verdict
         const siteSystemMode = resolveSiteMode(siteModeChoices, key, defaultSystemMode);
+        const siteDailyQuota = resolveSiteQuota(siteQuotaChoices, key, defaultDailyQuota);
         const siteBrain = new Brain({
             config, strategy: siteStrategy, predictor: sitePredictor, patterns: sitePatterns, bankroll: siteBankroll,
             recalibrator: siteRecalibrator,
@@ -1541,6 +1593,7 @@ async function main() {
             modelVerdict: modelVerdict || null,
             signalLifecycle: siteLifecycle,
             systemMode: siteSystemMode,
+            dailyQuota: siteDailyQuota,
             signal: {
                 policy: config.MODEL.SIGNAL_POLICY,
                 getVerdict: () => (engineRef ? engineRef.signalVerdict : null)

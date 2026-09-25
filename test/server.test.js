@@ -276,9 +276,43 @@ test('GET & PUT /api/system-mode: switches between SMART and PLAIN system mode',
         assert.equal(putResGlobal.status, 200);
         assert.deepEqual(await putResGlobal.json(), { mode: 'SMART', site: null });
 
+        const putResIrrational = await fetch(
+            `http://127.0.0.1:${port}/api/system-mode/IRRATIONAL?site=${encodeURIComponent('fortebet.ug')}`,
+            { method: 'PUT' }
+        );
+        assert.equal(putResIrrational.status, 200);
+        assert.deepEqual(await putResIrrational.json(), { mode: 'IRRATIONAL', site: 'fortebet.ug' });
+
         assert.deepEqual(calls, [
             { mode: 'PLAIN', site: 'betpawa.ug' },
-            { mode: 'SMART', site: null }
+            { mode: 'SMART', site: null },
+            { mode: 'IRRATIONAL', site: 'fortebet.ug' }
+        ]);
+    });
+});
+
+test('GET & PUT /api/daily-quota: gets and sets daily profit quota', async () => {
+    const calls = [];
+    await withServer({
+        getDailyQuotas: () => ({ default: 10000, choices: { 'betpawa.ug': 25000 } }),
+        setDailyQuota: (quota, site) => {
+            calls.push({ quota: Number(quota), site });
+            return { quota: Number(quota), site: site || null };
+        }
+    }, async (port) => {
+        const getRes = await fetch(`http://127.0.0.1:${port}/api/daily-quota`);
+        assert.equal(getRes.status, 200);
+        assert.deepEqual(await getRes.json(), { default: 10000, choices: { 'betpawa.ug': 25000 } });
+
+        const putRes = await fetch(
+            `http://127.0.0.1:${port}/api/daily-quota/50000?site=${encodeURIComponent('betpawa.ug')}`,
+            { method: 'PUT' }
+        );
+        assert.equal(putRes.status, 200);
+        assert.deepEqual(await putRes.json(), { quota: 50000, site: 'betpawa.ug' });
+
+        assert.deepEqual(calls, [
+            { quota: 50000, site: 'betpawa.ug' }
         ]);
     });
 });

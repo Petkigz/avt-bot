@@ -203,6 +203,24 @@ async function startDashboard(port, logger, deps = {}) {
             }
         });
 
+        // Daily profit quota: get current quota and per-site quotas
+        app.get('/api/daily-quota', (req, res) => {
+            if (!deps.getDailyQuotas) return res.json({ default: 10000, choices: {} });
+            res.json(deps.getDailyQuotas());
+        });
+
+        // Set daily profit quota: with ?site=<siteId> scopes to that site; without it, changes global default.
+        app.put('/api/daily-quota/:quota', (req, res) => {
+            if (!deps.setDailyQuota) return res.status(503).json({ error: 'daily quota setting unavailable' });
+            try {
+                const site = typeof req.query.site === 'string' && req.query.site.trim()
+                    ? req.query.site.trim() : null;
+                res.json(deps.setDailyQuota(req.params.quota, site));
+            } catch (error) {
+                res.status(400).json({ error: error.message });
+            }
+        });
+
         // Switch strategy: hot-swaps the running session's strategy, or
         // remembers the choice for the next launch. With ?site=<siteId> the
         // switch is scoped to that one site (per-site strategy selection);
