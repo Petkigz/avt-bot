@@ -243,3 +243,36 @@ test('bootstrapSkillCi with multiple nulls measures skill vs the BEST null', () 
     assert.ok(ciVsBest.point < ciVsWeak.point, 'vs best null the skill must shrink');
     assert.ok(ciVsBest.lo <= 0, 'a near-perfect rival must wipe out the skill claim');
 });
+
+test('moving block bootstrap and stationary bootstrap preserve sequence length and blocks', () => {
+    const { movingBlockBootstrapIndices, stationaryBootstrapIndices } = require('../game/modelLayer');
+    const rng = makeRng(99);
+    const mbb = movingBlockBootstrapIndices(100, 10, rng);
+    assert.strictEqual(mbb.length, 100);
+    assert.ok(mbb.every((idx) => idx >= 0 && idx < 100));
+
+    const sb = stationaryBootstrapIndices(100, 8, rng);
+    assert.strictEqual(sb.length, 100);
+    assert.ok(sb.every((idx) => idx >= 0 && idx < 100));
+});
+
+test('multiModelHolmAdjustment controls family-wise error across tournament contestants', () => {
+    const { multiModelHolmAdjustment } = require('../game/modelLayer');
+    const entries = [
+        { name: 'logistic', skill: 0.08, pValue: 0.01 },
+        { name: 'boosting-25', skill: 0.05, pValue: 0.03 },
+        { name: 'boosting-50', skill: 0.02, pValue: 0.12 },
+        { name: 'pattern-3', skill: 0.00, pValue: 0.45 }
+    ];
+    const adjusted = multiModelHolmAdjustment(entries);
+    assert.strictEqual(adjusted.length, 4);
+    // Best model p=0.01 multiplied by 4 = 0.04 (<0.05 -> significant)
+    const logAdj = adjusted.find((a) => a.name === 'logistic');
+    assert.strictEqual(logAdj.adjustedPValue, 0.04);
+    assert.strictEqual(logAdj.significantFwer, true);
+
+    // Second model p=0.03 multiplied by 3 = 0.09 (>0.05 -> not significant under FWER)
+    const b25Adj = adjusted.find((a) => a.name === 'boosting-25');
+    assert.strictEqual(b25Adj.adjustedPValue, 0.09);
+    assert.strictEqual(b25Adj.significantFwer, false);
+});

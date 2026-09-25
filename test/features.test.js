@@ -82,3 +82,34 @@ test('features: extracts microstructure and inter-round timing when provided', (
     assert.equal(f.time_to_12_last, 450);
     assert.equal(f.time_to_15_last, 850);
 });
+
+test('features: extracts autocorrelation, transitions, quantiles, and entropy in V3', () => {
+    const values = [];
+    for (let i = 0; i < 60; i++) {
+        values.push(i % 2 === 0 ? 1.15 : 2.50);
+    }
+    const f = extractFeatures(values, 1.3);
+
+    assert.equal(FEATURE_VERSION, 3);
+    assert.ok(Number.isFinite(f.autocorr_lag1), 'autocorr_lag1 finite');
+    assert.ok(Number.isFinite(f.quantile_25), 'quantile_25 finite');
+    assert.ok(Number.isFinite(f.quantile_75), 'quantile_75 finite');
+    assert.ok(Number.isFinite(f.iqr_30), 'iqr_30 finite');
+    assert.ok(Number.isFinite(f.skewness_30), 'skewness_30 finite');
+    assert.ok(Number.isFinite(f.cond_entropy_30), 'cond_entropy_30 finite');
+    assert.ok(Number.isFinite(f.trans_prob_to_L), 'trans_prob_to_L finite');
+    assert.ok(Number.isFinite(f.surprisal_last), 'surprisal_last finite');
+    assert.ok(Number.isFinite(f.run_length_current), 'run_length_current finite');
+});
+
+test('features: extractFeaturesFromHistory reconstructs immutable dataset from raw history', () => {
+    const { extractFeaturesFromHistory } = require('../game/features');
+    const rawHistory = [1.2, 1.5, 2.0, 1.1, 1.8, 3.5, 1.05, 4.0, 1.3, 1.9, 2.2, 1.15];
+    const dataset = extractFeaturesFromHistory(rawHistory, 1.3, 5);
+
+    assert.equal(dataset.length, rawHistory.length - 5);
+    assert.equal(dataset[0].target, 1.3);
+    assert.equal(dataset[0].crash, rawHistory[5]);
+    assert.equal(dataset[0].won, rawHistory[5] >= 1.3);
+    assert.ok(dataset[0].features.last_1 !== undefined);
+});

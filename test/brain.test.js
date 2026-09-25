@@ -532,3 +532,23 @@ test('Phase-3 feature model: deployed model drives entries; NO SIGNAL stays disc
     assert.strictEqual(dPaused.shouldBet, false);
     assert.match(dPaused.reasons.join(' '), /loss-streak guard/);
 });
+
+test('Brain produces unified prediction object on decide and via getPrediction()', () => {
+    const { brain, predictor } = makeBrain();
+    warmUp(brain, config.RISK.MIN_ROUNDS_OBSERVE, 2.0);
+
+    const d = brain.decide({ bettingWindow: true, balance: 50000 });
+    assert.ok(d.prediction, 'decision should carry attached prediction object');
+    assert.strictEqual(d.prediction.target, 1.3);
+    assert.ok(Number.isFinite(d.prediction.prob));
+    assert.ok(Number.isFinite(d.prediction.rawProb));
+    assert.ok(Number.isFinite(d.prediction.statisticalProb));
+    assert.strictEqual(d.prediction.allowed, d.shouldBet);
+    assert.ok(d.prediction.features !== undefined);
+
+    const pred = brain.getPrediction(1.3);
+    assert.strictEqual(pred.target, 1.3);
+    assert.ok(Number.isFinite(pred.statisticalProb));
+    assert.ok(pred.probSource !== undefined);
+    assert.ok(pred.features !== undefined);
+});

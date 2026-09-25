@@ -360,38 +360,100 @@ function brierSkill(modelBrier, nullBrier) {
 }
 
 /**
- * Non-parametric bootstrap CI for Brier skill (resampling paired rows keeps
- * the model/null comparison on identical rounds). Deterministic when given a
- * seeded rng.
+ * Generates Moving Block Bootstrap (MBB) indices of length n.
+ * Blocks of contiguous elements preserve autocorrelation and streak dependence.
+ */
+function movingBlockBootstrapIndices(n, blockSize, rng = Math.random) {
+    const indices = [];
+    const b = Math.max(1, Math.min(n, Math.floor(blockSize || Math.ceil(Math.cbrt(n)))));
+    const maxStart = n - b;
+    while (indices.length < n) {
+        const start = maxStart > 0 ? Math.floor(rng() * (maxStart + 1)) : 0;
+        for (let k = 0; k < b && indices.length < n; k++) {
+            indices.push(start + k);
+        }
+    }
+    return indices;
+}
+
+/**
+ * Generates Stationary Bootstrap indices (Politis & Romano, 1994) with mean block length p=1/meanBlock.
+ * Preserves stationarity and geometric block lengths.
+ */
+function stationaryBootstrapIndices(n, meanBlock = 8, rng = Math.random) {
+    const indices = [];
+    const pJump = 1 / Math.max(1, meanBlock);
+    let curr = Math.floor(rng() * n);
+    while (indices.length < n) {
+        indices.push(curr);
+        if (rng() < pJump) {
+            curr = Math.floor(rng() * n);
+        } else {
+            curr = (curr + 1) % n;
+        }
+    }
+    return indices;
+}
+
+/**
+ * Temporal Moving Block Bootstrap (MBB) & Stationary Bootstrap CI for Brier skill.
+ * Resampling contiguous blocks preserves autocorrelation, runs, and sequence
+ * dependencies — preventing over-optimistic i.i.d. intervals on time series.
  *
  * `nullPreds` may be a SINGLE null (array of numbers) or a list of null
  * models (array of arrays): with several nulls the skill is measured against
- * the BEST null in each sample — i.e. the deployed model must beat the best
- * simple statistical model, not just a crude historical average.
+ * the BEST null in each sample.
  */
-function bootstrapSkillCi(modelPreds, nullPreds, outcomes, { iters = 500, rng = Math.random } = {}) {
+function bootstrapSkillCi(modelPreds, nullPreds, outcomes, {
+    iters = 500,
+    rng = Math.random,
+    blockSize = null,
+    method = 'block'
+} = {}) {
     const n = modelPreds.length;
     if (n < 20) return null;
     const nulls = Number.isFinite(nullPreds[0]) ? [nullPreds] : nullPreds;
     const bestNullBrier = Math.min(...nulls.map((np) => brierScore(np, outcomes)));
     const point = brierSkill(brierScore(modelPreds, outcomes), bestNullBrier);
+    const effectiveBlock = blockSize || Math.max(3, Math.min(30, Math.ceil(Math.cbrt(n))));
     const skills = [];
+
     for (let it = 0; it < iters; it++) {
-        const mp = [], oc = [];
-        const nps = nulls.map(() => []);
+        const idx = method === 'stationary'
+            ? stationaryBootstrapIndices(n, effectiveBlock, rng)
+            : (method === 'iid'
+                ? Array.from({ length: n }, () => Math.floor(rng() * n))
+                : movingBlockBootstrapIndices(n, effectiveBlock, rng));
+
+        const mp = new Array(n);
+        const oc = new Array(n);
+        const nps = nulls.map(() => new Array(n));
+
         for (let i = 0; i < n; i++) {
-            const k = Math.floor(rng() * n);
-            mp.push(modelPreds[k]); oc.push(outcomes[k]);
-            nulls.forEach((np, j) => nps[j].push(np[k]));
+            const k = idx[i];
+            mp[i] = modelPreds[k];
+            oc[i] = outcomes[k];
+            for (let j = 0; j < nulls.length; j++) {
+                nps[j][i] = nulls[j][k];
+            }
         }
+
         const best = Math.min(...nps.map((np) => brierScore(np, oc)));
         const s = brierSkill(brierScore(mp, oc), best);
         if (Number.isFinite(s)) skills.push(s);
     }
+
     if (skills.length < 20) return null;
     skills.sort((a, b) => a - b);
     const q = (p) => skills[Math.min(skills.length - 1, Math.floor(p * skills.length))];
-    return { point, lo: q(0.025), hi: q(0.975), iters: skills.length };
+    return {
+        point,
+        lo: q(0.025),
+        hi: q(0.975),
+        iters: skills.length,
+        method,
+        blockSize: effectiveBlock
+    };
 }
 
 /** One-sided z-test: does hitRate exceed baseRate? Returns p-value. */
@@ -410,6 +472,37 @@ function normCdf(z) {
     const d = 0.3989423 * Math.exp((-z * z) / 2);
     const q = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
     return z >= 0 ? 1 - q : q;
+}
+
+/**
+ * Multiple-Model Family-Wise Error Rate (FWER) control via Holm-Bonferroni stepdown.
+ * Corrects for the look-elsewhere effect when selecting the best of K contestants in a tournament.
+ */
+function multiModelHolmAdjustment(contestantSkillEntries) {
+    // contestantSkillEntries = [ { name, skill, pValue, ciLo, ciHi }, ... ]
+    const m = contestantSkillEntries.length;
+    if (m <= 1) return contestantSkillEntries;
+
+    // Sort ascending by unadjusted p-value
+    const indexed = contestantSkillEntries.map((e, i) => ({ ...e, origIndex: i }))
+        .sort((a, b) => (a.pValue ?? 1) - (b.pValue ?? 1));
+
+    let maxAdjustedP = 0;
+    const adjusted = [];
+    for (let k = 0; k < m; k++) {
+        const item = indexed[k];
+        const unadjP = item.pValue ?? 1;
+        const multiplier = m - k;
+        const rawAdjP = Math.min(1.0, unadjP * multiplier);
+        maxAdjustedP = Math.max(maxAdjustedP, rawAdjP); // enforce monotonicity
+        adjusted.push({
+            ...item,
+            adjustedPValue: Number(maxAdjustedP.toFixed(4)),
+            significantFwer: maxAdjustedP < 0.05
+        });
+    }
+
+    return adjusted.sort((a, b) => a.origIndex - b.origIndex);
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +645,9 @@ module.exports = {
     brierScore,
     brierSkill,
     bootstrapSkillCi,
+    movingBlockBootstrapIndices,
+    stationaryBootstrapIndices,
+    multiModelHolmAdjustment,
     hitRatePValue,
     normCdf,
     lookElsewherePenalty,

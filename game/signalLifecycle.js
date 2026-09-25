@@ -17,10 +17,19 @@ const path = require('path');
 const config = require('../util/config');
 const logger = require('../util/logger');
 const { generateHypotheses } = require('../research/hypothesisEngine');
+const { hitRatePValue } = require('./modelLayer');
 
-const MIN_SHADOW_BETS_FOR_PROMOTION = 30;
+const MIN_SHADOW_BETS_FOR_PROMOTION = 40;
 const MAX_CONSECUTIVE_SIGNAL_LOSSES = 8;
 const DRIFT_LIFT_TOLERANCE = -0.05; // -5% below break-even triggers DRIFTING
+
+function wilsonLowerBound(wins, n, z = 1.645) { // 95% one-sided confidence
+    if (n <= 0) return 0;
+    const p = wins / n;
+    const num = p + (z * z) / (2 * n) - z * Math.sqrt((p * (1 - p) + (z * z) / (4 * n)) / n);
+    const den = 1 + (z * z) / n;
+    return Math.max(0, num / den);
+}
 
 class SignalLifecycle {
     constructor(siteId = 'default') {
@@ -269,27 +278,36 @@ class SignalLifecycle {
             cand.updatedAt = Date.now();
             modified = true;
 
-            // ---- Lifecycle State Transitions ----
+            // ---- Lifecycle State Transitions (Strict Statistical Gating) ----
+            const n = cand.liveStats.triggeredCount;
+            const wins = cand.liveStats.wins;
+            const wLower = wilsonLowerBound(wins, n);
+            const pVal = hitRatePValue(wins, n, breakEven);
+
             // 1. Promotion: LIVE_SHADOW -> LIVE_MICRO
+            // Requires sample >= MIN_SHADOW_BETS, positive cumulative EV, Wilson lower bound >= break-even, and p < 0.05
             if (cand.status === 'LIVE_SHADOW' &&
-                cand.liveStats.triggeredCount >= MIN_SHADOW_BETS_FOR_PROMOTION &&
+                n >= MIN_SHADOW_BETS_FOR_PROMOTION &&
+                cand.liveStats.evAccumulated > 0 &&
+                (wLower >= breakEven || pVal < 0.05) &&
                 cand.liveStats.currentLift > 0.02) {
                 cand.status = 'LIVE_MICRO';
-                logger.info(`SignalLifecycle [${this.siteId}]: PROMOTED signal "${cand.name}" to LIVE_MICRO (N=${cand.liveStats.triggeredCount}, winRate=${(hitRate * 100).toFixed(1)}%)`);
+                logger.info(`SignalLifecycle [${this.siteId}]: PROMOTED signal "${cand.name}" to LIVE_MICRO (N=${n}, winRate=${(hitRate * 100).toFixed(1)}%, evAccum=+${cand.liveStats.evAccumulated.toFixed(2)}, p=${pVal.toFixed(3)})`);
             }
 
             // 2. Drift Warning: LIVE_MICRO / LIVE_SHADOW -> DRIFTING
             if ((cand.status === 'LIVE_MICRO' || cand.status === 'LIVE_SHADOW') &&
-                cand.liveStats.triggeredCount >= 20 &&
-                cand.liveStats.currentLift < DRIFT_LIFT_TOLERANCE) {
+                n >= 20 &&
+                (cand.liveStats.currentLift < DRIFT_LIFT_TOLERANCE || cand.liveStats.evAccumulated < 0)) {
                 cand.status = 'DRIFTING';
-                logger.warn(`SignalLifecycle [${this.siteId}]: DRIFT DETECTED for signal "${cand.name}" (lift ${(cand.liveStats.currentLift * 100).toFixed(1)}% < ${DRIFT_LIFT_TOLERANCE * 100}%)`);
+                logger.warn(`SignalLifecycle [${this.siteId}]: DRIFT DETECTED for signal "${cand.name}" (lift ${(cand.liveStats.currentLift * 100).toFixed(1)}% < ${DRIFT_LIFT_TOLERANCE * 100}%, evAccum=${cand.liveStats.evAccumulated.toFixed(2)})`);
             }
 
             // 3. Retirement: DRIFTING -> RETIRED
             if (cand.status === 'DRIFTING' &&
                 (cand.liveStats.consecutiveLosses >= MAX_CONSECUTIVE_SIGNAL_LOSSES ||
-                 (cand.liveStats.triggeredCount >= 35 && cand.liveStats.currentLift < DRIFT_LIFT_TOLERANCE))) {
+                 cand.liveStats.evAccumulated <= -2.0 ||
+                 (n >= 35 && cand.liveStats.currentLift < DRIFT_LIFT_TOLERANCE))) {
                 cand.status = 'RETIRED';
                 logger.warn(`SignalLifecycle [${this.siteId}]: RETIRED decayed signal "${cand.name}" (evAccum=${cand.liveStats.evAccumulated.toFixed(2)})`);
             }

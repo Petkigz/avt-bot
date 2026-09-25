@@ -235,6 +235,15 @@ class Brain {
 
         // ---- Model confidence gate (+ volatility risk adjustment) ----
         let confidence = null;
+        let rawStatProb = null;
+        let statProb = null;
+        let featureModelProb = null;
+        let hypothesisProb = null;
+        let ensembleObj = null;
+        let ensembleSources = [];
+        let probSource = 'statistical';
+        let required = null;
+
         const adaptive = !!(this.strategy && this.strategy.adaptiveTarget) && this.predictor;
         let adaptiveHitProb = null; // raw model P(hit) of the drawn target — sizes the stake
         if (adaptive) {
@@ -242,6 +251,7 @@ class Brain {
             // The model determines the house state (HOUSE_REBATE_DUE, HOUSE_ABSORPTION,
             // or HOUSE_EQUILIBRIUM) based on accumulated intake and payout clusters,
             // and targets the exact multiplier zone where the house is expected to operate.
+            probSource = 'adaptive';
             if (this.predictor.paused) {
                 reasons.push(
                     `model: loss-streak guard: ${this.predictor.consecutiveCold} low crashes in a row (risk rule — not evidence the stream changed)`
@@ -257,9 +267,12 @@ class Brain {
             decision.targetMultiplier = pick.target;
             decision.houseCycle = pick.houseCycle;
             adaptiveHitProb = pick.confidence;
+            rawStatProb = pick.confidence;
+            statProb = pick.confidence;
             confidence = pick.confidence;
             if (this.recalibrator && confidence !== null) {
                 confidence = this.recalibrator.adjust(confidence);
+                statProb = confidence;
             }
             const hc = pick.houseCycle;
             const hcTag = hc ? ` [House: ${hc.phase} (intake index ${hc.intakeIndex >= 0 ? '+' : ''}${hc.intakeIndex})]` : '';
@@ -268,6 +281,10 @@ class Brain {
             );
         } else if (this.predictor) {
             const gate = this.predictor.shouldAllowBet();
+            rawStatProb = gate.probability;
+            statProb = gate.probability;
+            threshold: (this.predictor.entryProbability);
+
             // The loss-streak guard is a RISK rule — it applies no matter which
             // model supplies the confidence.
             if (!gate.allowed && this.predictor.paused) {
@@ -278,10 +295,9 @@ class Brain {
             // ---- Multi-Source Calibrated Ensemble -------------------------
             // Combines statistical estimator, supervised feature models, and
             // confirmed hypothesis signals into an optimal log-odds ensemble.
-            const ensembleSources = [];
+            ensembleSources = [];
 
             // 1. Statistical Estimator (with self-repair recalibration)
-            let statProb = gate.probability;
             if (this.recalibrator && statProb !== null) {
                 statProb = this.recalibrator.adjust(statProb);
             }
@@ -300,6 +316,7 @@ class Brain {
                 const feats = extractFeatures(this.predictor.history, this.strategy.targetMultiplier);
                 const fmProb = activeModel.predict(feats);
                 if (Number.isFinite(fmProb)) {
+                    featureModelProb = fmProb;
                     ensembleSources.push({
                         name: 'feature_model',
                         prob: fmProb,
@@ -319,6 +336,7 @@ class Brain {
                     Math.abs(m.target - this.strategy.targetMultiplier) < 0.05
                 );
                 if (activeMatch && Number.isFinite(activeMatch.holdoutHitRate)) {
+                    hypothesisProb = activeMatch.holdoutHitRate;
                     const hypWeight = 1.2 + (activeMatch.holdoutEv ? Math.max(0, activeMatch.holdoutEv) : 0.2);
                     ensembleSources.push({
                         name: `hyp_${activeMatch.id}`,
@@ -337,6 +355,7 @@ class Brain {
             // Blend active sources into ensemble confidence (using learned meta-weights if available)
             const learnedWeights = (this.modelVerdict && this.modelVerdict.ensembleWeights) || {};
             const ensemble = blendEnsemble(ensembleSources, learnedWeights);
+            ensembleObj = ensemble;
             if (ensemble.probability !== null) {
                 confidence = ensemble.probability;
                 decision.ensemble = ensemble;
@@ -348,9 +367,19 @@ class Brain {
                 confidence = statProb;
             }
 
+            if (ensembleSources.length > 1) {
+                probSource = 'ensemble';
+            } else if (featureModelProb !== null) {
+                probSource = 'feature-model';
+            } else if (fromHypothesisSignal) {
+                probSource = 'hypothesis';
+            } else {
+                probSource = 'statistical';
+            }
+
             // Volatility risk evaluation: wild recent rounds demand MORE confidence.
             const volPenalty = this.volatilityPenalty();
-            const required = this.predictor.entryProbability + volPenalty;
+            required = this.predictor.entryProbability + volPenalty;
             if (confidence !== null && confidence < required) {
                 reasons.push(
                     `confidence ${confidence.toFixed(2)} < required ${required.toFixed(2)}` +
@@ -519,6 +548,14 @@ class Brain {
     }
 
     finish(decision) {
+        if (!decision.prediction) {
+            decision.prediction = this.getPrediction(decision.targetMultiplier);
+            decision.prediction.finalDecisionProb = decision.confidence;
+            decision.prediction.prob = decision.confidence;
+            decision.prediction.allowed = decision.shouldBet;
+            if (decision.houseCycle) decision.prediction.houseCycle = decision.houseCycle;
+        }
+        this.lastPrediction = decision.prediction;
         this.lastDecision = decision;
         this.lastConfidence = decision.confidence;
         this.lastPattern = decision.pattern;
@@ -541,6 +578,102 @@ class Brain {
             if (this.decisionFeed.length > 12) this.decisionFeed.shift();
         }
         return decision;
+    }
+
+    /**
+     * Extracts the unified structured prediction for any target multiplier.
+     * Evaluates the complete multi-source probability breakdown (statistical,
+     * feature model, hypothesis signal, ensemble, house cycle) synchronously.
+     */
+    getPrediction(targetMultiplier = null) {
+        const target = Number.isFinite(targetMultiplier)
+            ? targetMultiplier
+            : (this.strategy ? this.strategy.targetMultiplier : 1.3);
+
+        const history = this.predictor && Array.isArray(this.predictor.history) ? this.predictor.history : [];
+        const feats = extractFeatures(history, target);
+        const rawStatProb = this.predictor
+            ? (typeof this.predictor.blendedProbability === 'function'
+                ? this.predictor.blendedProbability(target)
+                : (typeof this.predictor.probCrashAtLeast === 'function'
+                    ? this.predictor.probCrashAtLeast(target)
+                    : 0.5))
+            : null;
+        let statProb = rawStatProb;
+        if (this.recalibrator && statProb !== null) {
+            statProb = this.recalibrator.adjust(statProb);
+        }
+
+        let featureModelProb = null;
+        const activeModel = this.featureModelFor(target);
+        if (activeModel) {
+            const p = activeModel.predict(feats);
+            if (Number.isFinite(p)) featureModelProb = p;
+        }
+
+        let hypothesisProb = null;
+        let matchedHyp = null;
+        if (this.signalLifecycle && history.length >= 3) {
+            const matched = this.signalLifecycle.matchActiveSignals(history);
+            matchedHyp = matched.find((m) =>
+                (m.status === 'LIVE_MICRO' || m.status === 'HOLDOUT_CONFIRMED') &&
+                Math.abs(m.target - target) < 0.05
+            );
+            if (matchedHyp && Number.isFinite(matchedHyp.holdoutHitRate)) {
+                hypothesisProb = matchedHyp.holdoutHitRate;
+            }
+        }
+
+        const ensembleSources = [];
+        if (Number.isFinite(statProb)) {
+            ensembleSources.push({ name: 'statistical', prob: statProb, weight: 1.0, kind: 'statistical' });
+        }
+        if (Number.isFinite(featureModelProb)) {
+            ensembleSources.push({ name: 'feature_model', prob: featureModelProb, weight: 1.5, kind: 'feature_model' });
+        }
+        if (Number.isFinite(hypothesisProb)) {
+            const hypWeight = 1.2 + (matchedHyp && matchedHyp.holdoutEv ? Math.max(0, matchedHyp.holdoutEv) : 0.2);
+            ensembleSources.push({ name: `hyp_${matchedHyp.id}`, prob: hypothesisProb, weight: hypWeight, kind: 'hypothesis' });
+        }
+
+        const learnedWeights = (this.modelVerdict && this.modelVerdict.ensembleWeights) || {};
+        const ensemble = blendEnsemble(ensembleSources, learnedWeights);
+
+        let finalProb = ensemble.probability !== null ? ensemble.probability : statProb;
+        const volPenalty = this.volatilityPenalty();
+        const threshold = this.predictor && typeof this.predictor.entryProbability === 'number'
+            ? (this.predictor.entryProbability + volPenalty)
+            : null;
+        const allowed = finalProb !== null && threshold !== null && finalProb >= threshold && !(this.predictor && this.predictor.paused);
+
+        let probSource = 'statistical';
+        if (this.strategy && this.strategy.adaptiveTarget) probSource = 'adaptive';
+        else if (ensembleSources.length > 1) probSource = 'ensemble';
+        else if (featureModelProb !== null) probSource = 'feature-model';
+        else if (hypothesisProb !== null) probSource = 'hypothesis';
+
+        const houseCycle = this.predictor && typeof this.predictor.getHouseCycleState === 'function'
+            ? this.predictor.getHouseCycleState()
+            : null;
+
+        return {
+            target,
+            rawProb: rawStatProb,
+            statisticalProb: statProb,
+            featureModelProb,
+            hypothesisProb,
+            ensembleProb: ensemble.probability,
+            finalDecisionProb: finalProb,
+            prob: finalProb,
+            threshold,
+            allowed,
+            probSource,
+            features: feats,
+            houseCycle,
+            ensembleBreakdown: ensemble.sources || [],
+            tier: this.tier,
+            regime: this.predictor && typeof this.predictor.regime === 'function' ? this.predictor.regime() : ''
+        };
     }
 
     // ------------------------------------------------------------------

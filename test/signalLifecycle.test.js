@@ -78,22 +78,22 @@ test('signalLifecycle: promotes from LIVE_SHADOW to LIVE_MICRO on sustained posi
             target: 1.30,
             status: 'LIVE_SHADOW',
             liveStats: {
-                triggeredCount: 29,
-                wins: 26,
+                triggeredCount: 39,
+                wins: 36,
                 losses: 3,
                 consecutiveLosses: 0,
-                currentLift: 0.12,
-                evAccumulated: 4.8
+                currentLift: 0.15,
+                evAccumulated: 7.8
             }
         }
     ];
 
-    // Trigger round 30 with a win
+    // Trigger round 40 with a win
     const historyBefore = [1.50, 2.00, 1.02];
     life.onRoundEnded(historyBefore, 1.45);
 
     const cand = life.candidates.find((c) => c.id === 'prior_instant_crash_target_1.3');
-    assert.strictEqual(cand.status, 'LIVE_MICRO', 'candidate should be promoted to LIVE_MICRO after 30 qualifying rounds');
+    assert.strictEqual(cand.status, 'LIVE_MICRO', 'candidate should be promoted to LIVE_MICRO after qualifying rounds');
     cleanFile(life.getFilePath());
 });
 

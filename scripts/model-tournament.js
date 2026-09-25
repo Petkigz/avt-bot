@@ -49,6 +49,7 @@ const {
     fitLogistic, fitBoosting, fitPlatt,
     logisticToJson, boostingToJson, patternModelToJson,
     brierScore, brierSkill, bootstrapSkillCi, hitRatePValue,
+    multiModelHolmAdjustment,
     recentWindowNullPreds, expandingMeanNullPreds,
     writeModelVerdict, saveFeatureModel, retireFeatureModel, writeTournamentVerdict
 } = require('../game/modelLayer');
@@ -222,19 +223,53 @@ function runTournament(rows, opts = {}) {
 
     // ---- Selector: rank by Brier skill vs the BEST persistence null -------
     const bestNullOOS = Math.min(brierScore(contestants.null, yOOS), brierScore(contestants.statistical, yOOS));
+    const rawEntries = [];
     const standings = {};
+
     for (const name of contestantNames) {
         const cal = applyCal(name, contestants[name]);
         const brier = brierScore(cal, yOOS);
         const skill = brierSkill(brier, bestNullOOS);
-        const ci = bootstrapSkillCi(cal, [contestants.null, contestants.statistical], yOOS, { iters: 400, rng: makeRng() });
-        standings[name] = { brier, skill, ci, calibrated: !!calibrators[name] };
+        const ci = bootstrapSkillCi(cal, [contestants.null, contestants.statistical], yOOS, {
+            iters: 500,
+            rng: makeRng(),
+            method: 'block'
+        });
+
+        // Approximate one-sided p-value from bootstrap distribution or z-score
+        const se = (ci && ci.hi !== null && ci.lo !== null) ? Math.max(1e-4, (ci.hi - ci.lo) / 3.92) : 1.0;
+        const z = (skill !== null && se > 0) ? skill / se : -5;
+        const pVal = 1 - (ci ? Math.max(0, Math.min(1, (z > 0 ? (1 / (1 + Math.exp(-1.7 * z))) : Math.exp(1.7 * z) / 2))) : 1.0);
+
+        rawEntries.push({
+            name,
+            brier,
+            skill,
+            ci,
+            calibrated: !!calibrators[name],
+            pValue: pVal
+        });
     }
+
+    // Apply Multiple-Model Family-Wise Error Rate (FWER) stepdown correction
+    const adjustedEntries = multiModelHolmAdjustment(rawEntries);
+    for (const entry of adjustedEntries) {
+        standings[entry.name] = {
+            brier: entry.brier,
+            skill: entry.skill,
+            ci: entry.ci,
+            calibrated: entry.calibrated,
+            pValue: entry.pValue,
+            adjustedPValue: entry.adjustedPValue,
+            significantFwer: entry.significantFwer
+        };
+    }
+
     const ranked = Object.entries(standings).sort((a, b) => (b[1].skill ?? -1) - (a[1].skill ?? -1));
     const [winnerName, winnerStats] = ranked[0];
 
-    // The winner must show POSITIVE out-of-sample skill (CI above zero) on
-    // the walk before it earns a shot at the holdout.
+    // The winner must show POSITIVE out-of-sample skill (moving block bootstrap CI above zero)
+    // on the walk before it earns a shot at the holdout.
     const walkQualified = winnerStats.ci && winnerStats.ci.lo > 0;
 
     const report = {
@@ -246,7 +281,10 @@ function runTournament(rows, opts = {}) {
             skill: v.skill === null ? null : Number(v.skill.toFixed(4)),
             ciLo: v.ci ? Number(v.ci.lo.toFixed(4)) : null,
             ciHi: v.ci ? Number(v.ci.hi.toFixed(4)) : null,
-            calibrated: v.calibrated
+            calibrated: v.calibrated,
+            adjustedPValue: v.adjustedPValue,
+            significantFwer: v.significantFwer,
+            bootstrapMethod: 'moving_block'
         }])),
         winner: winnerName, walkQualified
     };

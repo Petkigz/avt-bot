@@ -1598,84 +1598,114 @@ async function main() {
             if (pending && Number.isFinite(pending.prob)) {
                 const won = crash >= pending.target;
                 // Calibration bookkeeping measures the probability that was
-                // ACTUALLY shipped for this round (feature-model prob when a
-                // model is driving, statistical prob otherwise).
+                // ACTUALLY shipped for this round (ensemble prob when driving,
+                // feature-model prob or statistical prob otherwise).
                 engine.calibration.record(pending.prob, won ? 1 : 0);
-                // The engine learning from its own track record: every settled
-                // prediction refines the confidence-correction map. The
-                // recalibrator corrects the STATISTICAL estimator only — feed
+
+                // The recalibrator corrects the STATISTICAL estimator only — feed
                 // it the raw statistical probability even when a feature model
-                // made the decision (mixing sources would corrupt the map).
+                // or ensemble made the decision (mixing sources would corrupt the map).
                 if (engine.recalibrator) {
                     const recalProb = Number.isFinite(pending.rawProb) ? pending.rawProb : pending.prob;
                     engine.recalibrator.update(recalProb, won ? 1 : 0);
                     if (engine.recalibrator.total % 25 === 0) engine.recalibrator.save();
                 }
+
+                // Feed the SignalLifecycle live tracker so active hypothesis signals
+                // advance or retire based on real settled rounds
+                if (engine.brain && engine.brain.signalLifecycle && engine.store) {
+                    const historyBefore = engine.store.values.slice(0, -1);
+                    engine.brain.signalLifecycle.onRoundEnded(historyBefore, crash);
+                }
+
                 engine.predictionLog.logOutcome({
                     predictionId: pending.predictionId || null,
                     roundId: pending.roundId || null,
-                    site: engine.siteId, target: pending.target,
-                    prob: pending.prob, crash, won,
+                    site: engine.siteId,
+                    target: pending.target,
+                    prob: pending.prob,
+                    finalDecisionProb: pending.finalDecisionProb ?? pending.prob,
+                    statisticalProb: pending.statisticalProb ?? pending.rawProb,
                     rawProb: Number.isFinite(pending.rawProb) ? pending.rawProb : null,
-                    probSource: pending.probSource || 'statistical'
+                    featureModelProb: pending.featureModelProb ?? null,
+                    hypothesisProb: pending.hypothesisProb ?? null,
+                    ensembleProb: pending.ensembleProb ?? null,
+                    probSource: pending.probSource || 'statistical',
+                    allowed: !!pending.allowed,
+                    crash,
+                    won
                 });
             }
-            let prob = null;               // probability that DRIVES the decision
-            let rawProb = null;            // statistical estimator output
-            let featureModelProb = null;   // deployed model output (calibrated)
-            let threshold = null;
-            let allowed = false;
-            let regime = '';
-            if (engine.predictor) {
-                rawProb = engine.predictor.blendedProbability(target);
-                prob = rawProb;
-                threshold = engine.predictor.entryProbability;
-                const gate = engine.predictor.shouldAllowBet();
-                allowed = !!gate.allowed;
-                regime = typeof engine.predictor.regime === 'function' ? engine.predictor.regime() : '';
-            }
-            // Review #8: log BOTH probabilities. When a deployed feature model
-            // drives the entry gate, the research log must say so — otherwise
-            // post-trade analysis cannot answer "which component caused this
-            // bet?". Same target/version guard the Brain applies.
-            let probSource = 'statistical';
-            let modelTarget = null;
-            const activeModel = engine.brain && engine.brain.featureModelFor
-                ? engine.brain.featureModelFor(target) : null;
-            if (activeModel) {
-                const fmProb = activeModel.predict(extractFeatures(engine.store.values, target));
-                if (Number.isFinite(fmProb)) {
-                    featureModelProb = fmProb;
-                    prob = fmProb;
-                    probSource = 'feature-model';
-                    modelTarget = activeModel.meta.target;
-                }
-            }
+
+            // Unified prediction extraction via Brain: guarantees the logged
+            // prediction matches the exact multi-source probability and decision logic
+            // (Review #15: eliminates measurement mismatch between logger and Brain).
+            const brainPred = engine.brain && typeof engine.brain.getPrediction === 'function'
+                ? engine.brain.getPrediction(target)
+                : null;
+
             const predictionId = `${engine.siteId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
             const roundId = engine.store ? engine.store.size() : 0;
+
+            const prob = brainPred ? brainPred.prob : (engine.predictor ? engine.predictor.blendedProbability(target) : null);
+            const rawProb = brainPred ? brainPred.rawProb : prob;
+            const statisticalProb = brainPred ? brainPred.statisticalProb : prob;
+            const featureModelProb = brainPred ? brainPred.featureModelProb : null;
+            const hypothesisProb = brainPred ? brainPred.hypothesisProb : null;
+            const ensembleProb = brainPred ? brainPred.ensembleProb : null;
+            const finalDecisionProb = brainPred ? brainPred.finalDecisionProb : prob;
+            const threshold = brainPred ? brainPred.threshold : (engine.predictor ? engine.predictor.entryProbability : null);
+            const allowed = brainPred ? brainPred.allowed : (engine.predictor ? engine.predictor.shouldAllowBet().allowed : false);
+            const probSource = brainPred ? brainPred.probSource : 'statistical';
+            const regime = brainPred ? brainPred.regime : (engine.predictor && typeof engine.predictor.regime === 'function' ? engine.predictor.regime() : '');
+            const houseCycle = brainPred ? brainPred.houseCycle : (engine.predictor ? engine.predictor.getHouseCycleState() : null);
+            const feats = brainPred ? brainPred.features : extractFeatures(engine.store.values, target);
+
             engine.pendingPrediction = {
-                predictionId, roundId,
-                target, prob, threshold, allowed, tier: engine.brain.tier, regime,
-                rawProb, featureModelProb, probSource, modelTarget
+                predictionId,
+                roundId,
+                site: engine.siteId,
+                target,
+                prob,
+                finalDecisionProb,
+                statisticalProb,
+                rawProb,
+                featureModelProb,
+                hypothesisProb,
+                ensembleProb,
+                threshold,
+                allowed,
+                probSource,
+                tier: engine.brain ? engine.brain.tier : 'OBSERVING',
+                regime,
+                houseCycle
             };
-            // Snapshot the correction map in force NOW, so the audit scores
-            // the STATISTICAL probability for this round (the recalibrator's
-            // training source, whether or not a model made the decision).
+
+            // Snapshot the correction map in force NOW for statistical auditing
             if (engine.recalibrator && Number.isFinite(rawProb)) engine.recalibrator.notePending(rawProb);
+
             engine.predictionLog.logPrediction({
-                predictionId, roundId,
-                site: engine.siteId, target, prob, threshold, allowed,
-                tier: engine.brain.tier, regime,
-                rawProb, featureModelProb, probSource, modelTarget,
+                predictionId,
+                roundId,
+                site: engine.siteId,
+                target,
+                prob,
+                finalDecisionProb,
+                statisticalProb,
+                rawProb,
+                featureModelProb,
+                hypothesisProb,
+                ensembleProb,
+                threshold,
+                allowed,
+                probSource,
+                tier: engine.brain ? engine.brain.tier : 'OBSERVING',
+                regime,
+                houseCycle,
                 featureVersion: FEATURE_VERSION,
-                // Auditability (review #9): every record says WHICH model
-                // family produced the deployed probability, so later analysis
-                // can attribute results to a component, not just to "the bot".
                 modelSource: engine.modelVerdict ? (engine.modelVerdict.source || 'train-model') : null,
                 modelWinner: engine.modelVerdict && engine.modelVerdict.winner ? engine.modelVerdict.winner : null,
-                // Feature snapshot of the stream state — raw material for
-                // future error analysis (which, if any, feature carries signal).
-                features: extractFeatures(engine.store.values, target)
+                features: feats
             });
         } catch (error) {
             logger.debug(`prediction log skipped: ${error.message}`);

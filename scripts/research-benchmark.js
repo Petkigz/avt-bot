@@ -193,12 +193,12 @@ function runBenchmark(opts = {}) {
             target: 1.30,
             status: 'LIVE_SHADOW',
             liveStats: {
-                triggeredCount: 30,
-                wins: 25,
+                triggeredCount: 40,
+                wins: 35,
                 losses: 5,
                 consecutiveLosses: 0,
                 currentLift: 0.15,
-                evAccumulated: 3.5
+                evAccumulated: 5.5
             }
         }
     ];
