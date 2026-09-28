@@ -1014,6 +1014,11 @@ class GameMonitor extends EventEmitter {
             this.lastBubble = null;
             this.lastRoundEndedAt = null;
             this.roundInFlight = false;
+            this.stripAnnounced = false;
+            this.stripLogged = false;
+            this.emptyStripCycles = 0;
+            this.stuckCycles = 0;
+            this.prevStripNorm = null;
             this.enterCooldown(1, 'page reload recovery');
         } else if (this.recoveryLevel === 2) {
             logger.warn('Recovery level 2/3: requesting re-navigation to the game URL');
@@ -1021,6 +1026,11 @@ class GameMonitor extends EventEmitter {
             this.lastBubble = null;
             this.lastRoundEndedAt = null;
             this.roundInFlight = false;
+            this.stripAnnounced = false;
+            this.stripLogged = false;
+            this.emptyStripCycles = 0;
+            this.stuckCycles = 0;
+            this.prevStripNorm = null;
             this.enterCooldown(1, 're-navigation recovery');
         } else {
             this.haltTrading('persistent selector failures — site state unrecoverable this session');

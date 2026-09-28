@@ -445,16 +445,19 @@ async function launchSession(account, site) {
         defaultViewport: null,
         args: [
             '--start-maximized',
-            // Stability flags: when several site windows run side by side,
-            // Windows/Chromium can suspend or "occlude" the window that is
-            // not in front, which is a common cause of the browser randomly
-            // disconnecting/crashing mid-session. These keep every window
-            // fully awake so a backgrounded site does not drop its session.
+            // Stability & memory flags: when long-running sessions stream canvas/WebGL
+            // animations and websockets for 24+ hours, Windows/Chromium can suspend
+            // background tabs or hit default V8 memory limits. These keep the renderer
+            // fully awake and allocate a high memory ceiling.
+            '--js-flags=--max-old-space-size=4096',
             '--disable-features=CalculateNativeWinOcclusion',
             '--disable-backgrounding-occluded-windows',
             '--disable-renderer-backgrounding',
             '--disable-background-timer-throttling',
-            '--disable-dev-shm-usage'
+            '--disable-dev-shm-usage',
+            '--disable-breakpad',
+            '--disable-ipc-flooding-protection',
+            '--no-default-browser-check'
         ],
         // Per-account persistent profile: log in once per account, stays logged in.
         userDataDir: accounts.profileDir(account.id)
@@ -491,19 +494,21 @@ async function launchSession(account, site) {
 
     browser.on('disconnected', () => {
         const wasCancelled = session.cancelled === true;
+        if (session.monitor) {
+            session.monitor.stopMonitoring();
+            session.monitor = null;
+        }
         sessions.delete(account.id);
         emitSessions();
         logger.warn(`Browser session closed for account "${account.label}" (${site.name})`);
-        // Only treat "no sessions left" as fatal when it is unexpected —
-        // during shutdown or a site switch we close browsers on purpose.
-        if (sessions.size === 0 && !shuttingDown && !switchInProgress) {
-            logger.error('No browser sessions left — exiting for supervisor restart');
-            process.exit(1);
-        }
+
         // An unexpected, uncancelled death of the window is a browser crash,
-        // not a site logout — relaunch the session instead of losing it.
+        // not a deliberate user stop — auto-relaunch the session instead of dying.
         if (!shuttingDown && !switchInProgress && !wasCancelled) {
             scheduleCrashRestart(account, site);
+        } else if (sessions.size === 0 && !shuttingDown && !switchInProgress && !config.UI_START && !config.DASHBOARD.ENABLED) {
+            logger.error('No browser sessions left in headless CLI mode — exiting for supervisor restart');
+            process.exit(1);
         }
     });
 
@@ -2114,7 +2119,12 @@ async function main() {
     for (const signal of ['SIGINT', 'SIGTERM']) {
         process.on(signal, () => shutdown(signal));
     }
-    setTimeout(() => shutdown('run duration elapsed'), config.NAVIGATION.RUN_DURATION);
+    if (Number.isFinite(config.NAVIGATION.RUN_DURATION) && config.NAVIGATION.RUN_DURATION > 0) {
+        logger.info(`Scheduled auto-shutdown in ${Math.round(config.NAVIGATION.RUN_DURATION / 60000)} min (set RUN_DURATION_MS=0 for continuous 24/7 run)`);
+        setTimeout(() => shutdown('run duration elapsed'), config.NAVIGATION.RUN_DURATION);
+    } else {
+        logger.info('Continuous 24/7 run mode active (no timer shutdown; control from dashboard)');
+    }
 
     logger.info('Bot initialization completed — watching for the game page');
 }

@@ -28,7 +28,9 @@ const config = {
         // Direct URL of the Aviator game (used after login)
         GAME_URL: process.env.GAME_URL || 'https://www.betpawa.ug/virtual/aviator',
         TIMEOUT: num(process.env.NAVIGATION_TIMEOUT, 60000),
-        RUN_DURATION: num(process.env.RUN_DURATION_MS, 24 * 60 * 60 * 1000) // 24 hours
+        // Run duration in ms. Default is 0 (continuous 24/7 run until stopped).
+        // Set RUN_DURATION_MS in .env to a positive number for bounded/test runs.
+        RUN_DURATION: num(process.env.RUN_DURATION_MS, 0)
     },
 
     // Optional extra clicks after reaching BASE_URL (empty for BetPawa — the bot
@@ -52,7 +54,7 @@ const config = {
         POLLING_INTERVAL: num(process.env.POLLING_INTERVAL, 4000),
         MULTIPLIER_THRESHOLD: num(process.env.MULTIPLIER_THRESHOLD, 1.50),
         HISTORY_SIZE: num(process.env.HISTORY_SIZE, 5), // rounds used for the moving average
-        MAX_CONSECUTIVE_FAILURES: num(process.env.MAX_CONSECUTIVE_FAILURES, 5),
+        MAX_CONSECUTIVE_FAILURES: num(process.env.MAX_CONSECUTIVE_FAILURES, 10),
         // A bet that could not be confirmed as "in flight" is conservatively
         // written off after this many milliseconds.
         BET_STALENESS_MS: num(process.env.BET_STALENESS_MS, 120000),
